@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#F5A0B1" />
+    <title>검단ABA 수업 시간표</title>
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css" />
+    <style>
+      * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+      html, body, #root { height: 100%; margin: 0; }
+      body {
+        font-family: Pretendard, -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+        background: #FAFAFB; color: #1F2328;
+        -webkit-font-smoothing: antialiased;
+      }
+      button, input, select { font-family: inherit; }
+      @media print {
+        .no-print { display: none !important; }
+        .app-hidden-on-print { display: none !important; }
+        body { background: #fff; }
+        html, body, #root { height: auto !important; overflow: visible !important; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/App.jsx"></script>
+  </body>
+</html>
