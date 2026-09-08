@@ -219,11 +219,11 @@ async function saveTemplate(v) {
   return ok(await supabase.from('schedule_templates').insert(v))
 }
 
-// 시간표 종료: 지우지 않고 valid_to 를 어제로 두어 기록을 남깁니다
+// 시간표 삭제
+//   출결을 한 번도 안 찍었으면 회차까지 완전히 지우고,
+//   이미 진행한 게 있으면 그 기록만 남기고 종료합니다.
 async function endTemplate(id) {
-  const y = new Date()
-  y.setDate(y.getDate() - 1)
-  return ok(await supabase.from('schedule_templates').update({ valid_to: isoOf(y) }).eq('id', id))
+  return ok(await supabase.rpc('remove_template', { p_id: id }))
 }
 
 async function addHoliday(d, label) {
@@ -870,9 +870,23 @@ function BillingView({ ym, lines, receipts, onOpenReceipt, onPrintAll }) {
             )}
             {byStudent.map((s) =>
               s.lines.map((l, i) => (
-                <tr key={l.student_id + l.program_code} style={{ borderBottom: `1px solid ${C.line2}` }}>
+                <tr
+                  key={l.student_id + l.program_code}
+                  style={{
+                    borderBottom: i === s.lines.length - 1 ? `1px solid ${C.line}` : 'none',
+                    background: i > 0 ? '#FCFCFD' : '#fff',
+                  }}
+                >
                   {i === 0 && (
-                    <td rowSpan={s.lines.length} style={{ padding: '9px 12px', fontWeight: 700, verticalAlign: 'top' }}>
+                    <td
+                      rowSpan={s.lines.length}
+                      style={{
+                        padding: '9px 12px',
+                        fontWeight: 700,
+                        verticalAlign: 'top',
+                        borderRight: s.lines.length > 1 ? `2px solid ${C.pkl}` : 'none',
+                      }}
+                    >
                       <button
                         onClick={() => onOpenReceipt(s)}
                         style={{
@@ -889,7 +903,10 @@ function BillingView({ ym, lines, receipts, onOpenReceipt, onPrintAll }) {
                       </button>
                     </td>
                   )}
-                  <td style={{ padding: '9px 12px', color: '#4B5057' }}>{l.program_label}</td>
+                  <td style={{ padding: '9px 12px', color: '#4B5057', paddingLeft: i > 0 ? 22 : 12 }}>
+                    {i > 0 && <span style={{ color: C.mut, marginRight: 5 }}>↳</span>}
+                    {l.program_label}
+                  </td>
                   <td style={{ padding: '9px 12px', color: C.mut, fontSize: 12 }}>{l.staff_summary}</td>
                   <td style={{ padding: '9px 12px', textAlign: 'right' }}>{l.lesson_count}회</td>
                   <td style={{ padding: '9px 12px', textAlign: 'right', color: C.sub }}>{won(l.unit_price)}</td>
@@ -1488,7 +1505,13 @@ function StudentsView({
                     </span>
                     <button
                       onClick={() => {
-                        if (confirm(`${s.name} — ${DOW[t.weekday]} ${hhmm(t.start_time)} 수업을 종료할까요?\n\n이미 출결을 찍은 회차는 남습니다.`))
+                        if (
+                          confirm(
+                            `${s.name} — ${DOW[t.weekday]} ${hhmm(t.start_time)} 수업을 삭제할까요?\n\n` +
+                              `· 아직 출결을 안 찍었으면 예정 회차까지 모두 지워집니다\n` +
+                              `· 이미 진행한 회차가 있으면 그 기록은 남고 이후만 정리됩니다`
+                          )
+                        )
                           onEndTemplate(t.id)
                       }}
                       style={{ border: 'none', background: 'none', cursor: 'pointer', color: C.mut, fontSize: 14, padding: 0, lineHeight: 1 }}
@@ -2412,9 +2435,9 @@ function App() {
             onEndTemplate={async (id) => {
               setBusy(true)
               try {
-                await endTemplate(id)
-                say('수업을 종료했습니다')
-                await reloadManage()
+                const msg = await endTemplate(id)
+                say(msg || '수업을 삭제했습니다')
+                await reloadAll()
               } catch (e) {
                 fail(e)
               }
