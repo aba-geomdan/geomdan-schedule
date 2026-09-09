@@ -38,6 +38,23 @@ const ok = ({ data, error }) => {
   return data
 }
 
+// 월 이동 (+1, -1)
+const shiftYm = (ym, n) => {
+  const [y, m] = ym.split('-').map(Number)
+  const d = new Date(y, m - 1 + n, 1)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+}
+
+// 청구 기준월: 매달 20일부터는 다음 달을 기본으로 보여줍니다 (월초 결제 대비)
+const defaultBillingYm = () => {
+  const t = new Date()
+  const cur = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}`
+  return t.getDate() >= 20 ? shiftYm(cur, 1) : cur
+}
+
+const daysSince = (iso) =>
+  Math.floor((Date.now() - new Date(iso + 'T00:00:00').getTime()) / 86400000)
+
 const ymOf = (d) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
 
@@ -113,6 +130,47 @@ async function loadPrograms() {
 
 async function loadBilling(ym) {
   return ok(await supabase.rpc('billing_lines', { p_ym: ym }))
+}
+
+async function loadBillingByStaff(ym) {
+  return ok(await supabase.rpc('billing_by_staff', { p_ym: ym }))
+}
+
+async function loadPayments(ym) {
+  return ok(await supabase.rpc('payment_status', { p_ym: ym }))
+}
+
+async function loadRevenue() {
+  return ok(await supabase.rpc('monthly_revenue'))
+}
+
+async function addDeposit(studentId, { amount, date, method, memo }) {
+  return ok(
+    await supabase.rpc('add_deposit', {
+      p_student: studentId, p_amount: amount,
+      p_date: date, p_method: method ?? null, p_memo: memo ?? null,
+    })
+  )
+}
+
+async function removeDeposit(id) {
+  return ok(await supabase.rpc('remove_deposit', { p_id: id }))
+}
+
+async function depositHistory(studentId) {
+  return ok(await supabase.rpc('deposit_history', { p_student: studentId }))
+}
+
+async function loadPayroll(ym) {
+  return ok(await supabase.rpc('payroll', { p_ym: ym }))
+}
+
+async function loadPayrollDetail(ym, staffId) {
+  return ok(await supabase.rpc('payroll_detail', { p_ym: ym, p_staff: staffId }))
+}
+
+async function setPayRate(staffId, rate) {
+  return ok(await supabase.rpc('set_pay_rate', { p_staff: staffId, p_rate: rate }))
 }
 
 async function loadClosings(ym) {
@@ -627,7 +685,7 @@ function WeekGrid({ weekStart, sessions, holidays, colorOf, onPick, today }) {
 
 /* ═════════════════ TeacherViews.jsx ═════════════════ */
 
-function TodayView({ today, weekMinutes, onMark, busy }) {
+function TodayView({ today, unconfirmed, weekMinutes, onMark, busy }) {
   return (
     <div style={{ maxWidth: 460, margin: '0 auto' }}>
       <div style={{ display: 'flex', gap: 10, marginBottom: 14 }}>
@@ -643,8 +701,41 @@ function TodayView({ today, weekMinutes, onMark, busy }) {
         </Card>
       </div>
 
+      {unconfirmed.length > 0 && (
+        <Card style={{ overflow: 'hidden', marginBottom: 16, border: `1px solid #F3AFBD` }}>
+          <div style={{ padding: '12px 15px', background: '#FDECEF', borderBottom: `1px solid #F3AFBD` }}>
+            <div style={{ fontSize: 14.5, fontWeight: 700, color: C.danger }}>
+              확인 안 한 지난 수업 {unconfirmed.length}건
+            </div>
+            <div style={{ fontSize: 12, color: '#8A3550', marginTop: 3, lineHeight: 1.6 }}>
+              결강이었다면 지금 알려주셔야 보강을 잡을 수 있어요. 다 채워야 마감을 제출할 수 있습니다.
+            </div>
+          </div>
+          {unconfirmed.map((s) => (
+            <div
+              key={s.id}
+              style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '11px 15px', borderBottom: `1px solid ${C.line2}`, flexWrap: 'wrap' }}
+            >
+              <div style={{ fontSize: 12, color: C.sub, minWidth: 92 }}>
+                {s.d.slice(5).replace('-', '/')} ({s.weekday}) {hhmm(s.start_time)}
+              </div>
+              <div style={{ fontSize: 14.5, fontWeight: 700, flex: 1 }}>{s.student_name}</div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <Btn variant="ok" disabled={busy} onClick={() => onMark(s.id, '진행')} style={{ padding: '6px 13px', fontSize: 12.5 }}>
+                  진행
+                </Btn>
+                <Btn variant="danger" disabled={busy} onClick={() => onMark(s.id, '결강')} style={{ padding: '6px 13px', fontSize: 12.5 }}>
+                  결강
+                </Btn>
+              </div>
+            </div>
+          ))}
+        </Card>
+      )}
+
+      <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 8 }}>오늘 수업</div>
       <div style={{ fontSize: 12.5, color: C.sub, marginBottom: 9, lineHeight: 1.6 }}>
-        수업이 정상 진행됐으면 아무것도 안 하셔도 됩니다.{' '}
+        정상 진행됐으면 아무것도 안 하셔도 됩니다.{' '}
         <b style={{ color: C.danger }}>결강이나 취소일 때만</b> 눌러주세요.
       </div>
 
@@ -742,8 +833,8 @@ function MyClosingView({ ym, summary, closing, onSubmit, busy }) {
               lineHeight: 1.6,
             }}
           >
-            아직 확인 안 한 수업이 {summary.unconfirmed}건 있습니다. 주간 화면에서 모두 확인해야 제출할 수
-            있어요.
+            아직 확인 안 한 수업이 {summary.unconfirmed}건 있습니다. <b>할 일</b> 탭에서 모두 확인해야 제출할
+            수 있어요.
           </div>
         )}
 
@@ -811,7 +902,20 @@ function MyClosingView({ ym, summary, closing, onSubmit, busy }) {
 /* ═════════════════ AdminViews.jsx ═════════════════ */
 
 /* ---------------- 정산 ---------------- */
-function BillingView({ ym, lines, receipts, onOpenReceipt, onPrintAll }) {
+function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onPrintAll, onSetRate, onDetail, busy }) {
+  const [group, setGroup] = useState('student')
+  const [detailFor, setDetailFor] = useState(null)
+  const [detail, setDetail] = useState(null)
+
+  const openDetail = async (r) => {
+    setDetailFor(r)
+    setDetail(null)
+    try {
+      setDetail(await onDetail(r.staff_id))
+    } catch {
+      setDetail([])
+    }
+  }
   const byStudent = useMemo(() => {
     const m = {}
     lines.forEach((l) => {
@@ -824,6 +928,23 @@ function BillingView({ ym, lines, receipts, onOpenReceipt, onPrintAll }) {
     return Object.values(m).sort((a, b) => a.name.localeCompare(b.name, 'ko'))
   }, [lines])
 
+  const staffGroups = useMemo(() => {
+    const m = {}
+    ;(byStaff || []).forEach((r) => {
+      if (!m[r.staff_id])
+        m[r.staff_id] = { id: r.staff_id, name: r.staff_name, rows: [], amount: 0, count: 0, minutes: 0, students: new Set() }
+      const g = m[r.staff_id]
+      g.rows.push(r)
+      g.amount += r.amount
+      g.count += r.lesson_count
+      g.minutes += r.minutes
+      g.students.add(r.student_id)
+    })
+    return Object.values(m)
+      .map((g) => ({ ...g, rows: g.rows.sort((a, b) => a.student_name.localeCompare(b.student_name, 'ko')) }))
+      .sort((a, b) => b.amount - a.amount)
+  }, [byStaff])
+
   const rMap = useMemo(() => Object.fromEntries(receipts.map((r) => [r.student_id, r])), [receipts])
   const total = byStudent.reduce((a, b) => a + b.subtotal + (rMap[b.id]?.adjustment || 0), 0)
 
@@ -831,7 +952,23 @@ function BillingView({ ym, lines, receipts, onOpenReceipt, onPrintAll }) {
     <div>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
         <div style={{ fontSize: 15, fontWeight: 700 }}>{ym.replace('-', '년 ')}월 정산</div>
-        <div style={{ fontSize: 12, color: C.sub }}>(진행 + 결강) × 회당 단가</div>
+        <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 8 }}>
+          {[['student', '아동별'], ['staff', '선생님별'], ['payroll', '급여']].map(([k, label]) => (
+            <button
+              key={k}
+              onClick={() => setGroup(k)}
+              style={{
+                border: 'none', cursor: 'pointer', padding: '5px 12px', borderRadius: 6,
+                fontSize: 12.5, fontWeight: 600,
+                background: group === k ? '#fff' : 'transparent',
+                color: group === k ? C.ink : C.sub,
+                boxShadow: group === k ? '0 1px 2px rgba(0,0,0,.06)' : 'none',
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
           <Btn onClick={() => onPrintAll(byStudent)} disabled={byStudent.length === 0}>
             영수증 {byStudent.length}장 인쇄
@@ -840,6 +977,220 @@ function BillingView({ ym, lines, receipts, onOpenReceipt, onPrintAll }) {
         </div>
       </div>
 
+      {group === 'payroll' ? (
+        <div>
+          <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.75, marginBottom: 12 }}>
+            급여 = <b>(진행 + 보강)</b> 회차의 수강료 합계 × 선생님 비율. 결강은 보강해야 집계됩니다.
+            보강은 <b>보강한 달</b>에 잡혀요.
+            <br />
+            수강료 청구는 (진행 + 결강) 기준이라 아래 <b>수강료</b> 금액과 정산 탭의 금액이 다를 수 있습니다.
+          </div>
+          <Card style={{ overflow: 'auto', marginBottom: 12 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 660 }}>
+              <thead>
+                <tr style={{ background: '#FBFBFC', color: C.sub }}>
+                  {['선생님', '비율', '회차', '보강', '시수', '수강료', '급여', '미보강', ''].map((h, i) => (
+                    <th
+                      key={i}
+                      style={{
+                        padding: '9px 12px',
+                        textAlign: i >= 2 && i <= 7 ? 'right' : 'left',
+                        fontWeight: 600,
+                        borderBottom: `1px solid ${C.line}`,
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {(payroll || []).length === 0 && (
+                  <tr>
+                    <td colSpan={9}>
+                      <Empty>이 달 수업 기록이 없습니다.</Empty>
+                    </td>
+                  </tr>
+                )}
+                {(payroll || []).map((r) => (
+                  <tr key={r.staff_id} style={{ borderBottom: `1px solid ${C.line2}` }}>
+                    <td style={{ padding: '9px 12px', fontWeight: 700 }}>{r.staff_name}</td>
+                    <td style={{ padding: '9px 12px' }}>
+                      <input
+                        type="number"
+                        step="1"
+                        min="0"
+                        max="100"
+                        placeholder="—"
+                        defaultValue={r.pay_rate != null ? Math.round(r.pay_rate * 100) : ''}
+                        onBlur={(e) => {
+                          const v = e.target.value === '' ? null : Number(e.target.value) / 100
+                          const cur = r.pay_rate != null ? Number(r.pay_rate) : null
+                          if (v !== cur) onSetRate(r.staff_id, v)
+                        }}
+                        style={{ width: 56, fontSize: 13, padding: '5px 7px', border: '1px solid #DEE0E3', borderRadius: 6, textAlign: 'right' }}
+                      />
+                      <span style={{ fontSize: 12, color: C.sub, marginLeft: 3 }}>%</span>
+                    </td>
+                    <td style={{ padding: '9px 12px', textAlign: 'right' }}>{r.lesson_count}</td>
+                    <td style={{ padding: '9px 12px', textAlign: 'right', color: r.makeup_count ? '#254B8C' : '#C9CCD1' }}>
+                      {r.makeup_count || '—'}
+                    </td>
+                    <td style={{ padding: '9px 12px', textAlign: 'right', color: C.sub }}>
+                      {(r.minutes / 60).toFixed(1)}h
+                    </td>
+                    <td style={{ padding: '9px 12px', textAlign: 'right', color: C.sub }}>{won(r.tuition)}</td>
+                    <td style={{ padding: '9px 12px', textAlign: 'right', fontWeight: 700, fontSize: 14, color: r.pay != null ? C.pkd : C.mut }}>
+                      {r.pay != null ? `${won(r.pay)}원` : '비율 없음'}
+                    </td>
+                    <td style={{ padding: '9px 12px', textAlign: 'right', color: r.unmade_up ? C.danger : '#C9CCD1', fontWeight: r.unmade_up ? 700 : 400 }}>
+                      {r.unmade_up || '—'}
+                    </td>
+                    <td style={{ padding: '9px 12px', textAlign: 'right' }}>
+                      <Btn disabled={busy} onClick={() => openDetail(r)} style={{ padding: '5px 11px', fontSize: 12 }}>
+                        내역
+                      </Btn>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+              {(payroll || []).length > 0 && (
+                <tfoot>
+                  <tr style={{ background: C.pkl, fontWeight: 700 }}>
+                    <td style={{ padding: '10px 12px' }}>합계</td>
+                    <td />
+                    <td style={{ padding: '10px 12px', textAlign: 'right' }}>
+                      {payroll.reduce((a, b) => a + b.lesson_count, 0)}
+                    </td>
+                    <td style={{ padding: '10px 12px', textAlign: 'right' }}>
+                      {payroll.reduce((a, b) => a + b.makeup_count, 0) || '—'}
+                    </td>
+                    <td style={{ padding: '10px 12px', textAlign: 'right' }}>
+                      {(payroll.reduce((a, b) => a + b.minutes, 0) / 60).toFixed(1)}h
+                    </td>
+                    <td style={{ padding: '10px 12px', textAlign: 'right' }}>
+                      {won(payroll.reduce((a, b) => a + b.tuition, 0))}
+                    </td>
+                    <td style={{ padding: '10px 12px', textAlign: 'right', color: C.pkd }}>
+                      {won(payroll.reduce((a, b) => a + (b.pay || 0), 0))}원
+                    </td>
+                    <td colSpan={2} />
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          </Card>
+          <div style={{ fontSize: 12, color: C.sub }}>
+            비율 칸에 숫자를 넣고 다른 곳을 누르면 저장됩니다. 60이면 60%예요.
+          </div>
+
+          {detailFor && (
+            <Modal onClose={() => setDetailFor(null)} max={420}>
+              <div style={{ padding: '16px 18px', borderBottom: `1px solid ${C.line2}` }}>
+                <div style={{ fontSize: 17, fontWeight: 700 }}>{detailFor.staff_name} 급여 내역</div>
+                <div style={{ fontSize: 12.5, color: C.sub, marginTop: 3 }}>
+                  {ym.replace('-', '년 ')}월 · 수강료 {won(detailFor.tuition)}원 ×{' '}
+                  {detailFor.pay_rate != null ? `${Math.round(detailFor.pay_rate * 100)}%` : '비율 미설정'}
+                  {detailFor.pay != null && ` = ${won(detailFor.pay)}원`}
+                </div>
+              </div>
+              <div style={{ maxHeight: 360, overflow: 'auto' }}>
+                {detail === null ? (
+                  <Empty>불러오는 중…</Empty>
+                ) : detail.length === 0 ? (
+                  <Empty>내역이 없습니다.</Empty>
+                ) : (
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                    <thead>
+                      <tr style={{ color: C.mut, fontSize: 11.5 }}>
+                        <th style={{ textAlign: 'left', padding: '8px 16px', fontWeight: 600 }}>아동</th>
+                        <th style={{ textAlign: 'right', padding: '8px 8px', fontWeight: 600 }}>회차</th>
+                        <th style={{ textAlign: 'right', padding: '8px 16px', fontWeight: 600 }}>수강료</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {detail.map((d, i) => (
+                        <tr key={i} style={{ borderTop: `1px solid ${C.line2}` }}>
+                          <td style={{ padding: '8px 16px' }}>
+                            {d.student_name}
+                            <div style={{ fontSize: 11, color: C.mut }}>
+                              {d.program_label}
+                              {d.makeup_count > 0 && ` · 보강 ${d.makeup_count}`}
+                            </div>
+                          </td>
+                          <td style={{ padding: '8px 8px', textAlign: 'right', verticalAlign: 'top' }}>
+                            {d.lesson_count}
+                          </td>
+                          <td style={{ padding: '8px 16px', textAlign: 'right', fontWeight: 600, verticalAlign: 'top' }}>
+                            {won(d.tuition)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+              <div style={{ padding: 16 }}>
+                <Btn onClick={() => setDetailFor(null)} style={{ width: '100%', padding: '11px 0' }}>
+                  닫기
+                </Btn>
+              </div>
+            </Modal>
+          )}
+        </div>
+      ) : group === 'staff' ? (
+        <div>
+          {staffGroups.map((g) => (
+            <Card key={g.id} style={{ marginBottom: 12, overflow: 'hidden' }}>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'baseline',
+                  gap: 10,
+                  padding: '11px 16px',
+                  background: '#FBFBFC',
+                  borderBottom: `1px solid ${C.line}`,
+                  flexWrap: 'wrap',
+                }}
+              >
+                <div style={{ fontSize: 15, fontWeight: 700 }}>{g.name}</div>
+                <div style={{ fontSize: 12, color: C.sub }}>
+                  아동 {g.students.size}명 · {g.count}회 · {(g.minutes / 60).toFixed(1)}시간
+                </div>
+                <div style={{ marginLeft: 'auto', fontSize: 16, fontWeight: 700, color: C.pkd }}>
+                  {won(g.amount)}원
+                </div>
+              </div>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                <tbody>
+                  {g.rows.map((r, i) => (
+                    <tr key={i} style={{ borderBottom: `1px solid ${C.line2}` }}>
+                      <td style={{ padding: '8px 16px', fontWeight: 600, width: '22%' }}>{r.student_name}</td>
+                      <td style={{ padding: '8px 8px', color: '#4B5057' }}>{r.program_label}</td>
+                      <td style={{ padding: '8px 8px', textAlign: 'right', width: '13%' }}>{r.lesson_count}회</td>
+                      <td style={{ padding: '8px 8px', textAlign: 'right', color: C.sub, width: '16%' }}>
+                        {(r.minutes / 60).toFixed(1)}h
+                      </td>
+                      <td style={{ padding: '8px 16px', textAlign: 'right', fontWeight: 600, width: '20%' }}>
+                        {won(r.amount)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Card>
+          ))}
+          {staffGroups.length === 0 && (
+            <Card>
+              <Empty>이 달 수업 기록이 없습니다. 먼저 회차를 생성하세요.</Empty>
+            </Card>
+          )}
+          <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.7 }}>
+            아동이 두 선생님께 배우면 회차 단위로 나뉩니다. 선생님별 합계를 모두 더하면 아동별 총액과 같습니다.
+          </div>
+        </div>
+      ) : (
       <Card style={{ overflow: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 680 }}>
           <thead>
@@ -929,9 +1280,12 @@ function BillingView({ ym, lines, receipts, onOpenReceipt, onPrintAll }) {
           </tbody>
         </table>
       </Card>
-      <div style={{ marginTop: 10, fontSize: 12, color: C.sub }}>
-        아동 이름을 누르면 영수증이 열립니다.
-      </div>
+      )}
+      {group === 'student' && (
+        <div style={{ marginTop: 10, fontSize: 12, color: C.sub }}>
+          아동 이름을 누르면 영수증이 열립니다.
+        </div>
+      )}
     </div>
   )
 }
@@ -1451,20 +1805,65 @@ function StudentsView({
 }) {
   const [editing, setEditing] = useState(null) // student or 'new'
   const [adding, setAdding] = useState(null) // student for new template
+  const [byStaff, setByStaff] = useState(false)
 
   const tmplOf = (sid) => templates.filter((t) => t.student_id === sid && !t.valid_to)
+
+  const groups = useMemo(() => {
+    if (!byStaff) return [{ name: null, list: students }]
+    const m = {}
+    students.forEach((s) => {
+      const key = s.main_staff_id || '_'
+      if (!m[key]) m[key] = []
+      m[key].push(s)
+    })
+    return staff
+      .filter((t) => t.active)
+      .map((t) => ({ name: t.name, list: m[t.id] || [] }))
+      .filter((g) => g.list.length)
+      .concat(m['_'] ? [{ name: '담당 미지정', list: m['_'] }] : [])
+  }, [students, staff, byStaff])
 
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
-        <div style={{ fontSize: 15, fontWeight: 700 }}>아동 {students.filter((s) => s.status === '재원').length}명</div>
+        <div style={{ fontSize: 15, fontWeight: 700 }}>
+          아동 {students.filter((s) => s.status === '재원').length}명
+        </div>
+        <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 8 }}>
+          {[[false, '이름순'], [true, '선생님별']].map(([k, label]) => (
+            <button
+              key={label}
+              onClick={() => setByStaff(k)}
+              style={{
+                border: 'none', cursor: 'pointer', padding: '5px 12px', borderRadius: 6,
+                fontSize: 12.5, fontWeight: 600,
+                background: byStaff === k ? '#fff' : 'transparent',
+                color: byStaff === k ? C.ink : C.sub,
+                boxShadow: byStaff === k ? '0 1px 2px rgba(0,0,0,.06)' : 'none',
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
         <Btn variant="primary" style={{ marginLeft: 'auto' }} onClick={() => setEditing('new')}>
           새 아동 등록
         </Btn>
       </div>
 
-      <Card style={{ overflow: 'hidden' }}>
-        {students.map((s) => {
+      {groups.map((g) => (
+      <Card key={g.name || 'all'} style={{ overflow: 'hidden', marginBottom: 12 }}>
+        {g.name && (
+          <div style={{ padding: '10px 16px', background: '#FBFBFC', borderBottom: `1px solid ${C.line}`, fontSize: 14, fontWeight: 700 }}>
+            <span>{g.name}</span>
+            <span style={{ fontSize: 12, color: C.sub, fontWeight: 400, marginLeft: 8 }}>
+              {' '}
+              {g.list.length}명
+            </span>
+          </div>
+        )}
+        {g.list.map((s) => {
           const ts = tmplOf(s.id)
           return (
             <div key={s.id} style={{ padding: '13px 16px', borderBottom: `1px solid ${C.line2}` }}>
@@ -1526,6 +1925,7 @@ function StudentsView({
           )
         })}
       </Card>
+      ))}
 
       {editing && (
         <StudentModal
@@ -1717,6 +2117,408 @@ function Field({ label, children }) {
       <div style={{ fontSize: 12, color: C.sub, marginBottom: 6 }}>{label}</div>
       {children}
     </div>
+  )
+}
+
+
+/* ═════════════════ PaymentView.jsx ═════════════════ */
+
+function PaymentView({
+  ym, rows, revenue, busy, onDeposit, onRemoveDeposit, loadHistory, say,
+}) {
+  const [filter, setFilter] = useState('unpaid')
+  const [depositFor, setDepositFor] = useState(null)
+  const [historyFor, setHistoryFor] = useState(null)
+
+  const t = useMemo(() => {
+    const billed = rows.reduce((a, b) => a + b.billed, 0)
+    const allocated = rows.reduce((a, b) => a + b.allocated, 0)
+    const unpaid = rows.filter((r) => r.balance > 0)
+    return { billed, allocated, balance: billed - allocated, unpaid }
+  }, [rows])
+
+  const shown = useMemo(() => {
+    if (filter === 'unpaid') return rows.filter((r) => r.balance > 0)
+    if (filter === 'paid') return rows.filter((r) => r.balance <= 0)
+    if (filter === 'credit') return rows.filter((r) => r.credit_left > 0)
+    return rows
+  }, [rows, filter])
+
+  const copyUnpaid = () => {
+    if (!t.unpaid.length) return say('미납이 없습니다')
+    const lines = t.unpaid.map((r) => `· ${r.student_name}  ${won(r.balance)}원`)
+    const msg =
+      `[검단ABA] ${ym.replace('-', '년 ')}월 수강료 안내\n\n` +
+      `아직 입금이 확인되지 않았습니다.\n확인 후 납부 부탁드립니다.\n\n${lines.join('\n')}\n\n` +
+      `검단ABA언어행동연구소`
+    navigator.clipboard?.writeText(msg)
+    say('미납 목록이 복사됐습니다')
+  }
+
+  const pct = t.billed ? Math.round((t.allocated / t.billed) * 100) : 0
+  const creditCount = rows.filter((r) => r.credit_left > 0).length
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+        <Stat label="이 달 청구" value={`${won(t.billed)}원`} />
+        <Stat label="충당됨" value={`${won(t.allocated)}원`} tone="#1F5B3A" />
+        <Stat
+          label={`미수 (${t.unpaid.length}명)`}
+          value={`${won(t.balance)}원`}
+          tone={t.balance > 0 ? C.danger : C.mut}
+        />
+      </div>
+
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ height: 8, background: '#EFF0F2', borderRadius: 99, overflow: 'hidden' }}>
+          <div style={{ width: `${pct}%`, height: '100%', background: C.pk, transition: 'width .3s' }} />
+        </div>
+        <div style={{ fontSize: 11.5, color: C.sub, marginTop: 5 }}>
+          {rows.length}명 중 {rows.length - t.unpaid.length}명 납부 완료 ({pct}%)
+          {creditCount > 0 && ` · 선입금 남은 아동 ${creditCount}명`}
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 12, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 8, flexWrap: 'wrap' }}>
+          {[
+            ['unpaid', `미납 ${t.unpaid.length}`],
+            ['paid', '완납'],
+            ['credit', `선입금 ${creditCount}`],
+            ['all', `전체 ${rows.length}`],
+          ].map(([k, label]) => (
+            <button
+              key={k}
+              onClick={() => setFilter(k)}
+              style={{
+                border: 'none', cursor: 'pointer', padding: '5px 12px', borderRadius: 6,
+                fontSize: 12.5, fontWeight: 600, whiteSpace: 'nowrap',
+                background: filter === k ? '#fff' : 'transparent',
+                color: filter === k ? C.ink : C.sub,
+                boxShadow: filter === k ? '0 1px 2px rgba(0,0,0,.06)' : 'none',
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <Btn onClick={copyUnpaid} style={{ marginLeft: 'auto' }}>
+          미납 안내 문구 복사
+        </Btn>
+      </div>
+
+      <Card style={{ overflow: 'auto', marginBottom: 16 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 660 }}>
+          <thead>
+            <tr style={{ background: '#FBFBFC', color: C.sub }}>
+              {['아동', '담당', '이 달 청구', '충당', '미수', '선입금 잔액', ''].map((h, i) => (
+                <th
+                  key={i}
+                  style={{
+                    padding: '9px 12px',
+                    textAlign: i >= 2 && i <= 5 ? 'right' : 'left',
+                    fontWeight: 600,
+                    borderBottom: `1px solid ${C.line}`,
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {shown.length === 0 && (
+              <tr>
+                <td colSpan={7}>
+                  <Empty>해당하는 아동이 없습니다.</Empty>
+                </td>
+              </tr>
+            )}
+            {shown.map((r) => {
+              const done = r.balance <= 0
+              const partial = r.allocated > 0 && r.balance > 0
+              return (
+                <tr key={r.student_id} style={{ borderBottom: `1px solid ${C.line2}` }}>
+                  <td style={{ padding: '9px 12px', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                    {r.student_name}
+                    {done && (
+                      <span style={{ marginLeft: 6 }}>
+                        <Pill tone="green">완납</Pill>
+                      </span>
+                    )}
+                    {partial && (
+                      <span style={{ marginLeft: 6 }}>
+                        <Pill tone="amber">부분</Pill>
+                      </span>
+                    )}
+                  </td>
+                  <td style={{ padding: '9px 12px', color: C.sub }}>{r.staff_name}</td>
+                  <td style={{ padding: '9px 12px', textAlign: 'right' }}>{won(r.billed)}</td>
+                  <td
+                    style={{
+                      padding: '9px 12px', textAlign: 'right',
+                      color: r.allocated ? '#1F5B3A' : '#C9CCD1',
+                      fontWeight: r.allocated ? 600 : 400,
+                    }}
+                  >
+                    {r.allocated ? won(r.allocated) : '—'}
+                  </td>
+                  <td
+                    style={{
+                      padding: '9px 12px', textAlign: 'right',
+                      color: r.balance > 0 ? C.danger : '#C9CCD1',
+                      fontWeight: r.balance > 0 ? 700 : 400,
+                    }}
+                  >
+                    {r.balance > 0 ? won(r.balance) : '—'}
+                  </td>
+                  <td
+                    style={{
+                      padding: '9px 12px', textAlign: 'right',
+                      color: r.credit_left > 0 ? '#254B8C' : '#C9CCD1',
+                      fontWeight: r.credit_left > 0 ? 700 : 400,
+                    }}
+                  >
+                    {r.credit_left > 0 ? won(r.credit_left) : '—'}
+                  </td>
+                  <td style={{ padding: '9px 12px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    <Btn
+                      variant="ok"
+                      disabled={busy}
+                      onClick={() => setDepositFor(r)}
+                      style={{ padding: '5px 11px', fontSize: 12, marginRight: 5 }}
+                    >
+                      입금
+                    </Btn>
+                    <Btn disabled={busy} onClick={() => setHistoryFor(r)} style={{ padding: '5px 11px', fontSize: 12 }}>
+                      내역
+                    </Btn>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </Card>
+
+      <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.75, marginBottom: 16 }}>
+        선입금은 받은 순서대로 매달 청구에서 자동으로 빠집니다. 3개월치를 한 번에 받으셔도 달마다 알아서
+        차감돼요. <b>선입금 잔액</b>은 앞으로 쓸 수 있는 돈입니다.
+        <br />
+        누적 청구는 <b>발행한 영수증</b> 기준이라, 정산 탭에서 발행해야 잔액이 정확해집니다.
+      </div>
+
+      {revenue && revenue.length > 0 && (
+        <Card style={{ overflow: 'hidden' }}>
+          <div style={{ padding: '12px 16px', borderBottom: `1px solid ${C.line2}`, fontSize: 14, fontWeight: 700 }}>
+            월별 수입
+          </div>
+          <div style={{ padding: '14px 16px' }}>
+            {(() => {
+              const max = Math.max(...revenue.map((r) => Math.max(r.billed || 0, r.paid || 0)), 1)
+              return [...revenue].reverse().map((r) => (
+                <div key={r.ym} style={{ marginBottom: 11 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
+                    <span style={{ fontWeight: 600 }}>{r.ym.replace('-', '년 ')}월</span>
+                    <span style={{ color: C.sub }}>
+                      입금 {won(r.paid)} / 청구 {won(r.billed)}
+                    </span>
+                  </div>
+                  <div style={{ height: 14, background: '#F2F3F5', borderRadius: 4, overflow: 'hidden', position: 'relative' }}>
+                    <div style={{ position: 'absolute', inset: 0, width: `${((r.billed || 0) / max) * 100}%`, background: C.pkl }} />
+                    <div style={{ position: 'absolute', inset: 0, width: `${((r.paid || 0) / max) * 100}%`, background: C.pk }} />
+                  </div>
+                </div>
+              ))
+            })()}
+            <div style={{ fontSize: 11, color: C.mut, marginTop: 4 }}>
+              진한 색이 그 달 실제 입금액, 연한 색이 청구액입니다. 선입금을 받은 달은 입금이 더 클 수 있어요.
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {depositFor && (
+        <DepositModal
+          row={depositFor}
+          busy={busy}
+          onClose={() => setDepositFor(null)}
+          onSave={(v) => {
+            onDeposit(depositFor.student_id, v)
+            setDepositFor(null)
+          }}
+        />
+      )}
+
+      {historyFor && (
+        <HistoryModal
+          row={historyFor}
+          busy={busy}
+          loadHistory={loadHistory}
+          onRemove={onRemoveDeposit}
+          onClose={() => setHistoryFor(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+function DepositModal({ row, onClose, onSave, busy }) {
+  const [amount, setAmount] = useState(row.balance > 0 ? row.balance : row.billed)
+  const [date, setDate] = useState(isoOf(new Date()))
+  const [method, setMethod] = useState('계좌이체')
+  const [memo, setMemo] = useState('')
+
+  const months = row.billed ? (amount / row.billed).toFixed(1) : '0'
+
+  return (
+    <Modal onClose={onClose} max={350}>
+      <div style={{ padding: '16px 18px', borderBottom: `1px solid ${C.line2}` }}>
+        <div style={{ fontSize: 17, fontWeight: 700 }}>{row.student_name} 입금</div>
+        <div style={{ fontSize: 12.5, color: C.sub, marginTop: 3 }}>
+          이 달 청구 {won(row.billed)}원
+          {row.balance > 0 ? ` · 미수 ${won(row.balance)}원` : ' · 완납'}
+        </div>
+      </div>
+      <div style={{ padding: 18 }}>
+        <div style={{ fontSize: 12, color: C.sub, marginBottom: 6 }}>입금액</div>
+        <input
+          type="number"
+          value={amount}
+          onChange={(e) => setAmount(Number(e.target.value) || 0)}
+          style={{ width: '100%', fontSize: 16, padding: '11px 12px', border: '1px solid #DEE0E3', borderRadius: 8, fontWeight: 700 }}
+        />
+        <div style={{ display: 'flex', gap: 5, marginTop: 7, flexWrap: 'wrap' }}>
+          {[
+            ['미수만', row.balance > 0 ? row.balance : row.billed],
+            ['1개월', row.billed],
+            ['3개월', row.billed * 3],
+            ['6개월', row.billed * 6],
+          ].map(([l, v]) => (
+            <Btn key={l} onClick={() => setAmount(v)} style={{ padding: '5px 10px', fontSize: 12 }}>
+              {l}
+            </Btn>
+          ))}
+        </div>
+        {amount > row.balance && row.billed > 0 && (
+          <div style={{ marginTop: 10, padding: '9px 12px', background: '#EEF3FD', borderRadius: 8, fontSize: 12, color: '#254B8C', lineHeight: 1.6 }}>
+            이 달 청구 기준 약 <b>{months}개월치</b>입니다. 남는 금액은 선입금으로 쌓여 다음 달부터 자동
+            차감돼요.
+          </div>
+        )}
+
+        <div style={{ fontSize: 12, color: C.sub, margin: '13px 0 6px' }}>입금일</div>
+        <input
+          type="date"
+          value={date}
+          onChange={(e) => setDate(e.target.value)}
+          style={{ width: '100%', fontSize: 14, padding: '10px 11px', border: '1px solid #DEE0E3', borderRadius: 8 }}
+        />
+
+        <div style={{ fontSize: 12, color: C.sub, margin: '13px 0 6px' }}>방법</div>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {['계좌이체', '현금', '카드'].map((m) => (
+            <Btn
+              key={m}
+              variant={method === m ? 'primary' : 'default'}
+              onClick={() => setMethod(m)}
+              style={{ flex: 1, padding: '9px 0', fontSize: 13 }}
+            >
+              {m}
+            </Btn>
+          ))}
+        </div>
+
+        <div style={{ fontSize: 12, color: C.sub, margin: '13px 0 6px' }}>메모 (선택)</div>
+        <input
+          placeholder="3개월치, 형제 합산 등"
+          value={memo}
+          onChange={(e) => setMemo(e.target.value)}
+          style={{ width: '100%', fontSize: 13, padding: '9px 11px', border: '1px solid #DEE0E3', borderRadius: 8 }}
+        />
+
+        <div style={{ display: 'flex', gap: 7, marginTop: 16 }}>
+          <Btn
+            variant="primary"
+            disabled={busy || !amount}
+            onClick={() => onSave({ amount, date, method, memo: memo.trim() || null })}
+            style={{ flex: 1, padding: '11px 0' }}
+          >
+            기록
+          </Btn>
+          <Btn onClick={onClose} style={{ flex: 1, padding: '11px 0' }}>
+            취소
+          </Btn>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+function HistoryModal({ row, onClose, onRemove, loadHistory, busy }) {
+  const [list, setList] = useState(null)
+
+  React.useEffect(() => {
+    loadHistory(row.student_id)
+      .then(setList)
+      .catch(() => setList([]))
+  }, [row.student_id])
+
+  const total = (list || []).reduce((a, b) => a + b.amount, 0)
+
+  return (
+    <Modal onClose={onClose} max={380}>
+      <div style={{ padding: '16px 18px', borderBottom: `1px solid ${C.line2}` }}>
+        <div style={{ fontSize: 17, fontWeight: 700 }}>{row.student_name} 입금 내역</div>
+        <div style={{ fontSize: 12.5, color: C.sub, marginTop: 3 }}>
+          누적 {won(total)}원
+          {row.credit_left > 0 && ` · 선입금 잔액 ${won(row.credit_left)}원`}
+        </div>
+      </div>
+      <div style={{ maxHeight: 340, overflow: 'auto' }}>
+        {list === null ? (
+          <Empty>불러오는 중…</Empty>
+        ) : list.length === 0 ? (
+          <Empty>입금 기록이 없습니다.</Empty>
+        ) : (
+          list.map((d) => (
+            <div
+              key={d.id}
+              style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '11px 18px', borderBottom: `1px solid ${C.line2}` }}
+            >
+              <div style={{ minWidth: 76, fontSize: 12.5, color: C.sub }}>
+                {d.received_on.slice(2).replace(/-/g, '/')}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 15, fontWeight: 700 }}>{won(d.amount)}원</div>
+                <div style={{ fontSize: 11.5, color: C.mut }}>
+                  {[d.method, d.memo].filter(Boolean).join(' · ') || '—'}
+                </div>
+              </div>
+              <Btn
+                disabled={busy}
+                onClick={() => {
+                  if (confirm(`${d.received_on} ${won(d.amount)}원 기록을 지울까요?`)) {
+                    onRemove(d.id)
+                    setList(list.filter((x) => x.id !== d.id))
+                  }
+                }}
+                style={{ padding: '5px 10px', fontSize: 12 }}
+              >
+                삭제
+              </Btn>
+            </div>
+          ))
+        )}
+      </div>
+      <div style={{ padding: 16 }}>
+        <Btn onClick={onClose} style={{ width: '100%', padding: '11px 0' }}>
+          닫기
+        </Btn>
+      </div>
+    </Modal>
   )
 }
 
@@ -1950,7 +2752,8 @@ function App() {
 
   const [tab, setTab] = useState('today')
   const [weekStart, setWeekStart] = useState(() => mondayOf(new Date()))
-  const [ym, setYm] = useState(() => ymOf(new Date()))
+  const [ym, setYm] = useState(defaultBillingYm)
+  const [autoGen, setAutoGen] = useState(false)
 
   const [sessions, setSessions] = useState([])
   const [holidays, setHolidays] = useState([])
@@ -1958,6 +2761,10 @@ function App() {
   const [unmadeUp, setUnmadeUp] = useState([])
   const [unconfirmed, setUnconfirmed] = useState([])
   const [billing, setBilling] = useState([])
+  const [byStaff, setByStaff] = useState([])
+  const [payroll, setPayroll] = useState([])
+  const [payments, setPayments] = useState([])
+  const [revenue, setRevenue] = useState([])
   const [closings, setClosings] = useState([])
   const [receipts, setReceipts] = useState([])
 
@@ -2025,14 +2832,22 @@ function App() {
   }, [])
 
   const reloadMonth = useCallback(async () => {
-    const [b, cl, r] = await Promise.all([
+    const [b, bs, cl, r, pay, rev, pr] = await Promise.all([
       isAdmin ? loadBilling(ym) : Promise.resolve([]),
+      isAdmin ? loadBillingByStaff(ym) : Promise.resolve([]),
       loadClosings(ym),
       isAdmin ? loadReceipts(ym) : Promise.resolve([]),
+      isAdmin ? loadPayments(ym) : Promise.resolve([]),
+      isAdmin ? loadRevenue() : Promise.resolve([]),
+      isAdmin ? loadPayroll(ym) : Promise.resolve([]),
     ])
     setBilling(b)
+    setByStaff(bs)
     setClosings(cl)
     setReceipts(r)
+    setPayments(pay)
+    setRevenue(rev)
+    setPayroll(pr)
   }, [ym, isAdmin])
 
   const reloadManage = useCallback(async () => {
@@ -2063,6 +2878,27 @@ function App() {
     if (session && staff.length) reloadAll()
   }, [session, staff.length, weekStart, ym])
 
+  // 월초 결제 대비: 기준월 회차가 비어 있으면 자동으로 만들어 둡니다
+  useEffect(() => {
+    if (!isAdmin || loading || autoGen || !staff.length) return
+    if (billing.length > 0) return
+    let alive = true
+    setAutoGen(true)
+    generateMonth(ym)
+      .then(async (n) => {
+        if (!alive) return
+        if (n > 0) {
+          say(`${ym.replace('-', '년 ')}월 회차 ${n}건을 자동으로 준비했습니다`)
+          await reloadAll()
+        }
+      })
+      .catch(() => {})
+      .finally(() => alive && setAutoGen(false))
+    return () => {
+      alive = false
+    }
+  }, [isAdmin, loading, billing.length, ym, staff.length])
+
   /* ---- 동작 ---- */
   const doMark = async (id, status) => {
     setBusy(true)
@@ -2090,6 +2926,8 @@ function App() {
     setBusy(false)
   }
 
+  const unpaidCount = useMemo(() => payments.filter((p) => p.balance > 0).length, [payments])
+
   const myClosing = closings.find((c) => c.staff_name === me?.name)
 
   const weekMinutes = useMemo(
@@ -2111,7 +2949,7 @@ function App() {
   if (!session) return <Login onDone={() => {}} say={say} />
 
   const tabs = [
-    ...(isAdmin ? [] : [['today', '오늘']]),
+    ...(isAdmin ? [] : [['today', `할 일${unconfirmed.length ? ` ${unconfirmed.length}` : ''}`]]),
     ['week', '주간'],
     ['makeup', `보강 ${unmadeUp.length}`],
     ...(isAdmin
@@ -2119,6 +2957,7 @@ function App() {
           ['unconfirmed', `미확인 ${unconfirmed.length}`],
           ['closing', '마감'],
           ['billing', '정산'],
+          ['payment', `입금${unpaidCount ? ` ${unpaidCount}` : ''}`],
           ['students', '아동'],
           ['holiday', '휴원일'],
         ]
@@ -2165,10 +3004,89 @@ function App() {
       </div>
 
       <div style={{ padding: 16, maxWidth: 1200, margin: '0 auto' }}>
+        {!loading && isAdmin && (unconfirmed.length > 0 || unmadeUp.length > 0) && (
+          <div
+            className="no-print"
+            style={{
+              display: 'flex',
+              gap: 9,
+              marginBottom: 14,
+              flexWrap: 'wrap',
+            }}
+          >
+            {unconfirmed.length > 0 && (
+              <button
+                onClick={() => setTab('unconfirmed')}
+                style={{
+                  flex: '1 1 240px',
+                  textAlign: 'left',
+                  cursor: 'pointer',
+                  border: `1px solid #F3AFBD`,
+                  background: '#FDECEF',
+                  borderRadius: 10,
+                  padding: '12px 15px',
+                }}
+              >
+                <div style={{ fontSize: 14, fontWeight: 700, color: C.danger }}>
+                  확인 안 된 수업 {unconfirmed.length}건
+                </div>
+                <div style={{ fontSize: 12, color: '#8A3550', marginTop: 2 }}>
+                  이 중에 결강이 있으면 보강 의무가 사라집니다
+                </div>
+              </button>
+            )}
+            {unmadeUp.length > 0 && (
+              <button
+                onClick={() => setTab('makeup')}
+                style={{
+                  flex: '1 1 240px',
+                  textAlign: 'left',
+                  cursor: 'pointer',
+                  border: `1px solid #F0D49B`,
+                  background: '#FEF6E7',
+                  borderRadius: 10,
+                  padding: '12px 15px',
+                }}
+              >
+                <div style={{ fontSize: 14, fontWeight: 700, color: '#8A5A00' }}>
+                  보강 안 한 수업 {unmadeUp.length}건
+                </div>
+                <div style={{ fontSize: 12, color: '#8A5A00', opacity: 0.8, marginTop: 2 }}>
+                  {(() => {
+                    const oldest = Math.max(...unmadeUp.map((u) => daysSince(u.d)))
+                    return `가장 오래된 건 ${oldest}일 지났습니다`
+                  })()}
+                </div>
+              </button>
+            )}
+          </div>
+        )}
+
         {loading && <Loading />}
 
+        {!loading && !isAdmin && unconfirmed.length > 0 && tab !== 'today' && (
+          <Card style={{ padding: 16, marginBottom: 14, border: `1px solid #F3AFBD`, background: '#FDECEF' }}>
+            <div style={{ fontSize: 14.5, fontWeight: 700, color: C.danger }}>
+              확인 안 한 수업이 {unconfirmed.length}건 있습니다
+            </div>
+            <div style={{ fontSize: 12.5, color: '#8A3550', marginTop: 4, lineHeight: 1.6 }}>
+              지나간 수업인데 아직 아무것도 안 누르셨어요. 결강이었다면 지금 알려주셔야 보강을 잡을 수
+              있습니다.
+            </div>
+            <Btn variant="primary" onClick={() => setTab('today')} style={{ marginTop: 11, padding: '10px 16px' }}>
+              지금 확인하기
+            </Btn>
+          </Card>
+        )}
+
         {!loading && tab === 'today' && (
-          <TodayView today={today} weekMinutes={weekMinutes} onMark={doMark} busy={busy} />
+          <TodayView
+            today={today}
+            unconfirmed={unconfirmed}
+            weekMinutes={weekMinutes}
+            onMark={doMark}
+            busy={busy}
+          />
         )}
 
         {!loading && tab === 'myclose' && (
@@ -2290,7 +3208,7 @@ function App() {
             {unmadeUp.length === 0 ? (
               <Empty>보강할 수업이 없습니다.</Empty>
             ) : (
-              unmadeUp.map((s) => (
+              [...unmadeUp].sort((a, b) => a.d.localeCompare(b.d)).map((s) => (
                 <div
                   key={s.id}
                   style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '11px 18px', borderBottom: `1px solid ${C.line2}`, flexWrap: 'wrap' }}
@@ -2301,6 +3219,11 @@ function App() {
                     {s.d.slice(5).replace('-', '/')} ({s.weekday}) {hhmm(s.start_time)}
                   </div>
                   <div style={{ fontSize: 12, color: C.sub, minWidth: 60 }}>{s.staff_name}</div>
+                  {(() => {
+                    const n = daysSince(s.d)
+                    const tone = n >= 30 ? 'pink' : n >= 14 ? 'amber' : 'gray'
+                    return <Pill tone={tone}>{n}일 지남</Pill>
+                  })()}
                   <div style={{ marginLeft: 'auto' }}>
                     <Btn variant="primary" disabled={busy} onClick={() => setMakeupFor(s)} style={{ padding: '6px 13px', fontSize: 12.5 }}>
                       보강 잡기
@@ -2315,10 +3238,38 @@ function App() {
         {!loading && tab === 'unconfirmed' && isAdmin && (
           <Card style={{ overflow: 'hidden' }}>
             <div style={{ padding: '14px 18px', borderBottom: `1px solid ${C.line2}` }}>
-              <div style={{ fontSize: 15, fontWeight: 700 }}>아무도 확인 안 한 수업 {unconfirmed.length}건</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <div style={{ fontSize: 15, fontWeight: 700 }}>아무도 확인 안 한 수업 {unconfirmed.length}건</div>
+                {unconfirmed.length > 0 && isAdmin && (
+                  <Btn
+                    style={{ marginLeft: 'auto', padding: '6px 12px', fontSize: 12.5 }}
+                    onClick={() => {
+                      const byT = {}
+                      unconfirmed.forEach((u) => {
+                        byT[u.staff_name] = (byT[u.staff_name] || 0) + 1
+                      })
+                      const lines = Object.entries(byT).map(([k, v]) => `· ${k} 선생님 — ${v}건`)
+                      const msg = `[검단ABA] 출결 확인 부탁드립니다\n\n아직 확인 안 된 수업이 있습니다.\n앱 > 주간 화면에서 확인해 주세요.\n\n${lines.join('\n')}`
+                      navigator.clipboard?.writeText(msg)
+                      say('복사됐습니다 — 단톡방에 붙여넣으세요')
+                    }}
+                  >
+                    확인 요청 문구 복사
+                  </Btn>
+                )}
+              </div>
               <div style={{ fontSize: 12, color: C.sub, marginTop: 3, lineHeight: 1.6 }}>
-                지나간 날짜인데 선생님이 아무것도 안 누른 회차입니다. 청구는 정상으로 나가지만, 이 중에 결강이
-                숨어 있으면 <b style={{ color: C.danger }}>보강 의무가 사라집니다.</b>
+                {isAdmin ? (
+                  <>
+                    지나간 날짜인데 선생님이 아무것도 안 누른 회차입니다. 청구는 정상으로 나가지만, 이 중에
+                    결강이 숨어 있으면 <b style={{ color: C.danger }}>보강 의무가 사라집니다.</b>
+                  </>
+                ) : (
+                  <>
+                    지나간 수업인데 아직 확인하지 않으셨어요. 정상 진행이면 <b>진행</b>, 빠졌으면{' '}
+                    <b style={{ color: C.danger }}>결강</b>을 눌러주세요. 다 채워야 마감을 제출할 수 있습니다.
+                  </>
+                )}
               </div>
             </div>
             {unconfirmed.length === 0 ? (
@@ -2383,22 +3334,92 @@ function App() {
         {!loading && tab === 'billing' && isAdmin && (
           <>
             <div className="no-print" style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 12, flexWrap: 'wrap' }}>
-              <input
-                value={ym}
-                onChange={(e) => setYm(e.target.value)}
-                placeholder="2026-09"
-                style={{ width: 108, fontSize: 13, padding: '7px 10px', border: '1px solid #DEE0E3', borderRadius: 7, fontWeight: 600 }}
-              />
-              <Btn disabled={busy} onClick={doGenerate}>
-                이 달 회차 생성
+              <Btn onClick={() => setYm(shiftYm(ym, -1))} style={{ padding: '6px 11px' }}>
+                ←
               </Btn>
+              <div style={{ fontSize: 15, fontWeight: 700, minWidth: 96, textAlign: 'center' }}>
+                {ym.replace('-', '년 ')}월
+              </div>
+              <Btn onClick={() => setYm(shiftYm(ym, 1))} style={{ padding: '6px 11px' }}>
+                →
+              </Btn>
+              {ym !== ymOf(new Date()) && (
+                <Btn onClick={() => setYm(ymOf(new Date()))} style={{ padding: '6px 11px' }}>
+                  이번 달
+                </Btn>
+              )}
+              <Btn disabled={busy} onClick={doGenerate} style={{ marginLeft: 6 }}>
+                회차 다시 만들기
+              </Btn>
+              {billing.length === 0 && !busy && (
+                <span style={{ fontSize: 12.5, color: C.danger, fontWeight: 600 }}>
+                  이 달 수업이 없습니다
+                </span>
+              )}
             </div>
             <BillingView
               ym={ym}
               lines={billing}
+              byStaff={byStaff}
+              payroll={payroll}
               receipts={receipts}
+              busy={busy}
               onOpenReceipt={setReceiptFor}
               onPrintAll={setPrintAll}
+              onDetail={(sid) => loadPayrollDetail(ym, sid)}
+              onSetRate={async (sid, rate) => {
+                setBusy(true)
+                try {
+                  await setPayRate(sid, rate)
+                  say('급여 비율을 저장했습니다')
+                  await reloadMonth()
+                } catch (e) {
+                  fail(e)
+                }
+                setBusy(false)
+              }}
+            />
+          </>
+        )}
+
+        {!loading && tab === 'payment' && isAdmin && (
+          <>
+            <div className="no-print" style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 12, flexWrap: 'wrap' }}>
+              <Btn onClick={() => setYm(shiftYm(ym, -1))} style={{ padding: '6px 11px' }}>←</Btn>
+              <div style={{ fontSize: 15, fontWeight: 700, minWidth: 96, textAlign: 'center' }}>
+                {ym.replace('-', '년 ')}월
+              </div>
+              <Btn onClick={() => setYm(shiftYm(ym, 1))} style={{ padding: '6px 11px' }}>→</Btn>
+            </div>
+            <PaymentView
+              ym={ym}
+              rows={payments}
+              revenue={revenue}
+              busy={busy}
+              say={say}
+              loadHistory={depositHistory}
+              onDeposit={async (sid, v) => {
+                setBusy(true)
+                try {
+                  await addDeposit(sid, v)
+                  say('입금을 기록했습니다')
+                  await reloadMonth()
+                } catch (e) {
+                  fail(e)
+                }
+                setBusy(false)
+              }}
+              onRemoveDeposit={async (id) => {
+                setBusy(true)
+                try {
+                  await removeDeposit(id)
+                  say('입금 기록을 지웠습니다')
+                  await reloadMonth()
+                } catch (e) {
+                  fail(e)
+                }
+                setBusy(false)
+              }}
             />
           </>
         )}
