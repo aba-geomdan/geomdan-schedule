@@ -868,7 +868,7 @@ function MyClosingView({ ym, summary, closing, onSubmit, busy }) {
               lineHeight: 1.6,
             }}
           >
-            보강이 아직 안 잡힌 결강이 {summary.unmade_up}건 있습니다. 원장님이 날짜를 잡아주실 거예요.
+            보강이 아직 안 잡힌 결강이 {summary.unmade_up}건 있습니다.
           </div>
         )}
 
