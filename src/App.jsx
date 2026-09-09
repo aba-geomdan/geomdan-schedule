@@ -177,6 +177,12 @@ async function loadClosings(ym) {
   return ok(await supabase.from('v_closing_status').select('*').eq('ym', ym))
 }
 
+// 선생님 본인 마감 현황 (마감 요청 전에도 실적이 보입니다)
+async function loadMyClosing(ym) {
+  const rows = ok(await supabase.rpc('my_closing', { p_ym: ym }))
+  return rows?.[0] || null
+}
+
 async function loadReceipts(ym) {
   return ok(await supabase.from('receipts').select('*').eq('ym', ym))
 }
@@ -787,7 +793,11 @@ function MyClosingView({ ym, summary, closing, onSubmit, busy }) {
       <Card style={{ padding: 18 }}>
         <div style={{ fontSize: 16, fontWeight: 700 }}>{ym.replace('-', '년 ')}월 마감</div>
         <div style={{ fontSize: 12.5, color: C.sub, marginTop: 4 }}>
-          {st === '요청' ? '원장님이 마감을 요청하셨습니다.' : '한 달 수업을 확인하고 제출하세요.'}
+          {st === '요청'
+            ? '원장님이 마감을 요청하셨습니다.'
+            : st === '진행중'
+              ? '이 달 실적입니다. 아직 마감 요청 전이에요.'
+              : '한 달 수업을 확인하고 제출하세요.'}
         </div>
 
         <div style={{ display: 'flex', gap: 10, margin: '16px 0', flexWrap: 'wrap' }}>
@@ -843,6 +853,22 @@ function MyClosingView({ ym, summary, closing, onSubmit, busy }) {
             }}
           >
             승인 완료. 이 달 출결은 더 이상 수정할 수 없습니다.
+          </div>
+        )}
+
+        {(summary?.unmade_up ?? 0) > 0 && (
+          <div
+            style={{
+              padding: '11px 13px',
+              background: '#FEF6E7',
+              borderRadius: 9,
+              fontSize: 12.5,
+              color: '#8A5A00',
+              marginBottom: 12,
+              lineHeight: 1.6,
+            }}
+          >
+            보강이 아직 안 잡힌 결강이 {summary.unmade_up}건 있습니다. 원장님이 날짜를 잡아주실 거예요.
           </div>
         )}
 
@@ -2797,6 +2823,7 @@ function App() {
   const [billing, setBilling] = useState([])
   const [byStaff, setByStaff] = useState([])
   const [payroll, setPayroll] = useState([])
+  const [myClose, setMyClose] = useState(null)
   const [payments, setPayments] = useState([])
   const [revenue, setRevenue] = useState([])
   const [closings, setClosings] = useState([])
@@ -2866,7 +2893,7 @@ function App() {
   }, [])
 
   const reloadMonth = useCallback(async () => {
-    const [b, bs, cl, r, pay, rev, pr] = await Promise.all([
+    const [b, bs, cl, r, pay, rev, pr, mc] = await Promise.all([
       isAdmin ? loadBilling(ym) : Promise.resolve([]),
       isAdmin ? loadBillingByStaff(ym) : Promise.resolve([]),
       loadClosings(ym),
@@ -2874,6 +2901,7 @@ function App() {
       isAdmin ? loadPayments(ym) : Promise.resolve([]),
       isAdmin ? loadRevenue() : Promise.resolve([]),
       isAdmin ? loadPayroll(ym) : Promise.resolve([]),
+      isAdmin ? Promise.resolve(null) : loadMyClosing(ym),
     ])
     setBilling(b)
     setByStaff(bs)
@@ -2882,6 +2910,7 @@ function App() {
     setPayments(pay)
     setRevenue(rev)
     setPayroll(pr)
+    setMyClose(mc)
   }, [ym, isAdmin])
 
   const reloadManage = useCallback(async () => {
@@ -2962,7 +2991,7 @@ function App() {
 
   const unpaidCount = useMemo(() => payments.filter((p) => p.balance > 0).length, [payments])
 
-  const myClosing = closings.find((c) => c.staff_name === me?.name)
+  const myClosing = myClose || closings.find((c) => c.staff_name === me?.name)
 
   const weekMinutes = useMemo(
     () =>
