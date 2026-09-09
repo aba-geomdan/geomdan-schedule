@@ -52,6 +52,13 @@ const defaultBillingYm = () => {
   return t.getDate() >= 20 ? shiftYm(cur, 1) : cur
 }
 
+// 마감 기준월: 매달 10일까지는 지난달을 기본으로 (지난달 마감을 처리하는 시기)
+const defaultClosingYm = () => {
+  const t = new Date()
+  const cur = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}`
+  return t.getDate() <= 10 ? shiftYm(cur, -1) : cur
+}
+
 const daysSince = (iso) =>
   Math.floor((Date.now() - new Date(iso + 'T00:00:00').getTime()) / 86400000)
 
@@ -707,6 +714,271 @@ function WeekGrid({ weekStart, sessions, holidays, colorOf, onPick, today }) {
 }
 
 
+/* ═════════════════ MonthView.jsx ═════════════════ */
+
+const DOT = {
+  진행: { bg: '#E1F5EE', bd: '#5DCAA5', fg: '#085041' },
+  미확인: { bg: '#FFFFFF', bd: '#DEE0E3', fg: '#9AA0A6' },
+  결강완: { bg: '#FAEEDA', bd: '#EF9F27', fg: '#633806' },
+  미보강: { bg: '#FBEAF0', bd: '#ED93B1', fg: '#72243E' },
+  보강: { bg: '#E6F1FB', bd: '#85B7EB', fg: '#0C447C' },
+  취소: { bg: '#F1EFE8', bd: '#D3D1C7', fg: '#5F5E5A' },
+}
+
+const toneOf = (s) => {
+  if (s.status === '결강') return s.needs_makeup ? DOT.미보강 : DOT.결강완
+  if (s.status === '보강') return DOT.보강
+  if (s.status === '취소') return DOT.취소
+  if (s.status === '진행' && !s.confirmed) return DOT.미확인
+  return DOT.진행
+}
+
+// 달력 기준 주차 (그 달 1일이 속한 주가 1주차, 일요일 시작)
+function weekIndex(iso) {
+  const d = new Date(iso + 'T00:00:00')
+  const first = new Date(d.getFullYear(), d.getMonth(), 1)
+  return Math.floor((d.getDate() + first.getDay() - 1) / 7)
+}
+
+function weekCount(ym) {
+  const [y, m] = ym.split('-').map(Number)
+  const first = new Date(y, m - 1, 1)
+  const days = new Date(y, m, 0).getDate()
+  return Math.ceil((days + first.getDay()) / 7)
+}
+
+function MonthView({
+  ym, sessions, onPrevYm, onNextYm, onMark, busy, isAdmin, staff, filter, onFilter, colorOf,
+}) {
+  const [open, setOpen] = useState(null)
+  const weeks = weekCount(ym)
+
+  const rows = useMemo(() => {
+    const m = {}
+    sessions.forEach((s) => {
+      if (!m[s.student_name])
+        m[s.student_name] = {
+          name: s.student_name,
+          program: s.program_label,
+          staffName: s.staff_name,
+          list: [],
+        }
+      m[s.student_name].list.push(s)
+    })
+    return Object.values(m)
+      .map((g) => {
+        const list = g.list.slice().sort((a, b) => a.d.localeCompare(b.d))
+        const byWeek = Array.from({ length: weeks }, () => [])
+        list.forEach((s) => {
+          const i = weekIndex(s.d)
+          if (byWeek[i]) byWeek[i].push(s)
+        })
+        const days = [...new Set(list.map((s) => s.weekday))]
+        return {
+          ...g,
+          list,
+          byWeek,
+          days: days.join('·'),
+          done: list.filter((x) => x.status === '진행' || x.status === '보강').length,
+          absent: list.filter((x) => x.status === '결강').length,
+          unmade: list.filter((x) => x.status === '결강' && x.needs_makeup).length,
+          minutes: list
+            .filter((x) => x.status === '진행' || x.status === '보강')
+            .reduce((a, b) => a + minutesBetween(b.start_time, b.end_time), 0),
+          total: list.filter((x) => x.status !== '취소').length,
+        }
+      })
+      .sort((a, b) => a.name.localeCompare(b.name, 'ko'))
+  }, [sessions, weeks])
+
+  const sum = useMemo(
+    () => ({
+      done: rows.reduce((a, b) => a + b.done, 0),
+      absent: rows.reduce((a, b) => a + b.absent, 0),
+      minutes: rows.reduce((a, b) => a + b.minutes, 0),
+    }),
+    [rows]
+  )
+
+  const colW = 32
+
+  return (
+    <div style={{ maxWidth: 560, margin: '0 auto' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+        <Btn onClick={onPrevYm} style={{ padding: '6px 12px' }}>←</Btn>
+        <div style={{ flex: 1, textAlign: 'center', fontSize: 15, fontWeight: 700 }}>
+          {ym.replace('-', '년 ')}월
+        </div>
+        <Btn onClick={onNextYm} style={{ padding: '6px 12px' }}>→</Btn>
+      </div>
+
+      {isAdmin && staff && (
+        <div style={{ display: 'flex', gap: 5, marginBottom: 12, flexWrap: 'wrap' }}>
+          <Btn
+            variant={!filter ? 'primary' : 'default'}
+            onClick={() => onFilter(null)}
+            style={{ padding: '5px 11px', fontSize: 12.5, borderRadius: 99 }}
+          >
+            전체
+          </Btn>
+          {staff.filter((x) => x.active).map((x) => (
+            <Btn
+              key={x.id}
+              onClick={() => onFilter(filter === x.name ? null : x.name)}
+              style={{
+                padding: '5px 11px', fontSize: 12.5, borderRadius: 99,
+                background: filter === x.name ? colorOf(x.name) : '#fff',
+                color: filter === x.name ? '#fff' : C.sub,
+                borderColor: filter === x.name ? colorOf(x.name) : '#E3E5E8',
+              }}
+            >
+              {x.name}
+            </Btn>
+          ))}
+        </div>
+      )}
+
+      <Card style={{ overflow: 'hidden' }}>
+        <div style={{ padding: '11px 14px', borderBottom: `1px solid ${C.line2}`, display: 'flex', gap: 18 }}>
+          <div>
+            <div style={{ fontSize: 11.5, color: C.sub }}>한 수업</div>
+            <div style={{ fontSize: 19, fontWeight: 700 }}>{sum.done}회</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 11.5, color: C.sub }}>결강</div>
+            <div style={{ fontSize: 19, fontWeight: 700, color: sum.absent ? C.danger : C.ink }}>
+              {sum.absent}회
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: 11.5, color: C.sub }}>시수</div>
+            <div style={{ fontSize: 19, fontWeight: 700 }}>{(sum.minutes / 60).toFixed(1)}h</div>
+          </div>
+        </div>
+
+        <div
+          style={{
+            display: 'flex', padding: '7px 14px', background: '#FBFBFC',
+            borderBottom: `1px solid ${C.line}`, fontSize: 11, color: C.sub,
+          }}
+        >
+          <span style={{ flex: 1, minWidth: 60 }}>아동</span>
+          {Array.from({ length: weeks }, (_, i) => (
+            <span key={i} style={{ width: colW, textAlign: 'center' }}>{i + 1}주</span>
+          ))}
+          <span style={{ width: 30, textAlign: 'right' }}>계</span>
+        </div>
+
+        {rows.length === 0 ? (
+          <Empty>이 달 수업이 없습니다.</Empty>
+        ) : (
+          rows.map((g) => {
+            const isOpen = open === g.name
+            return (
+              <div
+                key={g.name}
+                style={{ borderBottom: `1px solid ${C.line2}`, background: isOpen ? '#FDF6F8' : '#fff' }}
+              >
+                <button
+                  onClick={() => setOpen(isOpen ? null : g.name)}
+                  style={{
+                    width: '100%', display: 'flex', alignItems: 'center', gap: 0,
+                    padding: '10px 14px', border: 'none', background: 'none',
+                    cursor: 'pointer', fontSize: 13, textAlign: 'left', color: C.sub,
+                  }}
+                >
+                  <span style={{ flex: 1, minWidth: 60, color: C.ink, fontWeight: 700 }}>
+                    <span style={{ color: C.mut, marginRight: 5, fontSize: 11 }}>
+                      {isOpen ? '▾' : '▸'}
+                    </span>
+                    {g.name}
+                    {isAdmin && (
+                      <span style={{ color: C.mut, fontWeight: 400, fontSize: 11, marginLeft: 5 }}>
+                        {g.staffName}
+                      </span>
+                    )}
+                  </span>
+                  {g.byWeek.map((w, i) => {
+                    const n = w.filter((x) => x.status !== '취소').length
+                    const bad = w.some((x) => x.status === '결강')
+                    if (!n) return <span key={i} style={{ width: colW, textAlign: 'center', color: '#C9CCD1' }}>—</span>
+                    return (
+                      <span key={i} style={{ width: colW, textAlign: 'center' }}>
+                        <span
+                          style={{
+                            display: 'inline-block', width: 22, height: 22, lineHeight: '22px',
+                            borderRadius: 6, fontSize: 12,
+                            background: bad ? DOT.미보강.bg : 'transparent',
+                            color: bad ? DOT.미보강.fg : C.sub,
+                            fontWeight: bad ? 700 : 400,
+                          }}
+                        >
+                          {n}
+                        </span>
+                      </span>
+                    )
+                  })}
+                  <span style={{ width: 30, textAlign: 'right', color: C.ink, fontWeight: 700 }}>
+                    {g.total}
+                  </span>
+                </button>
+
+                {isOpen && (
+                  <div style={{ padding: '0 14px 12px' }}>
+                    <div style={{ fontSize: 11.5, color: C.sub, marginBottom: 7 }}>
+                      <span>{g.days} · {g.program}</span>
+                      {g.unmade > 0 && (
+                        <span style={{ color: '#8A5A00', marginLeft: 7 }}>· 미보강 {g.unmade}</span>
+                      )}
+                      <span style={{ marginLeft: 7 }}>· 날짜를 눌러 결강 처리</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                      {g.list.map((s) => {
+                        const c = toneOf(s)
+                        return (
+                          <button
+                            key={s.id}
+                            disabled={busy}
+                            title={`${s.d.slice(5)} (${s.weekday}) ${hhmm(s.start_time)} · ${s.status}`}
+                            onClick={() => onMark(s.id, s.status === '결강' ? '진행' : '결강')}
+                            style={{
+                              width: 34, height: 34, borderRadius: 8,
+                              border: `1px solid ${c.bd}`, background: c.bg, color: c.fg,
+                              fontSize: 12.5, fontWeight: 700, padding: 0,
+                              cursor: busy ? 'default' : 'pointer', position: 'relative',
+                            }}
+                          >
+                            {Number(s.d.slice(-2))}
+                            {s.status === '보강' && (
+                              <span style={{ position: 'absolute', top: -2, right: -2, fontSize: 9 }}>↻</span>
+                            )}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })
+        )}
+      </Card>
+
+      <div style={{ display: 'flex', gap: 12, marginTop: 11, flexWrap: 'wrap', fontSize: 11, color: C.sub }}>
+        {[['수업함', DOT.진행], ['미확인', DOT.미확인], ['결강', DOT.미보강], ['보강 완료', DOT.결강완], ['보강 수업', DOT.보강]].map(
+          ([l, c]) => (
+            <span key={l} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              <span style={{ width: 12, height: 12, borderRadius: 4, background: c.bg, border: `1px solid ${c.bd}` }} />
+              {l}
+            </span>
+          )
+        )}
+      </div>
+    </div>
+  )
+}
+
+
 /* ═════════════════ TeacherViews.jsx ═════════════════ */
 
 function TodayView({ today, weekMinutes, onMark, busy }) {
@@ -784,12 +1056,20 @@ function TodayView({ today, weekMinutes, onMark, busy }) {
   )
 }
 
-function MyClosingView({ ym, summary, closing, onSubmit, busy }) {
+function MyClosingView({ ym, summary, closing, onSubmit, onPrevYm, onNextYm, busy }) {
   const st = closing?.status
   const done = st === '제출' || st === '승인'
 
   return (
     <div style={{ maxWidth: 460, margin: '0 auto' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+        <Btn onClick={onPrevYm} style={{ padding: '6px 12px' }}>←</Btn>
+        <div style={{ flex: 1, textAlign: 'center', fontSize: 15, fontWeight: 700 }}>
+          {ym.replace('-', '년 ')}월
+        </div>
+        <Btn onClick={onNextYm} style={{ padding: '6px 12px' }}>→</Btn>
+      </div>
+
       <Card style={{ padding: 18 }}>
         <div style={{ fontSize: 16, fontWeight: 700 }}>{ym.replace('-', '년 ')}월 마감</div>
         <div style={{ fontSize: 12.5, color: C.sub, marginTop: 4 }}>
@@ -1458,7 +1738,7 @@ function ReceiptModal({ ym, student, receipt, onClose, onIssue, onUnlock, onSave
 }
 
 /* ---------------- 마감 ---------------- */
-function ClosingView({ ym, rows, staff, onRequest, onReview, busy }) {
+function ClosingView({ ym, rows, staff, onRequest, onReview, onPrevYm, onNextYm, busy }) {
   const [copied, setCopied] = useState(false)
   const map = Object.fromEntries(rows.map((r) => [r.staff_name, r]))
 
@@ -1479,7 +1759,11 @@ function ClosingView({ ym, rows, staff, onRequest, onReview, busy }) {
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
-        <div style={{ fontSize: 15, fontWeight: 700 }}>{ym.replace('-', '년 ')}월 마감</div>
+        <Btn onClick={onPrevYm} style={{ padding: '6px 11px' }}>←</Btn>
+        <div style={{ fontSize: 15, fontWeight: 700, minWidth: 96, textAlign: 'center' }}>
+          {ym.replace('-', '년 ')}월 마감
+        </div>
+        <Btn onClick={onNextYm} style={{ padding: '6px 11px' }}>→</Btn>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 7 }}>
           <Btn disabled={busy} onClick={() => onRequest(null)}>
             전원 마감 요청
@@ -2813,6 +3097,9 @@ function App() {
   const [tab, setTab] = useState('today')
   const [weekStart, setWeekStart] = useState(() => mondayOf(new Date()))
   const [ym, setYm] = useState(defaultBillingYm)
+  const [closeYm, setCloseYm] = useState(defaultClosingYm)
+  const [monthYm, setMonthYm] = useState(() => ymOf(new Date()))
+  const [monthSessions, setMonthSessions] = useState([])
   const [autoGen, setAutoGen] = useState(false)
 
   const [sessions, setSessions] = useState([])
@@ -2892,16 +3179,22 @@ function App() {
     setUnconfirmed(c)
   }, [])
 
+  const reloadMonthSessions = useCallback(async () => {
+    const [y, m] = monthYm.split('-').map(Number)
+    const last = new Date(y, m, 0).getDate()
+    setMonthSessions(await loadSessions(`${monthYm}-01`, `${monthYm}-${String(last).padStart(2, '0')}`))
+  }, [monthYm])
+
   const reloadMonth = useCallback(async () => {
     const [b, bs, cl, r, pay, rev, pr, mc] = await Promise.all([
       isAdmin ? loadBilling(ym) : Promise.resolve([]),
       isAdmin ? loadBillingByStaff(ym) : Promise.resolve([]),
-      loadClosings(ym),
+      loadClosings(closeYm),
       isAdmin ? loadReceipts(ym) : Promise.resolve([]),
       isAdmin ? loadPayments(ym) : Promise.resolve([]),
       isAdmin ? loadRevenue() : Promise.resolve([]),
       isAdmin ? loadPayroll(ym) : Promise.resolve([]),
-      isAdmin ? Promise.resolve(null) : loadMyClosing(ym),
+      isAdmin ? Promise.resolve(null) : loadMyClosing(closeYm),
     ])
     setBilling(b)
     setByStaff(bs)
@@ -2930,16 +3223,16 @@ function App() {
   const reloadAll = useCallback(async () => {
     setLoading(true)
     try {
-      await Promise.all([reloadWeek(), reloadCommon(), reloadMonth(), reloadManage()])
+      await Promise.all([reloadWeek(), reloadCommon(), reloadMonth(), reloadManage(), reloadMonthSessions()])
     } catch (e) {
       fail(e)
     }
     setLoading(false)
-  }, [reloadWeek, reloadCommon, reloadMonth, reloadManage])
+  }, [reloadWeek, reloadCommon, reloadMonth, reloadManage, reloadMonthSessions])
 
   useEffect(() => {
     if (session && staff.length) reloadAll()
-  }, [session, staff.length, weekStart, ym])
+  }, [session, staff.length, weekStart, ym, closeYm, monthYm])
 
   // 월초 결제 대비: 기준월 회차가 비어 있으면 자동으로 만들어 둡니다
   useEffect(() => {
@@ -2968,7 +3261,7 @@ function App() {
     try {
       if (isAdmin) await adminSetStatus(id, status)
       else await markAttendance(id, status)
-      await Promise.all([reloadWeek(), reloadCommon(), reloadMonth()])
+      await Promise.all([reloadWeek(), reloadCommon(), reloadMonth(), reloadMonthSessions()])
       setPick(null)
     } catch (e) {
       fail(e)
@@ -3013,8 +3306,9 @@ function App() {
 
   const tabs = [
     ...(isAdmin ? [] : [['today', '오늘']]),
+    ['month', '월간'],
     ['week', '주간'],
-    ['makeup', `보강 ${unmadeUp.length}`],
+    ...(isAdmin ? [['makeup', `보강 ${unmadeUp.length}`]] : []),
     ...(isAdmin
       ? [
           ['unconfirmed', `미확인 ${unconfirmed.length}`],
@@ -3131,16 +3425,34 @@ function App() {
           <TodayView today={today} weekMinutes={weekMinutes} onMark={doMark} busy={busy} />
         )}
 
+        {!loading && tab === 'month' && (
+          <MonthView
+            ym={monthYm}
+            staff={isAdmin ? staff : null}
+            filter={filter}
+            onFilter={setFilter}
+            colorOf={colorOf}
+            sessions={isAdmin && filter ? monthSessions.filter((x) => x.staff_name === filter) : monthSessions}
+            busy={busy}
+            isAdmin={isAdmin}
+            onPrevYm={() => setMonthYm(shiftYm(monthYm, -1))}
+            onNextYm={() => setMonthYm(shiftYm(monthYm, 1))}
+            onMark={doMark}
+          />
+        )}
+
         {!loading && tab === 'myclose' && (
           <MyClosingView
-            ym={ym}
+            ym={closeYm}
+            onPrevYm={() => setCloseYm(shiftYm(closeYm, -1))}
+            onNextYm={() => setCloseYm(shiftYm(closeYm, 1))}
             summary={myClosing}
             closing={myClosing}
             busy={busy}
             onSubmit={async () => {
               setBusy(true)
               try {
-                await submitClosing(ym)
+                await submitClosing(closeYm)
                 say('제출했습니다')
                 await reloadMonth()
               } catch (e) {
@@ -3344,14 +3656,16 @@ function App() {
 
         {!loading && tab === 'closing' && isAdmin && (
           <ClosingView
-            ym={ym}
+            ym={closeYm}
+            onPrevYm={() => setCloseYm(shiftYm(closeYm, -1))}
+            onNextYm={() => setCloseYm(shiftYm(closeYm, 1))}
             rows={closings}
             staff={staff}
             busy={busy}
             onRequest={async (sid) => {
               setBusy(true)
               try {
-                const n = await requestClosing(ym, sid)
+                const n = await requestClosing(closeYm, sid)
                 say(`${n}명에게 요청했습니다`)
                 await reloadMonth()
               } catch (e) {
@@ -3362,7 +3676,7 @@ function App() {
             onReview={async (sid, approve, reason) => {
               setBusy(true)
               try {
-                await reviewClosing(ym, sid, approve, reason)
+                await reviewClosing(closeYm, sid, approve, reason)
                 say(approve ? '승인했습니다' : '반려했습니다')
                 await reloadMonth()
               } catch (e) {
