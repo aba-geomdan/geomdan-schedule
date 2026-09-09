@@ -273,6 +273,24 @@ async function saveStudent(id, v) {
   return ok(await supabase.from('students').insert(v))
 }
 
+async function updateTemplate(id, v) {
+  return ok(
+    await supabase.rpc('update_template', {
+      p_id: id,
+      p_staff: v.staff_id,
+      p_program: v.program_code,
+      p_weekday: v.weekday,
+      p_start: v.start_time,
+      p_end: v.end_time,
+      p_valid_from: v.valid_from,
+    })
+  )
+}
+
+async function removeStudent(id) {
+  return ok(await supabase.rpc('remove_student', { p_id: id }))
+}
+
 async function saveTemplate(v) {
   return ok(await supabase.from('schedule_templates').insert(v))
 }
@@ -685,7 +703,7 @@ function WeekGrid({ weekStart, sessions, holidays, colorOf, onPick, today }) {
 
 /* ═════════════════ TeacherViews.jsx ═════════════════ */
 
-function TodayView({ today, unconfirmed, weekMinutes, onMark, busy }) {
+function TodayView({ today, weekMinutes, onMark, busy }) {
   return (
     <div style={{ maxWidth: 460, margin: '0 auto' }}>
       <div style={{ display: 'flex', gap: 10, marginBottom: 14 }}>
@@ -701,42 +719,10 @@ function TodayView({ today, unconfirmed, weekMinutes, onMark, busy }) {
         </Card>
       </div>
 
-      {unconfirmed.length > 0 && (
-        <Card style={{ overflow: 'hidden', marginBottom: 16, border: `1px solid #F3AFBD` }}>
-          <div style={{ padding: '12px 15px', background: '#FDECEF', borderBottom: `1px solid #F3AFBD` }}>
-            <div style={{ fontSize: 14.5, fontWeight: 700, color: C.danger }}>
-              확인 안 한 지난 수업 {unconfirmed.length}건
-            </div>
-            <div style={{ fontSize: 12, color: '#8A3550', marginTop: 3, lineHeight: 1.6 }}>
-              결강이었다면 지금 알려주셔야 보강을 잡을 수 있어요. 다 채워야 마감을 제출할 수 있습니다.
-            </div>
-          </div>
-          {unconfirmed.map((s) => (
-            <div
-              key={s.id}
-              style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '11px 15px', borderBottom: `1px solid ${C.line2}`, flexWrap: 'wrap' }}
-            >
-              <div style={{ fontSize: 12, color: C.sub, minWidth: 92 }}>
-                {s.d.slice(5).replace('-', '/')} ({s.weekday}) {hhmm(s.start_time)}
-              </div>
-              <div style={{ fontSize: 14.5, fontWeight: 700, flex: 1 }}>{s.student_name}</div>
-              <div style={{ display: 'flex', gap: 6 }}>
-                <Btn variant="ok" disabled={busy} onClick={() => onMark(s.id, '진행')} style={{ padding: '6px 13px', fontSize: 12.5 }}>
-                  진행
-                </Btn>
-                <Btn variant="danger" disabled={busy} onClick={() => onMark(s.id, '결강')} style={{ padding: '6px 13px', fontSize: 12.5 }}>
-                  결강
-                </Btn>
-              </div>
-            </div>
-          ))}
-        </Card>
-      )}
-
-      <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 8 }}>오늘 수업</div>
+      <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 6 }}>오늘 수업</div>
       <div style={{ fontSize: 12.5, color: C.sub, marginBottom: 9, lineHeight: 1.6 }}>
-        정상 진행됐으면 아무것도 안 하셔도 됩니다.{' '}
-        <b style={{ color: C.danger }}>결강이나 취소일 때만</b> 눌러주세요.
+        <b style={{ color: C.danger }}>아이가 안 온 수업만</b> 눌러주세요. 정상 진행한 수업은 따로 누르지
+        않아도 됩니다.
       </div>
 
       <Card style={{ overflow: 'hidden' }}>
@@ -773,21 +759,15 @@ function TodayView({ today, unconfirmed, weekMinutes, onMark, busy }) {
                     </span>
                   )}
                 </div>
-                <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
-                  {['결강', '취소'].map((k) => {
-                    const on = s.status === k
-                    return (
-                      <Btn
-                        key={k}
-                        disabled={busy}
-                        variant={on ? 'primary' : 'default'}
-                        onClick={() => onMark(s.id, on ? '진행' : k)}
-                        style={{ flex: 1, padding: '10px 0' }}
-                      >
-                        {on ? `${k} 취소하기` : k}
-                      </Btn>
-                    )
-                  })}
+                <div style={{ marginTop: 10 }}>
+                  <Btn
+                    disabled={busy}
+                    variant={s.status === '결강' ? 'primary' : 'default'}
+                    onClick={() => onMark(s.id, s.status === '결강' ? '진행' : '결강')}
+                    style={{ width: '100%', padding: '10px 0' }}
+                  >
+                    {s.status === '결강' ? '결강 취소하기' : '결강'}
+                  </Btn>
                 </div>
               </div>
             )
@@ -799,7 +779,6 @@ function TodayView({ today, unconfirmed, weekMinutes, onMark, busy }) {
 }
 
 function MyClosingView({ ym, summary, closing, onSubmit, busy }) {
-  const blocked = (summary?.unconfirmed || 0) > 0
   const st = closing?.status
   const done = st === '제출' || st === '승인'
 
@@ -817,26 +796,8 @@ function MyClosingView({ ym, summary, closing, onSubmit, busy }) {
         </div>
         <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
           <Stat label="시수" value={`${((summary?.total_minutes ?? 0) / 60).toFixed(1)}h`} />
-          <Stat label="취소" value={`${summary?.cancel_count ?? 0}건`} />
+          <Stat label="보강" value={`${summary?.makeup_count ?? 0}건`} />
         </div>
-
-        {blocked && (
-          <div
-            style={{
-              padding: '11px 13px',
-              background: '#FDECEF',
-              borderRadius: 9,
-              fontSize: 12.5,
-              color: C.danger,
-              fontWeight: 600,
-              marginBottom: 12,
-              lineHeight: 1.6,
-            }}
-          >
-            아직 확인 안 한 수업이 {summary.unconfirmed}건 있습니다. <b>할 일</b> 탭에서 모두 확인해야 제출할
-            수 있어요.
-          </div>
-        )}
 
         {st === '제출' && (
           <div
@@ -887,7 +848,7 @@ function MyClosingView({ ym, summary, closing, onSubmit, busy }) {
 
         <Btn
           variant="primary"
-          disabled={blocked || done || busy}
+          disabled={done || busy}
           onClick={onSubmit}
           style={{ width: '100%', padding: '13px 0', fontSize: 15 }}
         >
@@ -1801,18 +1762,27 @@ function StudentsView({
   busy,
   onSaveStudent,
   onSaveTemplate,
+  onUpdateTemplate,
   onEndTemplate,
+  onRemoveStudent,
 }) {
   const [editing, setEditing] = useState(null) // student or 'new'
   const [adding, setAdding] = useState(null) // student for new template
   const [byStaff, setByStaff] = useState(false)
+  const [editingTmpl, setEditingTmpl] = useState(null)
+  const [showLeft, setShowLeft] = useState(false)
 
   const tmplOf = (sid) => templates.filter((t) => t.student_id === sid && !t.valid_to)
 
+  const visible = useMemo(
+    () => (showLeft ? students : students.filter((s) => s.status === '재원')),
+    [students, showLeft]
+  )
+
   const groups = useMemo(() => {
-    if (!byStaff) return [{ name: null, list: students }]
+    if (!byStaff) return [{ name: null, list: visible }]
     const m = {}
-    students.forEach((s) => {
+    visible.forEach((s) => {
       const key = s.main_staff_id || '_'
       if (!m[key]) m[key] = []
       m[key].push(s)
@@ -1822,7 +1792,7 @@ function StudentsView({
       .map((t) => ({ name: t.name, list: m[t.id] || [] }))
       .filter((g) => g.list.length)
       .concat(m['_'] ? [{ name: '담당 미지정', list: m['_'] }] : [])
-  }, [students, staff, byStaff])
+  }, [visible, staff, byStaff])
 
   return (
     <div>
@@ -1847,7 +1817,10 @@ function StudentsView({
             </button>
           ))}
         </div>
-        <Btn variant="primary" style={{ marginLeft: 'auto' }} onClick={() => setEditing('new')}>
+        <Btn onClick={() => setShowLeft(!showLeft)} style={{ marginLeft: 'auto', padding: '6px 12px', fontSize: 12.5 }}>
+          {showLeft ? '재원만 보기' : '퇴소 포함'}
+        </Btn>
+        <Btn variant="primary" onClick={() => setEditing('new')}>
           새 아동 등록
         </Btn>
       </div>
@@ -1877,6 +1850,22 @@ function StudentsView({
                   <Btn onClick={() => setEditing(s)} style={{ padding: '5px 11px', fontSize: 12 }}>
                     수정
                   </Btn>
+                  <Btn
+                    disabled={busy}
+                    onClick={() => {
+                      if (
+                        confirm(
+                          `${s.name} 아동을 삭제할까요?\n\n` +
+                            `· 수업 기록이 없으면 완전히 지워집니다\n` +
+                            `· 기록이 있으면 퇴소 처리되고, 지난 영수증은 남습니다`
+                        )
+                      )
+                        onRemoveStudent(s.id)
+                    }}
+                    style={{ padding: '5px 11px', fontSize: 12, color: C.danger, borderColor: '#F3AFBD' }}
+                  >
+                    삭제
+                  </Btn>
                 </div>
               </div>
               <div style={{ marginTop: 8, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -1897,11 +1886,19 @@ function StudentsView({
                       gap: 7,
                     }}
                   >
-                    {DOW[t.weekday]} {hhmm(t.start_time)}
-                    <span style={{ color: C.mut }}>
-                      {staff.find((x) => x.id === t.staff_id)?.name} ·{' '}
-                      {programs.find((p) => p.code === t.program_code)?.label}
-                    </span>
+                    <button
+                      onClick={() => setEditingTmpl({ tmpl: t, student: s })}
+                      style={{ border: 'none', background: 'none', padding: 0, font: 'inherit', cursor: 'pointer', color: C.ink }}
+                      title="눌러서 수정"
+                    >
+                      <span style={{ fontWeight: 600 }}>
+                        {DOW[t.weekday]} {hhmm(t.start_time)}
+                      </span>
+                      <span style={{ color: C.mut, marginLeft: 6 }}>
+                        {staff.find((x) => x.id === t.staff_id)?.name} ·{' '}
+                        {programs.find((p) => p.code === t.program_code)?.label}
+                      </span>
+                    </button>
                     <button
                       onClick={() => {
                         if (
@@ -1936,6 +1933,21 @@ function StudentsView({
           onSave={(v) => {
             onSaveStudent(editing === 'new' ? null : editing.id, v)
             setEditing(null)
+          }}
+        />
+      )}
+
+      {editingTmpl && (
+        <TemplateModal
+          student={editingTmpl.student}
+          tmpl={editingTmpl.tmpl}
+          staff={staff}
+          programs={programs}
+          busy={busy}
+          onClose={() => setEditingTmpl(null)}
+          onSave={(v) => {
+            onUpdateTemplate(editingTmpl.tmpl.id, v)
+            setEditingTmpl(null)
           }}
         />
       )}
@@ -2014,15 +2026,20 @@ function StudentModal({ student, staff, onClose, onSave, busy }) {
   )
 }
 
-function TemplateModal({ student, staff, programs, onClose, onSave, busy }) {
-  const [staffId, setStaffId] = useState(student.main_staff_id || staff[0]?.id || '')
-  const [pcode, setPcode] = useState(programs[0]?.code || '')
-  const [wd, setWd] = useState(1)
-  const [start, setStart] = useState('16:00')
-  const [from, setFrom] = useState(isoOf(new Date()))
+function TemplateModal({ student, tmpl, staff, programs, onClose, onSave, busy }) {
+  const edit = !!tmpl
+  const [staffId, setStaffId] = useState(tmpl?.staff_id || student.main_staff_id || staff[0]?.id || '')
+  const [pcode, setPcode] = useState(tmpl?.program_code || programs[0]?.code || '')
+  const [wd, setWd] = useState(tmpl?.weekday ?? 1)
+  const [start, setStart] = useState(tmpl ? hhmm(tmpl.start_time) : '16:00')
+  const [from, setFrom] = useState(tmpl?.valid_from || isoOf(new Date()))
+  // 수정할 때는 원래 수업 길이를 유지합니다 (100분인데 프로그램 기본이 50분인 경우 대비)
+  const [custom, setCustom] = useState(
+    tmpl ? minutesBetween(tmpl.start_time, tmpl.end_time) : null
+  )
 
   const prog = programs.find((p) => p.code === pcode)
-  const mins = prog?.minutes || 50
+  const mins = custom ?? prog?.minutes ?? 50
   const end = useMemo(() => {
     const [h, m] = start.split(':').map(Number)
     const t = h * 60 + m + mins
@@ -2032,7 +2049,7 @@ function TemplateModal({ student, staff, programs, onClose, onSave, busy }) {
   return (
     <Modal onClose={onClose} max={370}>
       <div style={{ padding: '16px 18px', borderBottom: `1px solid ${C.line2}` }}>
-        <div style={{ fontSize: 17, fontWeight: 700 }}>수업 추가</div>
+        <div style={{ fontSize: 17, fontWeight: 700 }}>{edit ? '수업 수정' : '수업 추가'}</div>
         <div style={{ fontSize: 12.5, color: C.sub, marginTop: 3 }}>{student.name}</div>
       </div>
       <div style={{ padding: 18 }}>
@@ -2068,10 +2085,25 @@ function TemplateModal({ student, staff, programs, onClose, onSave, busy }) {
             ))}
           </div>
         </Field>
-        <Field label={`시작 시각 (${mins}분 수업)`}>
+        <Field label="시작 시각">
           <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-            <input type="time" step={600} value={start} onChange={(e) => setStart(e.target.value)} style={{ ...inp, width: 'auto' }} />
+            <input type="time" step={300} value={start} onChange={(e) => setStart(e.target.value)} style={{ ...inp, width: 'auto' }} />
             <span style={{ fontSize: 13, color: C.sub }}>~ {end}</span>
+          </div>
+        </Field>
+
+        <Field label="수업 길이">
+          <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+            {[50, 60, 100, 120, 150].map((n) => (
+              <Btn
+                key={n}
+                variant={mins === n ? 'primary' : 'default'}
+                onClick={() => setCustom(n)}
+                style={{ flex: 1, padding: '9px 0', fontSize: 13, minWidth: 52 }}
+              >
+                {n}분
+              </Btn>
+            ))}
           </div>
         </Field>
         <Field label="시작일 (이 날짜부터 적용)">
@@ -2079,7 +2111,9 @@ function TemplateModal({ student, staff, programs, onClose, onSave, busy }) {
         </Field>
 
         <div style={{ fontSize: 12, color: C.sub, marginBottom: 12, lineHeight: 1.6 }}>
-          저장한 뒤 정산 탭에서 <b>회차 생성</b>을 눌러야 실제 수업이 만들어집니다.
+          {edit
+            ? '저장한 뒤 정산 탭에서 회차 생성을 누르면 반영됩니다. 이미 출결을 찍은 회차는 바뀌지 않습니다.'
+            : '저장한 뒤 정산 탭에서 회차 생성을 눌러야 실제 수업이 만들어집니다.'}
         </div>
 
         <div style={{ display: 'flex', gap: 7 }}>
@@ -2949,7 +2983,7 @@ function App() {
   if (!session) return <Login onDone={() => {}} say={say} />
 
   const tabs = [
-    ...(isAdmin ? [] : [['today', `할 일${unconfirmed.length ? ` ${unconfirmed.length}` : ''}`]]),
+    ...(isAdmin ? [] : [['today', '오늘']]),
     ['week', '주간'],
     ['makeup', `보강 ${unmadeUp.length}`],
     ...(isAdmin
@@ -3064,29 +3098,8 @@ function App() {
 
         {loading && <Loading />}
 
-        {!loading && !isAdmin && unconfirmed.length > 0 && tab !== 'today' && (
-          <Card style={{ padding: 16, marginBottom: 14, border: `1px solid #F3AFBD`, background: '#FDECEF' }}>
-            <div style={{ fontSize: 14.5, fontWeight: 700, color: C.danger }}>
-              확인 안 한 수업이 {unconfirmed.length}건 있습니다
-            </div>
-            <div style={{ fontSize: 12.5, color: '#8A3550', marginTop: 4, lineHeight: 1.6 }}>
-              지나간 수업인데 아직 아무것도 안 누르셨어요. 결강이었다면 지금 알려주셔야 보강을 잡을 수
-              있습니다.
-            </div>
-            <Btn variant="primary" onClick={() => setTab('today')} style={{ marginTop: 11, padding: '10px 16px' }}>
-              지금 확인하기
-            </Btn>
-          </Card>
-        )}
-
         {!loading && tab === 'today' && (
-          <TodayView
-            today={today}
-            unconfirmed={unconfirmed}
-            weekMinutes={weekMinutes}
-            onMark={doMark}
-            busy={busy}
-          />
+          <TodayView today={today} weekMinutes={weekMinutes} onMark={doMark} busy={busy} />
         )}
 
         {!loading && tab === 'myclose' && (
@@ -3448,6 +3461,28 @@ function App() {
                 await saveTemplate(v)
                 say('수업을 추가했습니다. 정산 탭에서 회차 생성을 눌러주세요')
                 await reloadManage()
+              } catch (e) {
+                fail(e)
+              }
+              setBusy(false)
+            }}
+            onRemoveStudent={async (id) => {
+              setBusy(true)
+              try {
+                const msg = await removeStudent(id)
+                say(msg || '삭제했습니다')
+                await reloadAll()
+              } catch (e) {
+                fail(e)
+              }
+              setBusy(false)
+            }}
+            onUpdateTemplate={async (id, v) => {
+              setBusy(true)
+              try {
+                const msg = await updateTemplate(id, v)
+                say(msg || '수정했습니다')
+                await reloadAll()
               } catch (e) {
                 fail(e)
               }
