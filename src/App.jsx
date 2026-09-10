@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react'
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import ReactDOM from 'react-dom/client'
 import { createPortal } from 'react-dom'
 import { createClient } from '@supabase/supabase-js'
@@ -121,10 +121,6 @@ async function loadUnmadeUp() {
   return ok(await supabase.from('v_unmade_up').select('*'))
 }
 
-async function loadUnconfirmed() {
-  return ok(await supabase.from('v_unconfirmed').select('*'))
-}
-
 async function loadStudents() {
   return ok(
     await supabase.from('students').select('*').order('sort_order')
@@ -230,6 +226,23 @@ async function createMakeup(absent, { d, start_time, end_time }) {
   )
 }
 
+// 수업 한 회차 직접 추가 (지난 결강 기록 / 보강 등록)
+async function addSession(v) {
+  return ok(
+    await supabase.rpc('add_session', {
+      p_student: v.student_id,
+      p_staff: v.staff_id,
+      p_program: v.program_code,
+      p_date: v.d,
+      p_start: v.start_time,
+      p_end: v.end_time,
+      p_status: v.status,
+      p_makeup_for: v.makeup_for ?? null,
+      p_note: v.note ?? null,
+    })
+  )
+}
+
 async function generateMonth(ym) {
   return ok(await supabase.rpc('generate_sessions', { p_ym: ym }))
 }
@@ -315,12 +328,27 @@ async function endTemplate(id) {
   return ok(await supabase.rpc('remove_template', { p_id: id }))
 }
 
-async function addHoliday(d, label) {
-  return ok(await supabase.from('holidays').upsert({ d, label }))
+async function loadLeaves() {
+  return ok(await supabase.from('v_leaves').select('*'))
 }
 
-async function removeHoliday(d) {
-  return ok(await supabase.from('holidays').delete().eq('d', d))
+async function addLeave({ d, label, staffId, mode }) {
+  return ok(
+    await supabase.rpc('add_leave', {
+      p_date: d,
+      p_label: label || null,
+      p_staff: staffId || null,
+      p_mode: mode || '취소',
+    })
+  )
+}
+
+async function seedHolidays(list) {
+  return ok(await supabase.rpc('seed_holidays', { p_list: list }))
+}
+
+async function removeLeave(id) {
+  return ok(await supabase.rpc('remove_leave', { p_id: id }))
 }
 
 
@@ -341,7 +369,6 @@ const C = {
 
 const STATUS = {
   진행: { bg: '#EDF7F1', bd: '#BFE3CE', fg: '#1F5B3A' },
-  미확인: { bg: '#FFFFFF', bd: '#E3E5E8', fg: '#6B7280' },
   결강완: { bg: '#FEF6E7', bd: '#F0D49B', fg: '#8A5A00' },
   미보강: { bg: '#FDECEF', bd: '#F3AFBD', fg: '#AE2340' },
   보강: { bg: '#EEF3FD', bd: '#C3D4F2', fg: '#254B8C' },
@@ -352,8 +379,7 @@ const TEACHER_COLORS = ['#D4728A', '#4A7FD4', '#2E9E8F', '#9B72C4', '#C98A3A', '
 
 function styleOf(s) {
   if (s.status === '결강') return s.needs_makeup ? STATUS.미보강 : STATUS.결강완
-  if (s.status === '진행' && !s.confirmed) return STATUS.미확인
-  return STATUS[s.status] || STATUS.미확인
+  return STATUS[s.status] || STATUS.진행
 }
 
 function Card({ children, style, ...p }) {
@@ -718,7 +744,6 @@ function WeekGrid({ weekStart, sessions, holidays, colorOf, onPick, today }) {
 
 const DOT = {
   진행: { bg: '#E1F5EE', bd: '#5DCAA5', fg: '#085041' },
-  미확인: { bg: '#FFFFFF', bd: '#DEE0E3', fg: '#9AA0A6' },
   결강완: { bg: '#FAEEDA', bd: '#EF9F27', fg: '#633806' },
   미보강: { bg: '#FBEAF0', bd: '#ED93B1', fg: '#72243E' },
   보강: { bg: '#E6F1FB', bd: '#85B7EB', fg: '#0C447C' },
@@ -729,7 +754,6 @@ const toneOf = (s) => {
   if (s.status === '결강') return s.needs_makeup ? DOT.미보강 : DOT.결강완
   if (s.status === '보강') return DOT.보강
   if (s.status === '취소') return DOT.취소
-  if (s.status === '진행' && !s.confirmed) return DOT.미확인
   return DOT.진행
 }
 
@@ -965,7 +989,7 @@ function MonthView({
       </Card>
 
       <div style={{ display: 'flex', gap: 12, marginTop: 11, flexWrap: 'wrap', fontSize: 11, color: C.sub }}>
-        {[['수업함', DOT.진행], ['미확인', DOT.미확인], ['결강', DOT.미보강], ['보강 완료', DOT.결강완], ['보강 수업', DOT.보강]].map(
+        {[['수업함', DOT.진행], ['결강', DOT.미보강], ['보강 완료', DOT.결강완], ['보강 수업', DOT.보강], ['취소', DOT.취소]].map(
           ([l, c]) => (
             <span key={l} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
               <span style={{ width: 12, height: 12, borderRadius: 4, background: c.bg, border: `1px solid ${c.bd}` }} />
@@ -1008,7 +1032,7 @@ function TodayView({ today, weekMinutes, onMark, busy }) {
           <Empty>오늘 수업이 없습니다.</Empty>
         ) : (
           today.map((s) => {
-            const st = STATUS[s.status] || STATUS.미확인
+            const st = STATUS[s.status] || STATUS.진행
             return (
               <div key={s.id} style={{ padding: '13px 15px', borderBottom: `1px solid ${C.line2}` }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -1747,8 +1771,7 @@ function ClosingView({ ym, rows, staff, onRequest, onReview, onPrevYm, onNextYm,
       .filter((s) => s.active)
       .map((s) => {
         const r = map[s.name]
-        const u = r?.unconfirmed ?? 0
-        return `· ${s.name} 선생님 — 미확인 ${u}건`
+        return `· ${s.name} 선생님 — ${r?.total_count ?? 0}회 · 결강 ${r?.absent_count ?? 0}`
       })
     const msg = `[검단ABA] ${ym.replace('-', '년 ')}월 마감 요청\n\n출결 확인 부탁드립니다.\n앱 > 마감 탭에서 제출해 주세요.\n\n${lines.join('\n')}\n\n확인 안 된 수업이 있으면 제출이 안 됩니다.`
     navigator.clipboard?.writeText(msg)
@@ -1776,12 +1799,12 @@ function ClosingView({ ym, rows, staff, onRequest, onReview, onPrevYm, onNextYm,
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 640 }}>
           <thead>
             <tr style={{ background: '#FBFBFC', color: C.sub }}>
-              {['선생님', '상태', '회차', '결강', '시수', '미확인', '미보강', ''].map((h, i) => (
+              {['선생님', '상태', '회차', '결강', '시수', '미보강', ''].map((h, i) => (
                 <th
                   key={i}
                   style={{
                     padding: '9px 12px',
-                    textAlign: i >= 2 && i <= 6 ? 'right' : 'left',
+                    textAlign: i >= 2 && i <= 5 ? 'right' : 'left',
                     fontWeight: 600,
                     borderBottom: `1px solid ${C.line}`,
                     whiteSpace: 'nowrap',
@@ -1810,16 +1833,6 @@ function ClosingView({ ym, rows, staff, onRequest, onReview, onPrevYm, onNextYm,
                     <td style={{ padding: '9px 12px', textAlign: 'right' }}>{r?.absent_count ?? '—'}</td>
                     <td style={{ padding: '9px 12px', textAlign: 'right' }}>
                       {r?.total_minutes != null ? `${(r.total_minutes / 60).toFixed(1)}h` : '—'}
-                    </td>
-                    <td
-                      style={{
-                        padding: '9px 12px',
-                        textAlign: 'right',
-                        color: r?.unconfirmed ? C.danger : '#C9CCD1',
-                        fontWeight: r?.unconfirmed ? 700 : 400,
-                      }}
-                    >
-                      {r?.unconfirmed || '—'}
                     </td>
                     <td
                       style={{
@@ -1885,180 +1898,209 @@ function ClosingView({ ym, rows, staff, onRequest, onReview, onPrevYm, onNextYm,
 
 const DOW = ['일', '월', '화', '수', '목', '금', '토']
 
-/* ================= 보강 날짜 잡기 ================= */
-function MakeupModal({ absent, staffId, onClose, onSave, busy }) {
-  const [date, setDate] = useState('')
-  const [start, setStart] = useState(hhmm(absent.start_time))
-  const [conflicts, setConflicts] = useState([])
-  const [checking, setChecking] = useState(false)
-
-  const mins = minutesBetween(absent.start_time, absent.end_time)
-  const end = useMemo(() => {
-    if (!start) return ''
-    const [h, m] = start.split(':').map(Number)
-    const t = h * 60 + m + mins
-    return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`
-  }, [start, mins])
-
-  // 그날 담당 선생님 일정을 불러와 겹치는지 미리 확인
-  useEffect(() => {
-    if (!date) {
-      setConflicts([])
-      return
-    }
-    let alive = true
-    setChecking(true)
-    loadSessions(date, date)
-      .then((rows) => {
-        if (!alive) return
-        const mine = rows.filter((r) => r.staff_id === (staffId || absent.staff_id) && r.status !== '취소')
-        const a = start
-        const b = end
-        setConflicts(mine.filter((r) => a < hhmm(r.end_time) && b > hhmm(r.start_time)))
-        setChecking(false)
-      })
-      .catch(() => setChecking(false))
-    return () => {
-      alive = false
-    }
-  }, [date, start, end, staffId, absent.staff_id])
-
-  const bad = conflicts.length > 0
-  const dow = date ? DOW[new Date(date + 'T00:00:00').getDay()] : ''
-
-  return (
-    <Modal onClose={onClose} max={400}>
-      <div style={{ padding: '16px 18px', borderBottom: `1px solid ${C.line2}` }}>
-        <div style={{ fontSize: 18, fontWeight: 700 }}>보강 날짜 잡기</div>
-        <div style={{ fontSize: 12.5, color: C.sub, marginTop: 4 }}>
-          {absent.student_name} · {absent.d.slice(5).replace('-', '/')} 결강분 · {mins}분
-        </div>
-      </div>
-
-      <div style={{ padding: 18 }}>
-        <div style={{ fontSize: 12, color: C.sub, marginBottom: 6 }}>보강할 날짜</div>
-        <input
-          type="date"
-          value={date}
-          min={absent.d}
-          onChange={(e) => setDate(e.target.value)}
-          style={{ width: '100%', fontSize: 14, padding: '10px 11px', border: '1px solid #DEE0E3', borderRadius: 8 }}
-        />
-        {dow && <div style={{ fontSize: 11.5, color: C.mut, marginTop: 5 }}>{dow}요일</div>}
-
-        <div style={{ fontSize: 12, color: C.sub, margin: '14px 0 6px' }}>시작 시각</div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-          <input
-            type="time"
-            value={start}
-            step={600}
-            onChange={(e) => setStart(e.target.value)}
-            style={{ fontSize: 14, padding: '10px 11px', border: '1px solid #DEE0E3', borderRadius: 8 }}
-          />
-          <span style={{ fontSize: 13, color: C.sub }}>~ {end || '—'}</span>
-        </div>
-
-        {date && (
-          <div
-            style={{
-              marginTop: 14,
-              padding: '11px 13px',
-              borderRadius: 9,
-              background: bad ? '#FDECEF' : '#EDF7F1',
-              fontSize: 12.5,
-              lineHeight: 1.65,
-              color: bad ? C.danger : '#1F5B3A',
-              fontWeight: 600,
-            }}
-          >
-            {checking
-              ? '확인 중…'
-              : bad
-                ? `${absent.staff_name} 선생님이 그 시간에 수업이 있습니다 — ${conflicts
-                    .map((c) => `${c.student_name} ${hhmm(c.start_time)}`)
-                    .join(', ')}`
-                : '그 시간은 비어 있습니다.'}
-          </div>
-        )}
-
-        <div style={{ display: 'flex', gap: 7, marginTop: 16 }}>
-          <Btn
-            variant="primary"
-            disabled={!date || !start || bad || busy || checking}
-            onClick={() => onSave({ d: date, start_time: start, end_time: end })}
-            style={{ flex: 1, padding: '12px 0', fontSize: 14.5 }}
-          >
-            보강 등록
-          </Btn>
-          <Btn onClick={onClose} style={{ flex: 1, padding: '12px 0' }}>
-            취소
-          </Btn>
-        </div>
-      </div>
-    </Modal>
-  )
-}
-
 /* ================= 휴원일 ================= */
-function HolidayView({ holidays, onAdd, onRemove, busy }) {
+// 2026~2030 공휴일 (대체공휴일 제외 · 일요일 제외 — 일요일은 원래 수업이 없음)
+//   노동절·제헌절은 2026-05-11 시행 개정으로 법정 공휴일이 됐습니다.
+const PUBLIC_HOLIDAYS = [
+  ['2026-01-01', '신정'],
+  ['2026-02-16', '설날 연휴'],
+  ['2026-02-17', '설날'],
+  ['2026-02-18', '설날 연휴'],
+  ['2026-05-01', '노동절'],
+  ['2026-05-05', '어린이날'],
+  ['2026-06-03', '지방선거'],
+  ['2026-06-06', '현충일'],
+  ['2026-07-17', '제헌절'],
+  ['2026-08-15', '광복절'],
+  ['2026-09-24', '추석 연휴'],
+  ['2026-09-25', '추석'],
+  ['2026-09-26', '추석 연휴'],
+  ['2026-10-03', '개천절'],
+  ['2026-10-09', '한글날'],
+  ['2026-12-25', '크리스마스'],
+
+  ['2027-01-01', '신정'],
+  ['2027-02-06', '설날 연휴'],
+  ['2027-02-08', '설날 연휴'],
+  ['2027-03-01', '삼일절'],
+  ['2027-05-01', '노동절'],
+  ['2027-05-05', '어린이날'],
+  ['2027-05-13', '부처님오신날'],
+  ['2027-07-17', '제헌절'],
+  ['2027-09-14', '추석 연휴'],
+  ['2027-09-15', '추석'],
+  ['2027-09-16', '추석 연휴'],
+  ['2027-10-09', '한글날'],
+  ['2027-12-25', '크리스마스'],
+
+  ['2028-01-01', '신정'],
+  ['2028-01-26', '설날 연휴'],
+  ['2028-01-27', '설날'],
+  ['2028-01-28', '설날 연휴'],
+  ['2028-03-01', '삼일절'],
+  ['2028-04-12', '국회의원 선거'],
+  ['2028-05-01', '노동절'],
+  ['2028-05-02', '부처님오신날'],
+  ['2028-05-05', '어린이날'],
+  ['2028-06-06', '현충일'],
+  ['2028-07-17', '제헌절'],
+  ['2028-08-15', '광복절'],
+  ['2028-10-02', '추석 연휴'],
+  ['2028-10-03', '추석'],
+  ['2028-10-04', '추석 연휴'],
+  ['2028-10-09', '한글날'],
+  ['2028-12-25', '크리스마스'],
+
+  ['2029-01-01', '신정'],
+  ['2029-02-12', '설날 연휴'],
+  ['2029-02-13', '설날'],
+  ['2029-02-14', '설날 연휴'],
+  ['2029-03-01', '삼일절'],
+  ['2029-05-01', '노동절'],
+  ['2029-05-05', '어린이날'],
+  ['2029-06-06', '현충일'],
+  ['2029-07-17', '제헌절'],
+  ['2029-08-15', '광복절'],
+  ['2029-09-21', '추석 연휴'],
+  ['2029-09-22', '추석'],
+  ['2029-10-03', '개천절'],
+  ['2029-10-09', '한글날'],
+  ['2029-12-25', '크리스마스'],
+
+  ['2030-01-01', '신정'],
+  ['2030-02-02', '설날 연휴'],
+  ['2030-02-04', '설날 연휴'],
+  ['2030-03-01', '삼일절'],
+  ['2030-05-01', '노동절'],
+  ['2030-05-09', '부처님오신날'],
+  ['2030-06-06', '현충일'],
+  ['2030-07-17', '제헌절'],
+  ['2030-08-15', '광복절'],
+  ['2030-09-11', '추석 연휴'],
+  ['2030-09-12', '추석'],
+  ['2030-09-13', '추석 연휴'],
+  ['2030-10-03', '개천절'],
+  ['2030-10-09', '한글날'],
+  ['2030-12-25', '크리스마스'],
+]
+
+function LeaveView({ leaves, staff, busy, onAdd, onRemove }) {
   const [d, setD] = useState('')
   const [label, setLabel] = useState('')
+  const [staffId, setStaffId] = useState('')
+  const [mode, setMode] = useState('취소')
+
+  const isCenter = !staffId
 
   return (
-    <div style={{ maxWidth: 520 }}>
+    <div style={{ maxWidth: 560 }}>
       <Card style={{ padding: 18, marginBottom: 14 }}>
-        <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>휴원일 등록</div>
-        <div style={{ fontSize: 12, color: C.sub, marginBottom: 13, lineHeight: 1.6 }}>
-          공휴일이나 센터 사정으로 쉬는 날입니다. 등록한 뒤 정산 탭에서 <b>회차 생성</b>을 다시 누르면 그날
-          수업이 빠집니다. 이미 출결을 찍은 회차는 지워지지 않습니다.
+        <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>휴무일 등록</div>
+        <div style={{ fontSize: 12, color: C.sub, marginBottom: 14, lineHeight: 1.65 }}>
+          공휴일은 자동으로 들어갑니다. 여기는 <b>센터 사정으로 쉬는 날</b>이나{' '}
+          <b>선생님 개인 휴무</b>를 넣는 곳이에요.
         </div>
+
+        <div style={{ fontSize: 12, color: C.sub, marginBottom: 6 }}>날짜</div>
+        <input
+          type="date"
+          value={d}
+          onChange={(e) => setD(e.target.value)}
+          style={{ width: '100%', fontSize: 14, padding: '10px 11px', border: '1px solid #DEE0E3', borderRadius: 8, marginBottom: 13 }}
+        />
+
+        <div style={{ fontSize: 12, color: C.sub, marginBottom: 6 }}>대상</div>
+        <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 13 }}>
+          <Btn
+            variant={isCenter ? 'primary' : 'default'}
+            onClick={() => setStaffId('')}
+            style={{ padding: '8px 13px', fontSize: 13 }}
+          >
+            센터 전체
+          </Btn>
+          {staff.filter((x) => x.active).map((x) => (
+            <Btn
+              key={x.id}
+              variant={staffId === x.id ? 'primary' : 'default'}
+              onClick={() => setStaffId(x.id)}
+              style={{ padding: '8px 13px', fontSize: 13 }}
+            >
+              {x.name}
+            </Btn>
+          ))}
+        </div>
+
+        <div style={{ fontSize: 12, color: C.sub, marginBottom: 6 }}>그날 수업 처리</div>
+        <div style={{ display: 'flex', gap: 6, marginBottom: 7 }}>
+          {['취소', '결강', '유지'].map((m) => (
+            <Btn
+              key={m}
+              variant={mode === m ? 'primary' : 'default'}
+              onClick={() => setMode(m)}
+              style={{ flex: 1, padding: '9px 0', fontSize: 13 }}
+            >
+              {m}
+            </Btn>
+          ))}
+        </div>
+        <div style={{ fontSize: 11.5, color: C.sub, marginBottom: 14, lineHeight: 1.6 }}>
+          {mode === '취소' && '수강료에서 빠지고 보강 의무도 없습니다.'}
+          {mode === '결강' && '수강료는 받고 보강 목록에 올라갑니다.'}
+          {mode === '유지' && '수업은 그대로 두고 휴무일만 등록합니다. 나중에 하나씩 판단할 때 쓰세요.'}
+        </div>
+
+        <div style={{ fontSize: 12, color: C.sub, marginBottom: 6 }}>사유 (선택)</div>
         <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
           <input
-            type="date"
-            value={d}
-            onChange={(e) => setD(e.target.value)}
-            style={{ fontSize: 14, padding: '9px 11px', border: '1px solid #DEE0E3', borderRadius: 8 }}
-          />
-          <input
-            placeholder="추석, 개천절 등"
+            placeholder={isCenter ? '센터 워크숍 등' : '병가, 연차 등'}
             value={label}
             onChange={(e) => setLabel(e.target.value)}
-            style={{ flex: 1, minWidth: 130, fontSize: 14, padding: '9px 11px', border: '1px solid #DEE0E3', borderRadius: 8 }}
+            style={{ flex: 1, minWidth: 140, fontSize: 14, padding: '10px 11px', border: '1px solid #DEE0E3', borderRadius: 8 }}
           />
           <Btn
             variant="primary"
             disabled={!d || busy}
             onClick={() => {
-              onAdd(d, label)
+              onAdd({ d, label, staffId, mode })
               setD('')
               setLabel('')
             }}
           >
-            추가
+            등록
           </Btn>
         </div>
       </Card>
 
       <Card style={{ overflow: 'hidden' }}>
-        {holidays.length === 0 ? (
-          <Empty>등록된 휴원일이 없습니다.</Empty>
+        {leaves.length === 0 ? (
+          <Empty>등록된 휴무일이 없습니다.</Empty>
         ) : (
-          holidays.map((h) => (
+          leaves.map((h) => (
             <div
-              key={h.d}
-              style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 16px', borderBottom: `1px solid ${C.line2}` }}
+              key={h.id}
+              style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '11px 16px', borderBottom: `1px solid ${C.line2}`, flexWrap: 'wrap' }}
             >
-              <div style={{ fontSize: 14, fontWeight: 700, minWidth: 104 }}>
-                {h.d} ({DOW[new Date(h.d + 'T00:00:00').getDay()]})
+              <div style={{ fontSize: 14, fontWeight: 700, minWidth: 108 }}>
+                {h.d} ({h.weekday})
               </div>
+              {h.staff_name ? (
+                <Pill tone="blue">{h.staff_name}</Pill>
+              ) : (
+                <Pill tone="gray">센터 전체</Pill>
+              )}
               <div style={{ fontSize: 13, color: C.sub, flex: 1 }}>{h.label || '—'}</div>
-              <Btn disabled={busy} onClick={() => onRemove(h.d)} style={{ padding: '5px 11px', fontSize: 12 }}>
+              <Btn disabled={busy} onClick={() => onRemove(h.id)} style={{ padding: '5px 11px', fontSize: 12 }}>
                 삭제
               </Btn>
             </div>
           ))
         )}
       </Card>
+
+      <div style={{ fontSize: 12, color: C.sub, marginTop: 11, lineHeight: 1.7 }}>
+        등록하면 그날 수업이 바로 처리되고, 앞으로 회차를 만들 때도 그날은 빠집니다. 이미 정산이 마감된
+        회차는 바뀌지 않습니다.
+      </div>
     </div>
   )
 }
@@ -2456,6 +2498,166 @@ const inp = {
 }
 
 function Field({ label, children }) {
+  return (
+    <div style={{ marginBottom: 13 }}>
+      <div style={{ fontSize: 12, color: C.sub, marginBottom: 6 }}>{label}</div>
+      {children}
+    </div>
+  )
+}
+
+
+/* ═════════════════ AddSession.jsx ═════════════════ */
+
+const ADD_DOW = ['일', '월', '화', '수', '목', '금', '토']
+
+function AddSessionModal({ students, staff, programs, absent, onClose, onSave, busy }) {
+  const linked = !!absent
+  const [studentId, setStudentId] = useState(absent?.student_id || students[0]?.id || '')
+  const [staffId, setStaffId] = useState(absent?.staff_id || staff[0]?.id || '')
+  const [pcode, setPcode] = useState(absent?.program_code || programs[0]?.code || '')
+  const [status, setStatus] = useState(linked ? '보강' : '보강')
+  const [date, setDate] = useState(isoOf(new Date()))
+  const [start, setStart] = useState(absent ? hhmm(absent.start_time) : '19:00')
+  const [mins, setMins] = useState(
+    absent ? (() => {
+      const [h1, m1] = absent.start_time.split(':').map(Number)
+      const [h2, m2] = absent.end_time.split(':').map(Number)
+      return h2 * 60 + m2 - (h1 * 60 + m1)
+    })() : 50
+  )
+  const [note, setNote] = useState(absent ? `${absent.d.slice(5).replace('-', '/')} 결강분` : '')
+
+  const end = useMemo(() => {
+    const [h, m] = start.split(':').map(Number)
+    const t = h * 60 + m + mins
+    return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`
+  }, [start, mins])
+
+  const dow = date ? ADD_DOW[new Date(date + 'T00:00:00').getDay()] : ''
+
+  return (
+    <Modal onClose={onClose} max={380}>
+      <div style={{ padding: '16px 18px', borderBottom: `1px solid ${C.line2}` }}>
+        <div style={{ fontSize: 17, fontWeight: 700 }}>{linked ? '보강 등록' : '수업 직접 추가'}</div>
+        <div style={{ fontSize: 12.5, color: C.sub, marginTop: 3, lineHeight: 1.6 }}>
+          {linked
+            ? `${absent.student_name} · ${absent.d.slice(5).replace('-', '/')} 결강분`
+            : '앱 쓰기 전의 결강이나 이미 해준 보강을 기록할 때 쓰세요.'}
+        </div>
+      </div>
+
+      <div style={{ padding: 18 }}>
+        {!linked && (
+          <>
+            <AddField label="아동">
+              <select value={studentId} onChange={(e) => setStudentId(e.target.value)} style={addInp}>
+                {students.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+            </AddField>
+            <AddField label="선생님">
+              <select value={staffId} onChange={(e) => setStaffId(e.target.value)} style={addInp}>
+                {staff.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+            </AddField>
+            <AddField label="프로그램">
+              <select value={pcode} onChange={(e) => setPcode(e.target.value)} style={addInp}>
+                {programs.map((p) => (
+                  <option key={p.code} value={p.code}>{p.label}</option>
+                ))}
+              </select>
+            </AddField>
+            <AddField label="상태">
+              <div style={{ display: 'flex', gap: 6 }}>
+                {['보강', '결강', '진행'].map((k) => (
+                  <Btn
+                    key={k}
+                    variant={status === k ? 'primary' : 'default'}
+                    onClick={() => setStatus(k)}
+                    style={{ flex: 1, padding: '9px 0', fontSize: 13 }}
+                  >
+                    {k}
+                  </Btn>
+                ))}
+              </div>
+              <div style={{ fontSize: 11.5, color: C.sub, marginTop: 6, lineHeight: 1.55 }}>
+                {status === '보강' && '급여에 포함되고 수강료는 청구하지 않습니다.'}
+                {status === '결강' && '수강료는 청구되고 보강 목록에 올라갑니다.'}
+                {status === '진행' && '정상 수업으로 기록됩니다.'}
+              </div>
+            </AddField>
+          </>
+        )}
+
+        <AddField label="날짜">
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={addInp} />
+          {dow && <div style={{ fontSize: 11.5, color: C.mut, marginTop: 5 }}>{dow}요일</div>}
+        </AddField>
+
+        <AddField label="시작 시각">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+            <input type="time" step={300} value={start} onChange={(e) => setStart(e.target.value)} style={{ ...addInp, width: 'auto' }} />
+            <span style={{ fontSize: 13, color: C.sub }}>~ {end}</span>
+          </div>
+        </AddField>
+
+        <AddField label="수업 길이">
+          <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+            {[50, 60, 100, 120, 150].map((n) => (
+              <Btn
+                key={n}
+                variant={mins === n ? 'primary' : 'default'}
+                onClick={() => setMins(n)}
+                style={{ flex: 1, padding: '9px 0', fontSize: 13, minWidth: 52 }}
+              >
+                {n}분
+              </Btn>
+            ))}
+          </div>
+        </AddField>
+
+        <AddField label="메모 (선택)">
+          <input value={note} onChange={(e) => setNote(e.target.value)} style={addInp} placeholder="8/12 결강분 등" />
+        </AddField>
+
+        <div style={{ display: 'flex', gap: 7, marginTop: 4 }}>
+          <Btn
+            variant="primary"
+            disabled={busy || !date || !start || (!linked && !studentId)}
+            onClick={() =>
+              onSave({
+                student_id: linked ? absent.student_id : studentId,
+                staff_id: linked ? absent.staff_id : staffId,
+                program_code: linked ? absent.program_code : pcode,
+                d: date,
+                start_time: start,
+                end_time: end,
+                status: linked ? '보강' : status,
+                makeup_for: linked ? absent.id : null,
+                note: note.trim() || null,
+              })
+            }
+            style={{ flex: 1, padding: '11px 0' }}
+          >
+            저장
+          </Btn>
+          <Btn onClick={onClose} style={{ flex: 1, padding: '11px 0' }}>취소</Btn>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+const addInp = {
+  width: '100%', fontSize: 14, padding: '10px 11px',
+  border: '1px solid #DEE0E3', borderRadius: 8, background: '#fff',
+}
+
+function AddField({ label, children }) {
   return (
     <div style={{ marginBottom: 13 }}>
       <div style={{ fontSize: 12, color: C.sub, marginBottom: 6 }}>{label}</div>
@@ -2869,208 +3071,282 @@ function HistoryModal({ row, onClose, onRemove, loadHistory, busy }) {
 
 /* ═════════════════ PrintAll.jsx ═════════════════ */
 
-/* 영수증 한 장 — 화면·인쇄 공용 */
-function Sheet({ ym, s, adjustment, reason }) {
+/* 도장 — STAMP_URL 이 있으면 실제 이미지, 없으면 그려서 표시 */
+//   저장소 public 폴더에 파일을 올린 뒤 아래 경로만 바꾸면 됩니다.
+const STAMP_URL = import.meta.env.BASE_URL + 'stamp.png'
+const LOGO_URL = import.meta.env.BASE_URL + 'logo.png'
+
+function Stamp({ size = 40 }) {
+  if (STAMP_URL) {
+    return <img src={STAMP_URL} alt="" style={{ height: size, width: 'auto', objectFit: 'contain' }} />
+  }
+  return (
+    <svg width={size} height={size} viewBox="0 0 100 100" aria-hidden="true">
+      <circle cx="50" cy="50" r="45" fill="none" stroke="#C0392B" strokeWidth="5" />
+      <text x="50" y="34" textAnchor="middle" fill="#C0392B" fontSize="26" fontWeight="700">검단</text>
+      <text x="50" y="66" textAnchor="middle" fill="#C0392B" fontSize="26" fontWeight="700">ABA</text>
+      <text x="50" y="86" textAnchor="middle" fill="#C0392B" fontSize="15" fontWeight="700">민다혜</text>
+    </svg>
+  )
+}
+
+/* 영수증 한 장 — compact=true 면 3등분용 납작한 형태 */
+function Sheet({ ym, s, adjustment, reason, compact, stamp }) {
   const total = s.subtotal + (adjustment || 0)
-  const hasAbsent = s.lines.some((l) => (l.absent_dates || []).length > 0)
+  const F = compact
+    ? { title: 15, sub: 10, name: 17, th: 9.5, td: 11.5, note: 9.5, sum: 18, foot: 10, pad: '5mm 8mm' }
+    : { title: 19, sub: 12.5, name: 18, th: 11, td: 12.5, note: 10.5, sum: 19, foot: 11, pad: '14mm 13mm' }
 
   return (
-    <div className="receipt-page">
-      <div style={{ textAlign: 'center', borderBottom: `2px solid ${C.pk}`, paddingBottom: 14, marginBottom: 16 }}>
-        <div style={{ fontSize: 19, fontWeight: 800, letterSpacing: '0.06em', color: C.pkd }}>
-          수강료 영수증
-        </div>
-        <div style={{ fontSize: 12.5, color: C.sub, marginTop: 4 }}>{ym.replace('-', '년 ')}월</div>
-      </div>
+    <div className={compact ? 'receipt-slot' : 'receipt-page'}>
+      <div style={{ padding: F.pad, height: compact ? 'auto' : '100%', display: 'flex', flexDirection: 'column', justifyContent: 'flex-start', boxSizing: 'border-box' }}>
+        {compact ? (
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 7, borderBottom: `1px solid ${C.pk}`, paddingBottom: 3, marginBottom: 5 }}>
+            {LOGO_URL && (
+              <img src={LOGO_URL} alt="" style={{ height: 17, objectFit: 'contain', alignSelf: 'center' }} />
+            )}
+            <span style={{ fontSize: F.title, fontWeight: 800, color: C.pkd, letterSpacing: '0.04em' }}>수강료 영수증</span>
+            <span style={{ fontSize: F.sub, color: C.sub }}>{ym.replace('-', '년 ')}월</span>
+            <span style={{ marginLeft: 'auto', fontSize: F.name, fontWeight: 700 }}>{s.label || s.name}</span>
+            <span style={{ fontSize: F.sub, color: C.mut }}>귀하</span>
+          </div>
+        ) : (
+          <>
+            <div style={{ textAlign: 'center', borderBottom: `2px solid ${C.pk}`, paddingBottom: 14, marginBottom: 16 }}>
+              {LOGO_URL && (
+                <img src={LOGO_URL} alt="" style={{ height: 34, objectFit: 'contain', marginBottom: 8 }} />
+              )}
+              <div style={{ fontSize: F.title, fontWeight: 800, letterSpacing: '0.06em', color: C.pkd }}>수강료 영수증</div>
+              <div style={{ fontSize: F.sub, color: C.sub, marginTop: 4 }}>{ym.replace('-', '년 ')}월</div>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12 }}>
+              <div style={{ fontSize: F.name, fontWeight: 700 }}>{s.label || s.name}</div>
+              <div style={{ fontSize: F.sub, color: C.mut }}>귀하</div>
+            </div>
+          </>
+        )}
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12 }}>
-        <div style={{ fontSize: 18, fontWeight: 700 }}>{s.label || s.name}</div>
-        <div style={{ fontSize: 11.5, color: C.mut }}>귀하</div>
-      </div>
-
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
-        <thead>
-          <tr style={{ color: C.mut, fontSize: 11 }}>
-            <th style={{ textAlign: 'left', padding: '0 0 5px', fontWeight: 600 }}>수업명</th>
-            <th style={{ textAlign: 'right', padding: '0 0 5px', fontWeight: 600 }}>횟수</th>
-            <th style={{ textAlign: 'right', padding: '0 0 5px', fontWeight: 600 }}>단가</th>
-            <th style={{ textAlign: 'right', padding: '0 0 5px', fontWeight: 600 }}>금액</th>
-          </tr>
-        </thead>
-        <tbody>
-          {s.lines.map((l, i) => {
-            const absent = new Set((l.absent_dates || []).map((d) => d.slice(-2)))
-            return (
-              <tr key={i} style={{ borderTop: `1px solid ${C.line2}` }}>
-                <td style={{ padding: '8px 0' }}>
-                  {l.program_label}
-                  <div style={{ fontSize: 10.5, color: C.mut }}>{l.staff_summary}</div>
-                  <div style={{ fontSize: 10.5, color: C.sub, marginTop: 2, lineHeight: 1.5 }}>
-                    {(l.session_dates || []).map((d, k) => {
-                      const dd = d.slice(-2)
-                      const isAbsent = absent.has(dd)
-                      return (
-                        <span key={k} style={{ marginRight: 4, color: isAbsent ? C.danger : C.sub }}>
-                          {Number(dd)}
-                          {isAbsent ? '*' : ''}
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: F.td }}>
+          <thead>
+            <tr style={{ color: C.mut, fontSize: F.th }}>
+              <th style={{ textAlign: 'left', padding: '0 0 3px', fontWeight: 600 }}>수업명</th>
+              <th style={{ textAlign: 'right', padding: '0 0 3px', fontWeight: 600, width: '13%' }}>횟수</th>
+              <th style={{ textAlign: 'right', padding: '0 0 3px', fontWeight: 600, width: '22%' }}>단가</th>
+              <th style={{ textAlign: 'right', padding: '0 0 3px', fontWeight: 600, width: '24%' }}>금액</th>
+            </tr>
+          </thead>
+          <tbody>
+            {s.lines.map((l, i) => {
+              const absent = new Set((l.absent_dates || []).map((d) => d.slice(-2)))
+              const days = (l.session_dates || []).map((d) => {
+                const dd = d.slice(-2)
+                return { n: Number(dd), a: absent.has(dd) }
+              })
+              return (
+                <tr key={i} style={{ borderTop: `1px solid ${C.line2}` }}>
+                  <td style={{ padding: compact ? '2px 0' : '8px 0' }}>
+                    {l.program_label}
+                    <div style={{ fontSize: F.note, color: C.mut, lineHeight: 1.35 }}>
+                      {l.staff_summary}
+                      {days.length > 0 && ' · '}
+                      {days.map((d, k) => (
+                        <span key={k} style={{ color: d.a ? C.danger : C.mut, marginRight: 3 }}>
+                          {d.n}
+                          {d.a ? '*' : ''}
                         </span>
-                      )
-                    })}
-                  </div>
+                      ))}
+                    </div>
+                  </td>
+                  <td style={{ padding: compact ? '4px 0' : '8px 0', textAlign: 'right', verticalAlign: 'top' }}>{l.lesson_count}</td>
+                  <td style={{ padding: compact ? '4px 0' : '8px 0', textAlign: 'right', color: C.sub, verticalAlign: 'top' }}>{won(l.unit_price)}</td>
+                  <td style={{ padding: compact ? '4px 0' : '8px 0', textAlign: 'right', fontWeight: 600, verticalAlign: 'top' }}>{won(l.amount)}</td>
+                </tr>
+              )
+            })}
+            {!!adjustment && (
+              <tr style={{ borderTop: `1px solid ${C.line2}` }}>
+                <td colSpan={3} style={{ padding: compact ? '2px 0' : '8px 0', color: C.danger }}>
+                  조정
+                  <span style={{ fontSize: F.note, color: C.mut, marginLeft: 5 }}>{reason || '사유 없음'}</span>
                 </td>
-                <td style={{ padding: '8px 0', textAlign: 'right', verticalAlign: 'top' }}>{l.lesson_count}</td>
-                <td style={{ padding: '8px 0', textAlign: 'right', color: C.sub, verticalAlign: 'top' }}>
-                  {won(l.unit_price)}
-                </td>
-                <td style={{ padding: '8px 0', textAlign: 'right', fontWeight: 600, verticalAlign: 'top' }}>
-                  {won(l.amount)}
+                <td style={{ padding: compact ? '2px 0' : '8px 0', textAlign: 'right', fontWeight: 600, color: C.danger }}>
+                  {won(adjustment)}
                 </td>
               </tr>
-            )
-          })}
-          {!!adjustment && (
-            <tr style={{ borderTop: `1px solid ${C.line2}` }}>
-              <td colSpan={3} style={{ padding: '8px 0', color: C.danger }}>
-                조정
-                <div style={{ fontSize: 10.5, color: C.mut }}>{reason || '사유 없음'}</div>
-              </td>
-              <td style={{ padding: '8px 0', textAlign: 'right', fontWeight: 600, color: C.danger }}>
-                {won(adjustment)}
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
+            )}
+          </tbody>
+        </table>
 
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          marginTop: 10,
-          paddingTop: 10,
-          borderTop: `1.5px solid ${C.ink}`,
-        }}
-      >
-        <div style={{ fontSize: 13, fontWeight: 700 }}>합계</div>
-        <div style={{ fontSize: 19, fontWeight: 800, color: C.pkd }}>{won(total)}원</div>
-      </div>
-
-      {hasAbsent && (
-        <div style={{ marginTop: 7, fontSize: 10.5, color: C.sub, lineHeight: 1.55 }}>
-          * 표시는 결강일입니다. 월정액이라 청구에 포함되며 보강해 드립니다.
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: compact ? 6 : 10, paddingTop: compact ? 6 : 10, borderTop: `1.5px solid ${C.ink}` }}>
+          <div style={{ fontSize: compact ? 10 : 13, fontWeight: 700 }}>합계</div>
+          <div style={{ fontSize: F.sum, fontWeight: 800, color: C.pkd }}>{won(total)}원</div>
         </div>
-      )}
 
-      <div style={{ marginTop: 18, textAlign: 'center', fontSize: 12, color: '#4B5057', lineHeight: 1.85 }}>
-        위 금액을 정히 영수합니다.
-        <div style={{ fontWeight: 700, fontSize: 13.5, marginTop: 4, color: C.ink }}>
-          검단ABA언어행동연구소
-        </div>
-        <div style={{ fontSize: 10.5, color: C.mut }}>인천 검단구 이음1로 377 눈담봄 905호</div>
-        <div style={{ fontWeight: 700, marginTop: 1, color: C.ink }}>대표 민다혜 (인)</div>
+        {compact ? (
+          <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'flex-end', gap: 6, marginTop: 4 }}>
+            <div style={{ fontSize: F.foot, textAlign: 'right', lineHeight: 1.4 }}>
+              검단ABA언어행동연구소
+              <div style={{ color: C.mut }}>대표 민 다 혜{stamp ? '' : ' (인)'}</div>
+            </div>
+            {stamp && <Stamp size={34} />}
+          </div>
+        ) : (
+          <div style={{ marginTop: 18, textAlign: 'center', fontSize: F.foot, color: '#4B5057', lineHeight: 1.9 }}>
+            위 금액을 정히 영수합니다.
+            <div style={{ fontWeight: 700, fontSize: 14, marginTop: 5, color: C.ink }}>검단ABA언어행동연구소</div>
+            <div style={{ fontSize: 10.5, color: C.mut }}>인천 검단구 이음1로 377 눈담봄 905호</div>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginTop: 2 }}>
+              <span style={{ fontWeight: 700, color: C.ink }}>대표 민 다 혜{stamp ? '' : ' (인)'}</span>
+              {stamp && <Stamp size={42} />}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
 }
 
-function PrintAll({ ym, students, receipts, onClose }) {
-  const rMap = useMemo(
-    () => Object.fromEntries(receipts.map((r) => [r.student_id, r])),
-    [receipts]
-  )
+function PrintAll({ ym, students, receipts, onClose, say }) {
+  const [mode, setMode] = useState('three')
+  const [saving, setSaving] = useState(false)
+  const boxRef = useRef(null)
 
-  // 앱 본문은 인쇄 때 숨기므로, 영수증은 body 바로 아래에 붙입니다
+  const rMap = useMemo(() => Object.fromEntries(receipts.map((r) => [r.student_id, r])), [receipts])
+  const pages = useMemo(() => {
+    if (mode !== 'three') return []
+    const out = []
+    for (let i = 0; i < students.length; i += 3) out.push(students.slice(i, i + 3))
+    return out
+  }, [students, mode])
+
+  const saveImages = async () => {
+    setSaving(true)
+    try {
+      const { toPng } = await import('html-to-image')
+      const nodes = boxRef.current.querySelectorAll('[data-shot]')
+      for (const node of nodes) {
+        const url = await toPng(node, { pixelRatio: 2, backgroundColor: '#ffffff' })
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `${ym}_${node.dataset.shot}.png`
+        a.click()
+        await new Promise((r) => setTimeout(r, 250))
+      }
+      say(`${nodes.length}장을 저장했습니다`)
+    } catch (e) {
+      say('이미지 저장에 실패했습니다', 'err')
+    }
+    setSaving(false)
+  }
+
   return createPortal(
     <div className="print-root">
       <style>{`
-        .print-root {
-          position: fixed;
-          inset: 0;
-          background: #fff;
-          z-index: 100;
-          overflow: auto;
+        .print-root { position: fixed; inset: 0; background: #fff; z-index: 100; overflow: auto; }
+        .a4 {
+          width: 210mm; min-height: 297mm; margin: 0 auto 8mm;
+          background: #fff; border: 1px solid ${C.line}; box-sizing: border-box;
+          display: flex; flex-direction: column;
         }
+        .receipt-slot {
+          flex: 1 1 0; min-height: 0; border-bottom: 1px dashed #B9BCC1;
+          display: flex; flex-direction: column; justify-content: center;
+        }
+        .a4 .receipt-slot:last-child { border-bottom: none; }
         .receipt-page {
-          width: 148mm;
-          min-height: 200mm;
-          padding: 14mm 13mm;
-          margin: 0 auto 10mm;
-          background: #fff;
-          border: 1px solid ${C.line};
-          box-sizing: border-box;
+          width: 210mm; min-height: 297mm; margin: 0 auto 8mm;
+          background: #fff; border: 1px solid ${C.line}; box-sizing: border-box;
         }
+        .shot-wrap {
+          width: 420px; background: #fff; border: 1px solid ${C.line};
+          border-radius: 8px; margin: 0 auto 10px; overflow: hidden;
+        }
+        .shot-wrap .receipt-page { width: 100%; min-height: 0; margin: 0; border: none; }
         @media print {
-          @page { size: A5 portrait; margin: 0; }
+          @page { size: A4 portrait; margin: 0; }
           html, body { height: auto !important; overflow: visible !important; }
-          /* 인쇄할 때는 fixed 를 풀어야 전체 장수가 출력됩니다 */
-          .print-root {
-            position: static !important;
-            overflow: visible !important;
-            height: auto !important;
-          }
+          .print-root { position: static !important; overflow: visible !important; height: auto !important; }
           .no-print { display: none !important; }
           .print-wrap { background: #fff !important; padding: 0 !important; }
-          .receipt-page {
-            border: none;
-            margin: 0;
-            width: 148mm;
-            min-height: 209mm;
-            page-break-after: always;
-            break-after: page;
+          .a4, .receipt-page {
+            border: none; margin: 0; width: 210mm; height: 297mm;
+            page-break-after: always; break-after: page;
           }
-          .receipt-page:last-child {
-            page-break-after: auto;
-            break-after: auto;
-          }
+          .a4:last-child, .receipt-page:last-child { page-break-after: auto; break-after: auto; }
         }
       `}</style>
 
-      <div
-        className="no-print"
-        style={{
-          position: 'sticky',
-          top: 0,
-          background: '#fff',
-          borderBottom: `1px solid ${C.line}`,
-          padding: '12px 16px',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 12,
-          flexWrap: 'wrap',
-          zIndex: 2,
-        }}
-      >
-        <div style={{ fontSize: 15, fontWeight: 700 }}>
-          {ym.replace('-', '년 ')}월 영수증 {students.length}장
+      <div className="no-print" style={{ position: 'sticky', top: 0, background: '#fff', borderBottom: `1px solid ${C.line}`, padding: '12px 16px', zIndex: 2 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', maxWidth: 900, margin: '0 auto' }}>
+          <div style={{ fontSize: 15, fontWeight: 700 }}>
+            {ym.replace('-', '년 ')}월 영수증 {students.length}장
+          </div>
+          <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 8 }}>
+            {[
+              ['three', `A4 3등분 · ${Math.ceil(students.length / 3)}장`],
+              ['one', `한 명씩 · ${students.length}장`],
+              ['image', '이미지 저장'],
+            ].map(([k, label]) => (
+              <button
+                key={k}
+                onClick={() => setMode(k)}
+                style={{
+                  border: 'none', cursor: 'pointer', padding: '6px 12px', borderRadius: 6,
+                  fontSize: 12.5, fontWeight: 600, whiteSpace: 'nowrap',
+                  background: mode === k ? '#fff' : 'transparent',
+                  color: mode === k ? C.ink : C.sub,
+                  boxShadow: mode === k ? '0 1px 2px rgba(0,0,0,.06)' : 'none',
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 7 }}>
+            {mode === 'image' ? (
+              <Btn variant="primary" disabled={saving} onClick={saveImages}>
+                {saving ? '저장 중…' : `${students.length}장 저장`}
+              </Btn>
+            ) : (
+              <Btn variant="primary" onClick={() => window.print()}>
+                인쇄 / PDF 저장
+              </Btn>
+            )}
+            <Btn onClick={onClose}>닫기</Btn>
+          </div>
         </div>
-        <div style={{ fontSize: 12, color: C.sub }}>A5 세로 · 한 장에 한 명</div>
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 7 }}>
-          <Btn variant="primary" onClick={() => window.print()}>
-            인쇄 / PDF 저장
-          </Btn>
-          <Btn onClick={onClose}>닫기</Btn>
+        <div style={{ maxWidth: 900, margin: '8px auto 0', fontSize: 12, color: C.sub, lineHeight: 1.65 }}>
+          {mode === 'three' && '한 장에 3명씩 들어갑니다. 점선을 따라 자르세요. 인쇄 창에서 용지 A4, 여백 없음으로 두세요.'}
+          {mode === 'one' && '한 명당 한 장입니다. 자르지 않고 그대로 드릴 수 있어요.'}
+          {mode === 'image' && '한 명씩 PNG 파일로 저장됩니다. 카카오톡으로 보내실 때 쓰세요. 밖으로 나가는 파일이라 도장은 빼고 (인) 글자만 들어갑니다.'}
         </div>
       </div>
 
-      <div
-        className="no-print"
-        style={{ padding: '12px 16px 0', fontSize: 12, color: C.sub, lineHeight: 1.7, maxWidth: 620, margin: '0 auto' }}
-      >
-        인쇄 창에서 <b>프린터를 "PDF로 저장"</b>으로 바꾸면 {students.length}장이 한 파일로 저장됩니다.
-        용지는 A5, 여백은 "없음"으로 두세요.
-      </div>
+      <div className="print-wrap" ref={boxRef} style={{ padding: '16px 0', background: mode === 'image' ? C.bg : '#EFEFF1' }}>
+        {mode === 'three' &&
+          pages.map((group, i) => (
+            <div key={i} className="a4">
+              {group.map((s) => (
+                <Sheet key={s.id} ym={ym} s={s} compact stamp adjustment={rMap[s.id]?.adjustment || 0} reason={rMap[s.id]?.adjust_reason} />
+              ))}
+              {group.length < 3 &&
+                Array.from({ length: 3 - group.length }, (_, k) => (
+                  <div key={'e' + k} className="receipt-slot" style={{ borderBottom: 'none' }} />
+                ))}
+            </div>
+          ))}
 
-      <div className="print-wrap" style={{ padding: '16px 0', background: C.bg }}>
-        {students.map((s) => (
-          <Sheet
-            key={s.id}
-            ym={ym}
-            s={s}
-            adjustment={rMap[s.id]?.adjustment || 0}
-            reason={rMap[s.id]?.adjust_reason}
-          />
-        ))}
+        {mode === 'one' &&
+          students.map((s) => (
+            <Sheet key={s.id} ym={ym} s={s} stamp adjustment={rMap[s.id]?.adjustment || 0} reason={rMap[s.id]?.adjust_reason} />
+          ))}
+
+        {mode === 'image' &&
+          students.map((s) => (
+            <div key={s.id} className="shot-wrap" data-shot={s.name}>
+              <Sheet ym={ym} s={s} adjustment={rMap[s.id]?.adjustment || 0} reason={rMap[s.id]?.adjust_reason} />
+            </div>
+          ))}
       </div>
     </div>,
     document.body
@@ -3106,7 +3382,6 @@ function App() {
   const [holidays, setHolidays] = useState([])
   const [today, setToday] = useState([])
   const [unmadeUp, setUnmadeUp] = useState([])
-  const [unconfirmed, setUnconfirmed] = useState([])
   const [billing, setBilling] = useState([])
   const [byStaff, setByStaff] = useState([])
   const [payroll, setPayroll] = useState([])
@@ -3123,11 +3398,14 @@ function App() {
   const [receiptFor, setReceiptFor] = useState(null)
   const [filter, setFilter] = useState(null)
   const [makeupFor, setMakeupFor] = useState(null)
+  const [addOpen, setAddOpen] = useState(false)
   const [printAll, setPrintAll] = useState(null)
   const [students, setStudents] = useState([])
   const [templates, setTemplates] = useState([])
   const [programs, setPrograms] = useState([])
-  const [allHolidays, setAllHolidays] = useState([])
+  const [leaves, setLeaves] = useState([])
+  const [holidaySeeded, setHolidaySeeded] = useState(false)
+  const [manageLoaded, setManageLoaded] = useState(false)
 
   const say = (msg, tone) => {
     setToast({ msg, tone })
@@ -3173,10 +3451,9 @@ function App() {
   }, [weekStart])
 
   const reloadCommon = useCallback(async () => {
-    const [t, u, c] = await Promise.all([loadToday(), loadUnmadeUp(), loadUnconfirmed()])
+    const [t, u] = await Promise.all([loadToday(), loadUnmadeUp()])
     setToday(t)
     setUnmadeUp(u)
-    setUnconfirmed(c)
   }, [])
 
   const reloadMonthSessions = useCallback(async () => {
@@ -3208,16 +3485,17 @@ function App() {
 
   const reloadManage = useCallback(async () => {
     if (!isAdmin) return
-    const [st, tp, pg, hd] = await Promise.all([
+    const [st, tp, pg, lv] = await Promise.all([
       loadStudents(),
       loadTemplates(),
       loadPrograms(),
-      loadHolidays('2020-01-01', '2100-01-01'),
+      loadLeaves(),
     ])
     setStudents(st)
     setTemplates(tp)
     setPrograms(pg)
-    setAllHolidays(hd)
+    setLeaves(lv)
+    setManageLoaded(true)
   }, [isAdmin])
 
   const reloadAll = useCallback(async () => {
@@ -3233,6 +3511,30 @@ function App() {
   useEffect(() => {
     if (session && staff.length) reloadAll()
   }, [session, staff.length, weekStart, ym, closeYm, monthYm])
+
+  // 공휴일은 앱이 알아서 채워 둡니다 (2026~2030, 대체공휴일·일요일 제외)
+  useEffect(() => {
+    // 휴무일 목록을 실제로 한 번 읽은 뒤에 판단합니다.
+    if (!isAdmin || loading || holidaySeeded || !staff.length || !manageLoaded) return
+    const have = new Set(leaves.filter((l) => !l.staff_id).map((l) => l.d))
+    const miss = PUBLIC_HOLIDAYS.filter(([d]) => !have.has(d))
+    if (!miss.length) {
+      setHolidaySeeded(true)
+      return
+    }
+    setHolidaySeeded(true)
+    ;(async () => {
+      try {
+        const n = await seedHolidays(miss)
+        if (n > 0) {
+          say(`공휴일 ${n}일을 등록했습니다`)
+          await reloadAll()
+        }
+      } catch (e) {
+        // 조용히 넘어감 — 다음 접속에 다시 시도
+      }
+    })()
+  }, [isAdmin, loading, leaves.length, staff.length, holidaySeeded, manageLoaded])
 
   // 월초 결제 대비: 기준월 회차가 비어 있으면 자동으로 만들어 둡니다
   useEffect(() => {
@@ -3311,12 +3613,11 @@ function App() {
     ...(isAdmin ? [['makeup', `보강 ${unmadeUp.length}`]] : []),
     ...(isAdmin
       ? [
-          ['unconfirmed', `미확인 ${unconfirmed.length}`],
           ['closing', '마감'],
           ['billing', '정산'],
           ['payment', `입금${unpaidCount ? ` ${unpaidCount}` : ''}`],
           ['students', '아동'],
-          ['holiday', '휴원일'],
+          ['leave', '휴무일'],
         ]
       : [['myclose', '마감']]),
   ]
@@ -3361,61 +3662,30 @@ function App() {
       </div>
 
       <div style={{ padding: 16, maxWidth: 1200, margin: '0 auto' }}>
-        {!loading && isAdmin && (unconfirmed.length > 0 || unmadeUp.length > 0) && (
-          <div
-            className="no-print"
-            style={{
-              display: 'flex',
-              gap: 9,
-              marginBottom: 14,
-              flexWrap: 'wrap',
-            }}
-          >
-            {unconfirmed.length > 0 && (
-              <button
-                onClick={() => setTab('unconfirmed')}
-                style={{
-                  flex: '1 1 240px',
-                  textAlign: 'left',
-                  cursor: 'pointer',
-                  border: `1px solid #F3AFBD`,
-                  background: '#FDECEF',
-                  borderRadius: 10,
-                  padding: '12px 15px',
-                }}
-              >
-                <div style={{ fontSize: 14, fontWeight: 700, color: C.danger }}>
-                  확인 안 된 수업 {unconfirmed.length}건
-                </div>
-                <div style={{ fontSize: 12, color: '#8A3550', marginTop: 2 }}>
-                  이 중에 결강이 있으면 보강 의무가 사라집니다
-                </div>
-              </button>
-            )}
-            {unmadeUp.length > 0 && (
-              <button
-                onClick={() => setTab('makeup')}
-                style={{
-                  flex: '1 1 240px',
-                  textAlign: 'left',
-                  cursor: 'pointer',
-                  border: `1px solid #F0D49B`,
-                  background: '#FEF6E7',
-                  borderRadius: 10,
-                  padding: '12px 15px',
-                }}
-              >
-                <div style={{ fontSize: 14, fontWeight: 700, color: '#8A5A00' }}>
-                  보강 안 한 수업 {unmadeUp.length}건
-                </div>
-                <div style={{ fontSize: 12, color: '#8A5A00', opacity: 0.8, marginTop: 2 }}>
-                  {(() => {
-                    const oldest = Math.max(...unmadeUp.map((u) => daysSince(u.d)))
-                    return `가장 오래된 건 ${oldest}일 지났습니다`
-                  })()}
-                </div>
-              </button>
-            )}
+        {!loading && isAdmin && unmadeUp.length > 0 && (
+          <div className="no-print" style={{ marginBottom: 14 }}>
+            <button
+              onClick={() => setTab('makeup')}
+              style={{
+                width: '100%',
+                textAlign: 'left',
+                cursor: 'pointer',
+                border: `1px solid #F0D49B`,
+                background: '#FEF6E7',
+                borderRadius: 10,
+                padding: '12px 15px',
+              }}
+            >
+              <div style={{ fontSize: 14, fontWeight: 700, color: '#8A5A00' }}>
+                보강 안 한 수업 {unmadeUp.length}건
+              </div>
+              <div style={{ fontSize: 12, color: '#8A5A00', opacity: 0.8, marginTop: 2 }}>
+                {(() => {
+                  const oldest = Math.max(...unmadeUp.map((u) => daysSince(u.d)))
+                  return `가장 오래된 건 ${oldest}일 지났습니다`
+                })()}
+              </div>
+            </button>
           </div>
         )}
 
@@ -3535,7 +3805,6 @@ function App() {
 
             <div style={{ display: 'flex', gap: 13, marginTop: 11, flexWrap: 'wrap', fontSize: 11, color: C.sub }}>
               {[
-                ['미확인', STATUS.미확인],
                 ['진행', STATUS.진행],
                 ['결강·보강완료', STATUS.결강완],
                 ['결강·미보강', STATUS.미보강],
@@ -3554,9 +3823,21 @@ function App() {
         {!loading && tab === 'makeup' && (
           <Card style={{ overflow: 'hidden' }}>
             <div style={{ padding: '14px 18px', borderBottom: `1px solid ${C.line2}` }}>
-              <div style={{ fontSize: 15, fontWeight: 700 }}>보강해야 할 수업 {unmadeUp.length}건</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <div style={{ fontSize: 15, fontWeight: 700 }}>보강해야 할 수업 {unmadeUp.length}건</div>
+                {isAdmin && (
+                  <Btn
+                    variant="primary"
+                    onClick={() => setAddOpen(true)}
+                    style={{ marginLeft: 'auto', padding: '6px 13px', fontSize: 12.5 }}
+                  >
+                    수업 직접 추가
+                  </Btn>
+                )}
+              </div>
               <div style={{ fontSize: 12, color: C.sub, marginTop: 3, lineHeight: 1.6 }}>
                 결강했지만 아직 보강 날짜가 안 잡힌 수업입니다. 월정액이라 수강료는 이미 받은 회차예요.
+                앱을 쓰기 전의 결강이나 이미 해준 보강은 <b>수업 직접 추가</b>로 기록하세요.
               </div>
             </div>
             {unmadeUp.length === 0 ? (
@@ -3581,71 +3862,6 @@ function App() {
                   <div style={{ marginLeft: 'auto' }}>
                     <Btn variant="primary" disabled={busy} onClick={() => setMakeupFor(s)} style={{ padding: '6px 13px', fontSize: 12.5 }}>
                       보강 잡기
-                    </Btn>
-                  </div>
-                </div>
-              ))
-            )}
-          </Card>
-        )}
-
-        {!loading && tab === 'unconfirmed' && isAdmin && (
-          <Card style={{ overflow: 'hidden' }}>
-            <div style={{ padding: '14px 18px', borderBottom: `1px solid ${C.line2}` }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                <div style={{ fontSize: 15, fontWeight: 700 }}>아무도 확인 안 한 수업 {unconfirmed.length}건</div>
-                {unconfirmed.length > 0 && isAdmin && (
-                  <Btn
-                    style={{ marginLeft: 'auto', padding: '6px 12px', fontSize: 12.5 }}
-                    onClick={() => {
-                      const byT = {}
-                      unconfirmed.forEach((u) => {
-                        byT[u.staff_name] = (byT[u.staff_name] || 0) + 1
-                      })
-                      const lines = Object.entries(byT).map(([k, v]) => `· ${k} 선생님 — ${v}건`)
-                      const msg = `[검단ABA] 출결 확인 부탁드립니다\n\n아직 확인 안 된 수업이 있습니다.\n앱 > 주간 화면에서 확인해 주세요.\n\n${lines.join('\n')}`
-                      navigator.clipboard?.writeText(msg)
-                      say('복사됐습니다 — 단톡방에 붙여넣으세요')
-                    }}
-                  >
-                    확인 요청 문구 복사
-                  </Btn>
-                )}
-              </div>
-              <div style={{ fontSize: 12, color: C.sub, marginTop: 3, lineHeight: 1.6 }}>
-                {isAdmin ? (
-                  <>
-                    지나간 날짜인데 선생님이 아무것도 안 누른 회차입니다. 청구는 정상으로 나가지만, 이 중에
-                    결강이 숨어 있으면 <b style={{ color: C.danger }}>보강 의무가 사라집니다.</b>
-                  </>
-                ) : (
-                  <>
-                    지나간 수업인데 아직 확인하지 않으셨어요. 정상 진행이면 <b>진행</b>, 빠졌으면{' '}
-                    <b style={{ color: C.danger }}>결강</b>을 눌러주세요. 다 채워야 마감을 제출할 수 있습니다.
-                  </>
-                )}
-              </div>
-            </div>
-            {unconfirmed.length === 0 ? (
-              <Empty>모두 확인됐습니다.</Empty>
-            ) : (
-              unconfirmed.slice(0, 60).map((s) => (
-                <div
-                  key={s.id}
-                  style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '10px 18px', borderBottom: `1px solid ${C.line2}`, flexWrap: 'wrap' }}
-                >
-                  <span style={{ width: 4, height: 22, borderRadius: 2, background: colorOf(s.staff_name) }} />
-                  <div style={{ minWidth: 62, fontSize: 14, fontWeight: 700 }}>{s.student_name}</div>
-                  <div style={{ fontSize: 12, color: C.sub, minWidth: 132 }}>
-                    {s.d.slice(5).replace('-', '/')} ({s.weekday}) {hhmm(s.start_time)}
-                  </div>
-                  <div style={{ fontSize: 12, color: C.sub, minWidth: 58 }}>{s.staff_name}</div>
-                  <div style={{ marginLeft: 'auto', display: 'flex', gap: 5 }}>
-                    <Btn variant="ok" disabled={busy} onClick={() => doMark(s.id, '진행')} style={{ padding: '5px 11px', fontSize: 12 }}>
-                      진행
-                    </Btn>
-                    <Btn variant="danger" disabled={busy} onClick={() => doMark(s.id, '결강')} style={{ padding: '5px 11px', fontSize: 12 }}>
-                      결강
                     </Btn>
                   </div>
                 </div>
@@ -3845,27 +4061,28 @@ function App() {
           />
         )}
 
-        {!loading && tab === 'holiday' && isAdmin && (
-          <HolidayView
-            holidays={allHolidays}
+        {!loading && tab === 'leave' && isAdmin && (
+          <LeaveView
+            leaves={leaves}
+            staff={staff}
             busy={busy}
-            onAdd={async (d, label) => {
+            onAdd={async (v) => {
               setBusy(true)
               try {
-                await addHoliday(d, label)
-                say('등록했습니다. 회차 생성을 다시 눌러주세요')
-                await reloadManage()
+                const msg = await addLeave(v)
+                say(msg || '등록했습니다')
+                await reloadAll()
               } catch (e) {
                 fail(e)
               }
               setBusy(false)
             }}
-            onRemove={async (d) => {
+            onRemove={async (id) => {
               setBusy(true)
               try {
-                await removeHoliday(d)
-                say('삭제했습니다')
-                await reloadManage()
+                await removeLeave(id)
+                say('삭제했습니다. 회차 생성을 다시 눌러주세요')
+                await reloadAll()
               } catch (e) {
                 fail(e)
               }
@@ -3875,18 +4092,25 @@ function App() {
         )}
       </div>
 
-      {makeupFor && (
-        <MakeupModal
+      {(makeupFor || addOpen) && (
+        <AddSessionModal
           absent={makeupFor}
+          students={students.filter((x) => x.status === '재원')}
+          staff={staff.filter((x) => x.active)}
+          programs={programs}
           busy={busy}
-          onClose={() => setMakeupFor(null)}
+          onClose={() => {
+            setMakeupFor(null)
+            setAddOpen(false)
+          }}
           onSave={async (v) => {
             setBusy(true)
             try {
-              await createMakeup(makeupFor, v)
-              say('보강을 등록했습니다')
-              await Promise.all([reloadWeek(), reloadCommon(), reloadMonth()])
+              await addSession(v)
+              say(v.status === '보강' ? '보강을 등록했습니다' : '수업을 추가했습니다')
+              await reloadAll()
               setMakeupFor(null)
+              setAddOpen(false)
             } catch (e) {
               fail(e)
             }
@@ -3987,7 +4211,7 @@ function App() {
       )}
 
       {printAll && (
-        <PrintAll ym={ym} students={printAll} receipts={receipts} onClose={() => setPrintAll(null)} />
+        <PrintAll ym={ym} students={printAll} receipts={receipts} say={say} onClose={() => setPrintAll(null)} />
       )}
 
       <Toast msg={toast?.msg} tone={toast?.tone} />
