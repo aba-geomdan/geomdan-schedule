@@ -6,14 +6,14 @@ import { createClient } from '@supabase/supabase-js'
 
 /* ═════════════════ db.js ═════════════════ */
 
-const URL = 'https://vdubgrxwijydwfabwpnk.supabase.co'
+const SUPABASE_URL = 'https://vdubgrxwijydwfabwpnk.supabase.co'
 const ANON = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
 
 const hasKey = !!ANON
 
 // 키가 없으면 createClient 가 예외를 던져 앱이 통째로 죽습니다.
 // 빈 화면 대신 안내를 띄우려고 더미 키로 만들어 둡니다.
-const supabase = createClient(URL, ANON || 'missing-anon-key', {
+const supabase = createClient(SUPABASE_URL, ANON || 'missing-anon-key', {
   auth: { persistSession: true, autoRefreshToken: true },
 })
 
@@ -297,6 +297,21 @@ async function loadTemplates() {
 async function saveStudent(id, v) {
   if (id) return ok(await supabase.from('students').update(v).eq('id', id))
   return ok(await supabase.from('students').insert(v))
+}
+
+// 시간표 변경 — 언제부터 바뀌는지 지정 (지난 기록은 그대로)
+async function changeTemplate(id, v) {
+  return ok(
+    await supabase.rpc('change_template', {
+      p_id: id,
+      p_from: v.from,
+      p_staff: v.staff_id,
+      p_program: v.program_code,
+      p_weekday: v.weekday,
+      p_start: v.start_time,
+      p_end: v.end_time,
+    })
+  )
 }
 
 async function updateTemplate(id, v) {
@@ -1098,7 +1113,7 @@ function MyClosingView({ ym, summary, closing, onSubmit, onPrevYm, onNextYm, bus
         <div style={{ fontSize: 16, fontWeight: 700 }}>{ym.replace('-', '년 ')}월 마감</div>
         <div style={{ fontSize: 12.5, color: C.sub, marginTop: 4 }}>
           {st === '요청'
-            ? '원장님이 마감을 요청하셨습니다.'
+            ? '원장님이 이 달 마감을 요청하셨습니다.'
             : st === '진행중'
               ? '이 달 실적입니다. 아직 마감 요청 전이에요.'
               : '한 달 수업을 확인하고 제출하세요.'}
@@ -1789,9 +1804,11 @@ function ClosingView({ ym, rows, staff, onRequest, onReview, onPrevYm, onNextYm,
         <Btn onClick={onNextYm} style={{ padding: '6px 11px' }}>→</Btn>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 7 }}>
           <Btn disabled={busy} onClick={() => onRequest(null)}>
-            전원 마감 요청
+            전원 마감 대상으로
           </Btn>
-          <Btn onClick={copyMsg}>{copied ? '복사됨 — 단톡방에 붙여넣으세요' : '요청 문구 복사'}</Btn>
+          <Btn variant="primary" onClick={copyMsg}>
+            {copied ? '복사됨 — 단톡방에 붙여넣으세요' : '단톡방 문구 복사'}
+          </Btn>
         </div>
       </div>
 
@@ -1823,11 +1840,12 @@ function ClosingView({ ym, rows, staff, onRequest, onReview, onPrevYm, onNextYm,
                 const st = r?.status || '—'
                 const tone =
                   st === '제출' ? 'blue' : st === '승인' ? 'green' : st === '반려' ? 'amber' : 'gray'
+                const label = st === '요청' ? '대상' : st
                 return (
                   <tr key={s.id} style={{ borderBottom: `1px solid ${C.line2}` }}>
                     <td style={{ padding: '9px 12px', fontWeight: 700 }}>{s.name}</td>
                     <td style={{ padding: '9px 12px' }}>
-                      <Pill tone={tone}>{st}</Pill>
+                      <Pill tone={tone}>{label}</Pill>
                     </td>
                     <td style={{ padding: '9px 12px', textAlign: 'right' }}>{r?.total_count ?? '—'}</td>
                     <td style={{ padding: '9px 12px', textAlign: 'right' }}>{r?.absent_count ?? '—'}</td>
@@ -1876,7 +1894,7 @@ function ClosingView({ ym, rows, staff, onRequest, onReview, onPrevYm, onNextYm,
                         </Btn>
                       ) : (
                         <Btn disabled={busy} onClick={() => onRequest(s.id)} style={{ padding: '5px 11px', fontSize: 12 }}>
-                          요청
+                          대상으로
                         </Btn>
                       )}
                     </td>
@@ -1886,7 +1904,13 @@ function ClosingView({ ym, rows, staff, onRequest, onReview, onPrevYm, onNextYm,
           </tbody>
         </table>
       </Card>
-      <div style={{ marginTop: 10, fontSize: 12, color: C.sub, lineHeight: 1.7 }}>
+      <div style={{ marginTop: 10, fontSize: 12, color: C.sub, lineHeight: 1.75 }}>
+        <b style={{ color: C.danger }}>앱이 선생님께 알림을 보내지는 않습니다.</b> 위 <b>단톡방 문구 복사</b>를
+        눌러 단톡방에 붙여넣으셔야 선생님이 알 수 있어요.
+        <br />
+        <b>대상으로</b>는 이 달을 마감할 선생님으로 표시만 하는 것입니다. 선생님이 앱에 들어오면 "마감을
+        요청하셨습니다"라고 보입니다.
+        <br />
         승인하면 그 선생님의 해당 월 출결이 잠깁니다. 뒤늦게 고칠 일이 생기면 잠금을 해제하세요.
       </div>
     </div>
@@ -1897,6 +1921,16 @@ function ClosingView({ ym, rows, staff, onRequest, onReview, onPrevYm, onNextYm,
 /* ═════════════════ ManageViews.jsx ═════════════════ */
 
 const DOW = ['일', '월', '화', '수', '목', '금', '토']
+
+const thisMonthFirst = () => {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
+}
+const nextMonthFirst = () => {
+  const d = new Date()
+  const n = new Date(d.getFullYear(), d.getMonth() + 1, 1)
+  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-01`
+}
 
 /* ================= 휴원일 ================= */
 // 2026~2030 공휴일 (대체공휴일 제외 · 일요일 제외 — 일요일은 원래 수업이 없음)
@@ -2384,14 +2418,10 @@ function TemplateModal({ student, tmpl, staff, programs, onClose, onSave, busy }
   const [pcode, setPcode] = useState(tmpl?.program_code || programs[0]?.code || '')
   const [wd, setWd] = useState(tmpl?.weekday ?? 1)
   const [start, setStart] = useState(tmpl ? hhmm(tmpl.start_time) : '16:00')
-  const [from, setFrom] = useState(tmpl?.valid_from || isoOf(new Date()))
-  // 수정할 때는 원래 수업 길이를 유지합니다 (100분인데 프로그램 기본이 50분인 경우 대비)
-  const [custom, setCustom] = useState(
-    tmpl ? minutesBetween(tmpl.start_time, tmpl.end_time) : null
-  )
-
+  const [from, setFrom] = useState(tmpl ? nextMonthFirst() : isoOf(new Date()))
+  // 수업 길이는 프로그램이 정합니다 (ABA개별 50분 → 50분)
   const prog = programs.find((p) => p.code === pcode)
-  const mins = custom ?? prog?.minutes ?? 50
+  const mins = prog?.minutes ?? 50
   const end = useMemo(() => {
     const [h, m] = start.split(':').map(Number)
     const t = h * 60 + m + mins
@@ -2437,34 +2467,37 @@ function TemplateModal({ student, tmpl, staff, programs, onClose, onSave, busy }
             ))}
           </div>
         </Field>
-        <Field label="시작 시각">
+        <Field label={`시작 시각 (${mins}분 수업)`}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
             <input type="time" step={300} value={start} onChange={(e) => setStart(e.target.value)} style={{ ...inp, width: 'auto' }} />
             <span style={{ fontSize: 13, color: C.sub }}>~ {end}</span>
           </div>
         </Field>
-
-        <Field label="수업 길이">
-          <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
-            {[50, 60, 100, 120, 150].map((n) => (
-              <Btn
-                key={n}
-                variant={mins === n ? 'primary' : 'default'}
-                onClick={() => setCustom(n)}
-                style={{ flex: 1, padding: '9px 0', fontSize: 13, minWidth: 52 }}
-              >
-                {n}분
-              </Btn>
-            ))}
-          </div>
-        </Field>
-        <Field label="시작일 (이 날짜부터 적용)">
+        <Field label={edit ? '언제부터 바꿀까요' : '시작일 (이 날짜부터 적용)'}>
           <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} style={inp} />
+          {edit && (
+            <div style={{ display: 'flex', gap: 5, marginTop: 6, flexWrap: 'wrap' }}>
+              {[
+                ['다음 달 1일', nextMonthFirst()],
+                ['이번 달 1일', thisMonthFirst()],
+                ['오늘', isoOf(new Date())],
+              ].map(([l, v]) => (
+                <Btn
+                  key={l}
+                  variant={from === v ? 'primary' : 'default'}
+                  onClick={() => setFrom(v)}
+                  style={{ padding: '6px 11px', fontSize: 12.5 }}
+                >
+                  {l}
+                </Btn>
+              ))}
+            </div>
+          )}
         </Field>
 
         <div style={{ fontSize: 12, color: C.sub, marginBottom: 12, lineHeight: 1.6 }}>
           {edit
-            ? '저장한 뒤 정산 탭에서 회차 생성을 누르면 반영됩니다. 이미 출결을 찍은 회차는 바뀌지 않습니다.'
+            ? '고른 날짜부터 바뀝니다. 그 전 기록은 원래 요일·시간 그대로 남아요. 저장한 뒤 정산 탭에서 회차 생성을 눌러주세요.'
             : '저장한 뒤 정산 탭에서 회차 생성을 눌러야 실제 수업이 만들어집니다.'}
         </div>
 
@@ -2473,7 +2506,7 @@ function TemplateModal({ student, tmpl, staff, programs, onClose, onSave, busy }
             variant="primary"
             disabled={busy}
             onClick={() =>
-              onSave({ staff_id: staffId, program_code: pcode, weekday: wd, start_time: start, end_time: end, valid_from: from })
+              onSave({ staff_id: staffId, program_code: pcode, weekday: wd, start_time: start, end_time: end, valid_from: from, from })
             }
             style={{ flex: 1, padding: '11px 0' }}
           >
@@ -2519,13 +2552,15 @@ function AddSessionModal({ students, staff, programs, absent, onClose, onSave, b
   const [status, setStatus] = useState(linked ? '보강' : '보강')
   const [date, setDate] = useState(isoOf(new Date()))
   const [start, setStart] = useState(absent ? hhmm(absent.start_time) : '19:00')
-  const [mins, setMins] = useState(
-    absent ? (() => {
+  // 길이는 프로그램이 정합니다. 보강은 원래 결강 수업과 같은 길이로.
+  const mins = useMemo(() => {
+    if (absent) {
       const [h1, m1] = absent.start_time.split(':').map(Number)
       const [h2, m2] = absent.end_time.split(':').map(Number)
       return h2 * 60 + m2 - (h1 * 60 + m1)
-    })() : 50
-  )
+    }
+    return programs.find((p) => p.code === pcode)?.minutes ?? 50
+  }, [absent, pcode, programs])
   const [note, setNote] = useState(absent ? `${absent.d.slice(5).replace('-', '/')} 결강분` : '')
 
   const end = useMemo(() => {
@@ -2598,25 +2633,10 @@ function AddSessionModal({ students, staff, programs, absent, onClose, onSave, b
           {dow && <div style={{ fontSize: 11.5, color: C.mut, marginTop: 5 }}>{dow}요일</div>}
         </AddField>
 
-        <AddField label="시작 시각">
+        <AddField label={`시작 시각 (${mins}분 수업)`}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
             <input type="time" step={300} value={start} onChange={(e) => setStart(e.target.value)} style={{ ...addInp, width: 'auto' }} />
             <span style={{ fontSize: 13, color: C.sub }}>~ {end}</span>
-          </div>
-        </AddField>
-
-        <AddField label="수업 길이">
-          <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
-            {[50, 60, 100, 120, 150].map((n) => (
-              <Btn
-                key={n}
-                variant={mins === n ? 'primary' : 'default'}
-                onClick={() => setMins(n)}
-                style={{ flex: 1, padding: '9px 0', fontSize: 13, minWidth: 52 }}
-              >
-                {n}분
-              </Btn>
-            ))}
           </div>
         </AddField>
 
@@ -3209,6 +3229,7 @@ function Sheet({ ym, s, adjustment, reason, compact, stamp }) {
 function PrintAll({ ym, students, receipts, onClose, say }) {
   const [mode, setMode] = useState('three')
   const [saving, setSaving] = useState(false)
+  const [progress, setProgress] = useState(0)
   const boxRef = useRef(null)
 
   const rMap = useMemo(() => Object.fromEntries(receipts.map((r) => [r.student_id, r])), [receipts])
@@ -3221,22 +3242,57 @@ function PrintAll({ ym, students, receipts, onClose, say }) {
 
   const saveImages = async () => {
     setSaving(true)
+    setProgress(0)
     try {
-      const { toPng } = await import('html-to-image')
-      const nodes = boxRef.current.querySelectorAll('[data-shot]')
-      for (const node of nodes) {
-        const url = await toPng(node, { pixelRatio: 2, backgroundColor: '#ffffff' })
+      const [{ toPng }, JSZipMod] = await Promise.all([
+        import('html-to-image'),
+        import('jszip'),
+      ])
+      const JSZip = JSZipMod.default || JSZipMod
+      const nodes = [...boxRef.current.querySelectorAll('[data-shot]')]
+      const mLabel = String(Number(ym.slice(5))) + '월'
+      // 폰트 CDN 을 다시 받으려다 막히므로 건너뜁니다 (화면에 이미 로드돼 있음)
+      const opt = (n) => ({
+        pixelRatio: 2,
+        backgroundColor: '#ffffff',
+        width: n.offsetWidth,
+        height: n.offsetHeight,
+        skipFonts: true,
+        cacheBust: false,
+        style: { margin: '0' },
+      })
+
+      if (nodes.length === 1) {
+        const n = nodes[0]
+        const url = await toPng(n, opt(n))
         const a = document.createElement('a')
         a.href = url
-        a.download = `${ym}_${node.dataset.shot}.png`
+        a.download = `${n.dataset.shot} ${mLabel} 영수증.png`
         a.click()
-        await new Promise((r) => setTimeout(r, 250))
+        say('저장했습니다')
+        setSaving(false)
+        return
       }
-      say(`${nodes.length}장을 저장했습니다`)
+
+      const zip = new JSZip()
+      for (let i = 0; i < nodes.length; i++) {
+        const n = nodes[i]
+        const url = await toPng(n, opt(n))
+        zip.file(`${n.dataset.shot} ${mLabel} 영수증.png`, url.split(',')[1], { base64: true })
+        setProgress(i + 1)
+      }
+      const blob = await zip.generateAsync({ type: 'blob' })
+      const a = document.createElement('a')
+      a.href = window.URL.createObjectURL(blob)
+      a.download = `${ym.replace('-', '년 ')}월 영수증 ${nodes.length}장.zip`
+      a.click()
+      setTimeout(() => window.URL.revokeObjectURL(a.href), 4000)
+      say(`${nodes.length}장을 압축파일로 저장했습니다`)
     } catch (e) {
       say('이미지 저장에 실패했습니다', 'err')
     }
     setSaving(false)
+    setProgress(0)
   }
 
   return createPortal(
@@ -3305,7 +3361,13 @@ function PrintAll({ ym, students, receipts, onClose, say }) {
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 7 }}>
             {mode === 'image' ? (
               <Btn variant="primary" disabled={saving} onClick={saveImages}>
-                {saving ? '저장 중…' : `${students.length}장 저장`}
+                {saving
+                  ? progress
+                    ? `만드는 중… ${progress}/${students.length}`
+                    : '저장 중…'
+                  : students.length === 1
+                    ? '이미지 저장'
+                    : `${students.length}장 압축 저장`}
               </Btn>
             ) : (
               <Btn variant="primary" onClick={() => window.print()}>
@@ -3318,7 +3380,8 @@ function PrintAll({ ym, students, receipts, onClose, say }) {
         <div style={{ maxWidth: 900, margin: '8px auto 0', fontSize: 12, color: C.sub, lineHeight: 1.65 }}>
           {mode === 'three' && '한 장에 3명씩 들어갑니다. 점선을 따라 자르세요. 인쇄 창에서 용지 A4, 여백 없음으로 두세요.'}
           {mode === 'one' && '한 명당 한 장입니다. 자르지 않고 그대로 드릴 수 있어요.'}
-          {mode === 'image' && '한 명씩 PNG 파일로 저장됩니다. 카카오톡으로 보내실 때 쓰세요. 밖으로 나가는 파일이라 도장은 빼고 (인) 글자만 들어갑니다.'}
+          {mode === 'image' &&
+            '한 명씩 PNG 로 만들어 압축파일(zip) 하나로 내려받습니다. 풀어서 카카오톡으로 보내세요. 밖으로 나가는 파일이라 도장은 빼고 (인) 글자만 들어갑니다.'}
         </div>
       </div>
 
@@ -3882,7 +3945,7 @@ function App() {
               setBusy(true)
               try {
                 const n = await requestClosing(closeYm, sid)
-                say(`${n}명에게 요청했습니다`)
+                say(`${n}명을 마감 대상으로 표시했습니다. 단톡방 문구를 복사해 보내주세요`)
                 await reloadMonth()
               } catch (e) {
                 fail(e)
@@ -4039,7 +4102,7 @@ function App() {
             onUpdateTemplate={async (id, v) => {
               setBusy(true)
               try {
-                const msg = await updateTemplate(id, v)
+                const msg = await changeTemplate(id, v)
                 say(msg || '수정했습니다')
                 await reloadAll()
               } catch (e) {
