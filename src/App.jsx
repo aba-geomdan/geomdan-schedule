@@ -2574,11 +2574,23 @@ function PlanView({
   const [backups, setBackups] = useState(null)
 
   const prev = shiftYm(ym, -1)
+  const [from, setFrom] = useState(ym)
 
   useEffect(() => {
     let alive = true
     setLoading(true)
-    Promise.all([onLoadPlan(prev), onLoadLocked(ym)])
+    // 그 달 시간표가 있으면 그걸, 없으면 지난달 것을 가져옵니다
+    onLoadPlan(ym)
+      .then(async (own) => {
+        if (own && own.length) return [own, ym]
+        const before = await onLoadPlan(prev)
+        return [before, prev]
+      })
+      .then(async ([plan, src]) => {
+        const lk = await onLoadLocked(ym)
+        if (alive) setFrom(src)
+        return [plan, lk]
+      })
       .then(([plan, lk]) => {
         if (!alive) return
         const mapped = plan.map((p, i) => ({
@@ -2655,7 +2667,8 @@ function PlanView({
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           <div style={{ fontSize: 16, fontWeight: 700 }}>{ym.replace('-', '년 ')}월 시간표 짜기</div>
           <div style={{ fontSize: 12, color: C.sub }}>
-            {prev.replace('-', '년 ')}월에서 가져옴 · 수업 {stat.live}개
+            {from === ym ? '지금 시간표' : `${prev.replace('-', '년 ')}월에서 가져옴`} · 수업{' '}
+            {stat.live}개
             {stat.changed > 0 && (
               <b style={{ color: C.pkd, marginLeft: 6 }}>바뀐 곳 {stat.changed}</b>
             )}
@@ -2715,7 +2728,10 @@ function PlanView({
           </div>
         </div>
         <div style={{ fontSize: 12, color: C.sub, marginTop: 8, lineHeight: 1.65 }}>
-          지난달 시간표를 그대로 가져왔습니다. 바뀐 곳만 고치고 <b>적용</b>을 누르세요.
+          {from === ym
+            ? `${ym.replace('-', '년 ')}월 시간표입니다. 바뀐 곳만 고치고 `
+            : `${prev.replace('-', '년 ')}월 시간표를 그대로 가져왔습니다. 바뀐 곳만 고치고 `}
+          <b>적용</b>을 누르세요.
           {locked > 0 && (
             <>
               {' '}
@@ -2812,14 +2828,14 @@ function PlanView({
                       value={r.start_time}
                       disabled={r.removed}
                       onChange={(e) => set(r.uid, { start_time: e.target.value })}
-                      style={{ ...planSel, width: 96 }}
+                      style={{ ...planSel, width: 132 }}
                     />
                     <span style={{ fontSize: 11.5, color: C.mut, minWidth: 38 }}>~{endOf(r)}</span>
                     <select
                       value={r.program_code}
                       disabled={r.removed}
                       onChange={(e) => set(r.uid, { program_code: e.target.value })}
-                      style={{ ...planSel, width: 118 }}
+                      style={{ ...planSel, width: 126 }}
                     >
                       {programs.map((p) => (
                         <option key={p.code} value={p.code}>
