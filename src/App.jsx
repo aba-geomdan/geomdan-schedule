@@ -300,6 +300,19 @@ async function saveStudent(id, v) {
 }
 
 // 시간표 변경 — 언제부터 바뀌는지 지정 (지난 기록은 그대로)
+// 다음 달 시간표 짜기
+async function loadMonthPlan(ym) {
+  return ok(await supabase.rpc('month_plan', { p_ym: ym }))
+}
+
+async function loadPlanLocked(ym) {
+  return ok(await supabase.rpc('month_plan_locked', { p_ym: ym }))
+}
+
+async function applyMonthPlan(ym, rows) {
+  return ok(await supabase.rpc('apply_month_plan', { p_ym: ym, p_rows: rows }))
+}
+
 async function changeTemplate(id, v) {
   return ok(
     await supabase.rpc('change_template', {
@@ -2555,6 +2568,281 @@ function Field({ label, children }) {
 }
 
 
+/* ═════════════════ PlanView.jsx ═════════════════ */
+
+const PLAN_DOW = ['일', '월', '화', '수', '목', '금', '토']
+const key = (r) => `${r.student_id}|${r.staff_id}|${r.program_code}|${r.weekday}|${r.start_time}`
+
+function PlanView({
+  ym, students, staff, programs, busy, onLoadPlan, onLoadLocked, onApply, say,
+}) {
+  const [rows, setRows] = useState(null)
+  const [base, setBase] = useState(null)
+  const [locked, setLocked] = useState(0)
+  const [loading, setLoading] = useState(true)
+
+  const prev = shiftYm(ym, -1)
+
+  useEffect(() => {
+    let alive = true
+    setLoading(true)
+    Promise.all([onLoadPlan(prev), onLoadLocked(ym)])
+      .then(([plan, lk]) => {
+        if (!alive) return
+        const mapped = plan.map((p, i) => ({
+          uid: 'r' + i,
+          student_id: p.student_id,
+          staff_id: p.staff_id,
+          program_code: p.program_code,
+          weekday: p.weekday,
+          start_time: hhmm(p.start_time),
+          removed: false,
+        }))
+        setRows(mapped)
+        setBase(new Set(mapped.map(key)))
+        setLocked(lk || 0)
+      })
+      .catch(() => alive && setRows([]))
+      .finally(() => alive && setLoading(false))
+    return () => {
+      alive = false
+    }
+  }, [ym])
+
+  const byStudent = useMemo(() => {
+    if (!rows) return []
+    const m = {}
+    rows.forEach((r) => {
+      if (!m[r.student_id]) m[r.student_id] = []
+      m[r.student_id].push(r)
+    })
+    return students
+      .filter((s) => s.status !== '퇴소')
+      .map((s) => ({ ...s, items: m[s.id] || [] }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'ko'))
+  }, [rows, students])
+
+  const stat = useMemo(() => {
+    if (!rows || !base) return { changed: 0, live: 0 }
+    const live = rows.filter((r) => !r.removed)
+    const changed =
+      live.filter((r) => !base.has(key(r))).length + rows.filter((r) => r.removed).length
+    return { changed, live: live.length }
+  }, [rows, base])
+
+  const set = (uid, patch) =>
+    setRows((rs) => rs.map((r) => (r.uid === uid ? { ...r, ...patch } : r)))
+
+  const addRow = (sid) =>
+    setRows((rs) => [
+      ...rs,
+      {
+        uid: 'n' + Date.now() + Math.random(),
+        student_id: sid,
+        staff_id: students.find((s) => s.id === sid)?.main_staff_id || staff[0]?.id,
+        program_code: programs[0]?.code,
+        weekday: 1,
+        start_time: '16:00',
+        removed: false,
+      },
+    ])
+
+  const endOf = (r) => {
+    const mins = programs.find((p) => p.code === r.program_code)?.minutes || 50
+    const [h, m] = r.start_time.split(':').map(Number)
+    const t = h * 60 + m + mins
+    return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`
+  }
+
+  if (loading) return <Loading />
+  if (!rows) return <Empty>시간표를 불러오지 못했습니다.</Empty>
+
+  return (
+    <div>
+      <Card style={{ padding: '13px 16px', marginBottom: 14 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 16, fontWeight: 700 }}>{ym.replace('-', '년 ')}월 시간표 짜기</div>
+          <div style={{ fontSize: 12, color: C.sub }}>
+            {prev.replace('-', '년 ')}월에서 가져옴 · 수업 {stat.live}개
+            {stat.changed > 0 && (
+              <b style={{ color: C.pkd, marginLeft: 6 }}>바뀐 곳 {stat.changed}</b>
+            )}
+          </div>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 7 }}>
+            <Btn
+              disabled={busy || stat.changed === 0}
+              onClick={() => {
+                setRows((rs) =>
+                  rs.filter((r) => base.has(key(r))).map((r) => ({ ...r, removed: false }))
+                )
+                say('되돌렸습니다')
+              }}
+            >
+              되돌리기
+            </Btn>
+            <Btn
+              variant="primary"
+              disabled={busy}
+              onClick={() => {
+                const live = rows.filter((r) => !r.removed)
+                if (!live.length) return say('수업이 하나도 없습니다', 'err')
+                if (
+                  confirm(
+                    `${ym.replace('-', '년 ')}월 시간표를 이대로 적용할까요?\n\n` +
+                      `· 수업 ${live.length}개\n` +
+                      (locked > 0 ? `· 이미 진행한 ${locked}건은 그대로 둡니다\n` : '') +
+                      `· ${prev.replace('-', '년 ')}월까지는 바뀌지 않습니다`
+                  )
+                )
+                  onApply(
+                    live.map((r) => ({
+                      student_id: r.student_id,
+                      staff_id: r.staff_id,
+                      program_code: r.program_code,
+                      weekday: r.weekday,
+                      start_time: r.start_time,
+                    }))
+                  )
+              }}
+            >
+              {ym.replace('-', '년 ')}월에 적용
+            </Btn>
+          </div>
+        </div>
+        <div style={{ fontSize: 12, color: C.sub, marginTop: 8, lineHeight: 1.65 }}>
+          지난달 시간표를 그대로 가져왔습니다. 바뀐 곳만 고치고 <b>적용</b>을 누르세요.
+          {locked > 0 && (
+            <>
+              {' '}
+              이 달에 이미 진행한 수업 <b>{locked}건</b>은 그대로 남습니다.
+            </>
+          )}
+          <br />
+          <b>{prev.replace('-', '년 ')}월 이전 기록은 절대 바뀌지 않습니다.</b>
+        </div>
+      </Card>
+
+      <Card style={{ overflow: 'hidden' }}>
+        {byStudent.map((s, si) => (
+          <div
+            key={s.id}
+            style={{
+              padding: '10px 14px',
+              borderBottom: si === byStudent.length - 1 ? 'none' : `1px solid ${C.line2}`,
+              display: 'flex',
+              gap: 10,
+              alignItems: 'flex-start',
+            }}
+          >
+            <div style={{ width: 68, paddingTop: 7, fontSize: 14, fontWeight: 700 }}>{s.name}</div>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
+              {s.items.map((r) => {
+                const isNew = !base.has(key(r)) && !r.removed
+                return (
+                  <div
+                    key={r.uid}
+                    style={{
+                      display: 'flex',
+                      gap: 5,
+                      alignItems: 'center',
+                      flexWrap: 'wrap',
+                      opacity: r.removed ? 0.42 : 1,
+                    }}
+                  >
+                    <select
+                      value={r.weekday}
+                      disabled={r.removed}
+                      onChange={(e) => set(r.uid, { weekday: Number(e.target.value) })}
+                      style={{ ...planSel, width: 56 }}
+                    >
+                      {[1, 2, 3, 4, 5, 6].map((d) => (
+                        <option key={d} value={d}>
+                          {PLAN_DOW[d]}
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      type="time"
+                      step={300}
+                      value={r.start_time}
+                      disabled={r.removed}
+                      onChange={(e) => set(r.uid, { start_time: e.target.value })}
+                      style={{ ...planSel, width: 96 }}
+                    />
+                    <span style={{ fontSize: 11.5, color: C.mut, minWidth: 38 }}>~{endOf(r)}</span>
+                    <select
+                      value={r.program_code}
+                      disabled={r.removed}
+                      onChange={(e) => set(r.uid, { program_code: e.target.value })}
+                      style={{ ...planSel, width: 118 }}
+                    >
+                      {programs.map((p) => (
+                        <option key={p.code} value={p.code}>
+                          {p.label}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      value={r.staff_id}
+                      disabled={r.removed}
+                      onChange={(e) => set(r.uid, { staff_id: e.target.value })}
+                      style={{ ...planSel, width: 84 }}
+                    >
+                      {staff
+                        .filter((x) => x.active)
+                        .map((x) => (
+                          <option key={x.id} value={x.id}>
+                            {x.name}
+                          </option>
+                        ))}
+                    </select>
+                    {r.removed ? (
+                      <>
+                        <Pill tone="pink">뺌</Pill>
+                        <Btn
+                          onClick={() => set(r.uid, { removed: false })}
+                          style={{ padding: '4px 10px', fontSize: 12 }}
+                        >
+                          되살리기
+                        </Btn>
+                      </>
+                    ) : (
+                      <>
+                        {isNew && <Pill tone="amber">바뀜</Pill>}
+                        <Btn
+                          onClick={() => set(r.uid, { removed: true })}
+                          style={{ padding: '4px 9px', fontSize: 12, color: C.danger }}
+                        >
+                          ×
+                        </Btn>
+                      </>
+                    )}
+                  </div>
+                )
+              })}
+              <Btn
+                onClick={() => addRow(s.id)}
+                style={{ alignSelf: 'flex-start', padding: '4px 10px', fontSize: 12 }}
+              >
+                + 수업 추가
+              </Btn>
+            </div>
+          </div>
+        ))}
+      </Card>
+    </div>
+  )
+}
+
+const planSel = {
+  fontSize: 13,
+  padding: '6px 8px',
+  border: '1px solid #DEE0E3',
+  borderRadius: 7,
+  background: '#fff',
+}
+
+
 /* ═════════════════ AddSession.jsx ═════════════════ */
 
 const ADD_DOW = ['일', '월', '화', '수', '목', '금', '토']
@@ -3479,6 +3767,7 @@ function App() {
   const [addOpen, setAddOpen] = useState(false)
   const [printAll, setPrintAll] = useState(null)
   const [needRegen, setNeedRegen] = useState(false)
+  const [planYm, setPlanYm] = useState(() => shiftYm(ymOf(new Date()), 1))
   const [students, setStudents] = useState([])
   const [templates, setTemplates] = useState([])
   const [programs, setPrograms] = useState([])
@@ -3722,6 +4011,7 @@ function App() {
           key: 'setup',
           label: '설정',
           items: [
+            ['plan', '시간표 짜기'],
             ['students', '아동'],
             ['leave', '휴무일'],
           ],
@@ -4239,6 +4529,41 @@ function App() {
               setBusy(false)
             }}
           />
+        )}
+
+        {!loading && tab === 'plan' && isAdmin && (
+          <>
+            <div className="no-print" style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 12 }}>
+              <Btn onClick={() => setPlanYm(shiftYm(planYm, -1))} style={{ padding: '6px 11px' }}>←</Btn>
+              <div style={{ fontSize: 15, fontWeight: 700, minWidth: 96, textAlign: 'center' }}>
+                {planYm.replace('-', '년 ')}월
+              </div>
+              <Btn onClick={() => setPlanYm(shiftYm(planYm, 1))} style={{ padding: '6px 11px' }}>→</Btn>
+            </div>
+            <PlanView
+              key={planYm}
+              ym={planYm}
+              students={students}
+              staff={staff}
+              programs={programs}
+              busy={busy}
+              say={say}
+              onLoadPlan={loadMonthPlan}
+              onLoadLocked={loadPlanLocked}
+              onApply={async (rows) => {
+                setBusy(true)
+                try {
+                  const msg = await applyMonthPlan(planYm, rows)
+                  say(msg || '적용했습니다')
+                  setNeedRegen(false)
+                  await reloadAll()
+                } catch (e) {
+                  fail(e)
+                }
+                setBusy(false)
+              }}
+            />
+          </>
         )}
 
         {!loading && tab === 'leave' && isAdmin && (
