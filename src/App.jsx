@@ -313,6 +313,14 @@ async function applyMonthPlan(ym, rows) {
   return ok(await supabase.rpc('apply_month_plan', { p_ym: ym, p_rows: rows }))
 }
 
+async function loadPlanBackups() {
+  return ok(await supabase.rpc('plan_backup_list'))
+}
+
+async function restorePlanBackup(id) {
+  return ok(await supabase.rpc('restore_plan_backup', { p_id: id }))
+}
+
 async function changeTemplate(id, v) {
   return ok(
     await supabase.rpc('change_template', {
@@ -2235,6 +2243,10 @@ function StudentsView({
         </Btn>
       </div>
 
+      <div style={{ fontSize: 12, color: C.sub, marginBottom: 12, lineHeight: 1.65 }}>
+        수업 시간표는 <b>시간표 짜기</b>에서 한 번에 고치세요. 여기서는 아동 등록·수정·삭제만 합니다.
+      </div>
+
       {groups.map((g) => (
       <Card key={g.name || 'all'} style={{ overflow: 'hidden', marginBottom: 12 }}>
         {g.name && (
@@ -2254,9 +2266,6 @@ function StudentsView({
                 <div style={{ fontSize: 15, fontWeight: 700 }}>{s.name}</div>
                 {s.status !== '재원' && <Pill tone="gray">{s.status}</Pill>}
                 <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-                  <Btn onClick={() => setAdding(s)} style={{ padding: '5px 11px', fontSize: 12 }}>
-                    수업 추가
-                  </Btn>
                   <Btn onClick={() => setEditing(s)} style={{ padding: '5px 11px', fontSize: 12 }}>
                     수정
                   </Btn>
@@ -2296,35 +2305,16 @@ function StudentsView({
                       gap: 7,
                     }}
                   >
-                    <button
-                      onClick={() => setEditingTmpl({ tmpl: t, student: s })}
-                      style={{ border: 'none', background: 'none', padding: 0, font: 'inherit', cursor: 'pointer', color: C.ink }}
-                      title="눌러서 수정"
-                    >
+                    <span>
                       <span style={{ fontWeight: 600 }}>
                         {DOW[t.weekday]} {hhmm(t.start_time)}
                       </span>
-                      <span style={{ color: C.mut, marginLeft: 6 }}>
+                      <span style={{ color: C.mut, marginLeft: 7 }}>
+                        {' '}
                         {staff.find((x) => x.id === t.staff_id)?.name} ·{' '}
                         {programs.find((p) => p.code === t.program_code)?.label}
                       </span>
-                    </button>
-                    <button
-                      onClick={() => {
-                        if (
-                          confirm(
-                            `${s.name} — ${DOW[t.weekday]} ${hhmm(t.start_time)} 수업을 삭제할까요?\n\n` +
-                              `· 아직 출결을 안 찍었으면 예정 회차까지 모두 지워집니다\n` +
-                              `· 이미 진행한 회차가 있으면 그 기록은 남고 이후만 정리됩니다`
-                          )
-                        )
-                          onEndTemplate(t.id)
-                      }}
-                      style={{ border: 'none', background: 'none', cursor: 'pointer', color: C.mut, fontSize: 14, padding: 0, lineHeight: 1 }}
-                      title="이 수업 종료"
-                    >
-                      ×
-                    </button>
+                    </span>
                   </span>
                 ))}
               </div>
@@ -2574,12 +2564,14 @@ const PLAN_DOW = ['일', '월', '화', '수', '목', '금', '토']
 const key = (r) => `${r.student_id}|${r.staff_id}|${r.program_code}|${r.weekday}|${r.start_time}`
 
 function PlanView({
-  ym, students, staff, programs, busy, onLoadPlan, onLoadLocked, onApply, say,
+  ym, students, staff, programs, busy, onLoadPlan, onLoadLocked, onApply,
+  onLoadBackups, onRestore, say,
 }) {
   const [rows, setRows] = useState(null)
   const [base, setBase] = useState(null)
   const [locked, setLocked] = useState(0)
   const [loading, setLoading] = useState(true)
+  const [backups, setBackups] = useState(null)
 
   const prev = shiftYm(ym, -1)
 
@@ -2670,6 +2662,19 @@ function PlanView({
           </div>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 7 }}>
             <Btn
+              disabled={busy}
+              onClick={async () => {
+                if (backups) return setBackups(null)
+                try {
+                  setBackups(await onLoadBackups())
+                } catch {
+                  setBackups([])
+                }
+              }}
+            >
+              지난 기록
+            </Btn>
+            <Btn
               disabled={busy || stat.changed === 0}
               onClick={() => {
                 setRows((rs) =>
@@ -2721,6 +2726,46 @@ function PlanView({
           <b>{prev.replace('-', '년 ')}월 이전 기록은 절대 바뀌지 않습니다.</b>
         </div>
       </Card>
+
+      {backups && (
+        <Card style={{ overflow: 'hidden', marginBottom: 14 }}>
+          <div style={{ padding: '12px 16px', borderBottom: `1px solid ${C.line2}` }}>
+            <div style={{ fontSize: 14.5, fontWeight: 700 }}>시간표 되돌리기</div>
+            <div style={{ fontSize: 12, color: C.sub, marginTop: 3, lineHeight: 1.6 }}>
+              시간표를 적용할 때마다 직전 상태가 저장됩니다. 잘못 적용했으면 그 시점으로 되돌리세요.
+              출결을 찍은 회차는 그대로 남습니다.
+            </div>
+          </div>
+          {backups.length === 0 ? (
+            <Empty>아직 저장된 기록이 없습니다.</Empty>
+          ) : (
+            backups.map((b) => (
+              <div
+                key={b.id}
+                style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '11px 16px', borderBottom: `1px solid ${C.line2}`, flexWrap: 'wrap' }}
+              >
+                <div style={{ fontSize: 12.5, color: C.sub, minWidth: 128 }}>
+                  {new Date(b.created_at).toLocaleString('ko-KR', {
+                    month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit',
+                  })}
+                </div>
+                <div style={{ flex: 1, fontSize: 13.5, fontWeight: 600 }}>{b.note}</div>
+                <div style={{ fontSize: 12, color: C.mut }}>수업 {b.rows}개</div>
+                <Btn
+                  disabled={busy}
+                  onClick={() => {
+                    if (confirm(`${b.note} 시점으로 되돌릴까요?\n\n지금 시간표는 따로 저장되니 다시 되돌릴 수 있습니다.`))
+                      onRestore(b.id)
+                  }}
+                  style={{ padding: '5px 12px', fontSize: 12.5 }}
+                >
+                  이 시점으로
+                </Btn>
+              </div>
+            ))
+          )}
+        </Card>
+      )}
 
       <Card style={{ overflow: 'hidden' }}>
         {byStudent.map((s, si) => (
@@ -4550,6 +4595,21 @@ function App() {
               say={say}
               onLoadPlan={loadMonthPlan}
               onLoadLocked={loadPlanLocked}
+              onLoadBackups={loadPlanBackups}
+              onRestore={async (id) => {
+                setBusy(true)
+                try {
+                  const msg = await restorePlanBackup(id)
+                  say(msg || '되돌렸습니다')
+                  setNeedRegen(false)
+                  await reloadAll()
+                  setTab('week')
+                  setTimeout(() => setTab('plan'), 50)
+                } catch (e) {
+                  fail(e)
+                }
+                setBusy(false)
+              }}
               onApply={async (rows) => {
                 setBusy(true)
                 try {
