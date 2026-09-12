@@ -2203,9 +2203,20 @@ function StudentsView({
             </button>
           ))}
         </div>
-        <Btn onClick={() => setShowLeft(!showLeft)} style={{ marginLeft: 'auto', padding: '6px 12px', fontSize: 12.5 }}>
-          {showLeft ? '재원만 보기' : '퇴소 포함'}
-        </Btn>
+        <label
+          style={{
+            marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6,
+            fontSize: 12.5, color: C.sub, cursor: 'pointer', userSelect: 'none',
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={showLeft}
+            onChange={(e) => setShowLeft(e.target.checked)}
+            style={{ width: 15, height: 15, cursor: 'pointer' }}
+          />
+          퇴소한 아동도 보기
+        </label>
         <Btn variant="primary" onClick={() => setEditing('new')}>
           새 아동 등록
         </Btn>
@@ -2369,6 +2380,10 @@ function StudentModal({ student, staff, onClose, onSave, busy }) {
       <div style={{ padding: 18 }}>
         <Field label="이름">
           <input value={name} onChange={(e) => setName(e.target.value)} style={inp} placeholder="김지환" />
+          <div style={{ fontSize: 11.5, color: C.mut, marginTop: 5, lineHeight: 1.55 }}>
+            같은 이름의 아동이 이미 다니고 있으면 뒤에 구분을 붙여주세요 (예: 김지환B). 영수증에는 아래
+            표기명이 나가니 거기에는 이름만 적으시면 됩니다.
+          </div>
         </Field>
         <Field label="영수증 표기명 (비우면 이름 그대로)">
           <input value={display} onChange={(e) => setDisplay(e.target.value)} style={inp} placeholder="김 지 환" />
@@ -3463,6 +3478,7 @@ function App() {
   const [makeupFor, setMakeupFor] = useState(null)
   const [addOpen, setAddOpen] = useState(false)
   const [printAll, setPrintAll] = useState(null)
+  const [needRegen, setNeedRegen] = useState(false)
   const [students, setStudents] = useState([])
   const [templates, setTemplates] = useState([])
   const [programs, setPrograms] = useState([])
@@ -3474,7 +3490,18 @@ function App() {
     setToast({ msg, tone })
     setTimeout(() => setToast(null), 2600)
   }
-  const fail = (e) => say(e?.message || String(e), 'err')
+  // DB 가 돌려주는 영어 오류를 알아보기 쉬운 말로 바꿉니다
+  const fail = (e) => {
+    const raw = e?.message || String(e)
+    if (/uq_student_active_name|students_name_key/.test(raw))
+      return say('같은 이름의 아동이 이미 다니고 있습니다. 이름 뒤에 구분을 붙여주세요 (예: 김지환B)', 'err')
+    if (/uq_holiday|holidays_pkey/.test(raw)) return say('그 날짜는 이미 휴무일로 등록돼 있습니다', 'err')
+    if (/uq_makeup_once/.test(raw)) return say('그 결강에는 이미 보강이 잡혀 있습니다', 'err')
+    if (/staff_name_key/.test(raw)) return say('같은 이름의 선생님이 이미 있습니다', 'err')
+    if (/duplicate key|unique constraint/i.test(raw)) return say('이미 등록된 내용입니다', 'err')
+    if (/violates foreign key/i.test(raw)) return say('연결된 기록이 있어 처리할 수 없습니다', 'err')
+    return say(raw, 'err')
+  }
 
   const colorOf = useCallback(
     (name) => {
@@ -3639,6 +3666,7 @@ function App() {
     setBusy(true)
     try {
       const n = await generateMonth(ym)
+      setNeedRegen(false)
       say(`${n}건 생성됐습니다`)
       await reloadAll()
     } catch (e) {
@@ -3669,21 +3697,50 @@ function App() {
   if (session === undefined) return <Loading />
   if (!session) return <Login onDone={() => {}} say={say} />
 
-  const tabs = [
-    ...(isAdmin ? [] : [['today', '오늘']]),
-    ['month', '월간'],
-    ['week', '주간'],
-    ...(isAdmin ? [['makeup', `보강 ${unmadeUp.length}`]] : []),
-    ...(isAdmin
-      ? [
-          ['closing', '마감'],
-          ['billing', '정산'],
-          ['payment', `입금${unpaidCount ? ` ${unpaidCount}` : ''}`],
-          ['students', '아동'],
-          ['leave', '휴무일'],
-        ]
-      : [['myclose', '마감']]),
-  ]
+  // 탭을 성격별로 세 묶음으로 나눕니다 (원장님 화면)
+  const groups = isAdmin
+    ? [
+        {
+          key: 'sched',
+          label: '시간표',
+          items: [
+            ['month', '월간'],
+            ['week', '주간'],
+            ['makeup', `보강${unmadeUp.length ? ` ${unmadeUp.length}` : ''}`],
+          ],
+        },
+        {
+          key: 'money',
+          label: '정산',
+          items: [
+            ['billing', '청구'],
+            ['payment', `입금${unpaidCount ? ` ${unpaidCount}` : ''}`],
+            ['closing', '마감'],
+          ],
+        },
+        {
+          key: 'setup',
+          label: '설정',
+          items: [
+            ['students', '아동'],
+            ['leave', '휴무일'],
+          ],
+        },
+      ]
+    : [
+        {
+          key: 'sched',
+          label: '수업',
+          items: [
+            ['today', '오늘'],
+            ['month', '월간'],
+            ['week', '주간'],
+          ],
+        },
+        { key: 'money', label: '마감', items: [['myclose', '마감']] },
+      ]
+
+  const activeGroup = groups.find((g) => g.items.some(([k]) => k === tab)) || groups[0]
 
   return (
     <div style={{ minHeight: '100vh', background: C.bg }} className={printAll ? 'app-hidden-on-print' : ''}>
@@ -3691,27 +3748,35 @@ function App() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', maxWidth: 1200, margin: '0 auto' }}>
           <div style={{ fontSize: 16, fontWeight: 700 }}>검단ABA 시간표</div>
 
-          <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 8, overflowX: 'auto' }}>
-            {tabs.map(([k, label]) => (
-              <button
-                key={k}
-                onClick={() => setTab(k)}
-                style={{
-                  border: 'none',
-                  cursor: 'pointer',
-                  padding: '6px 12px',
-                  borderRadius: 6,
-                  fontSize: 13,
-                  fontWeight: 600,
-                  whiteSpace: 'nowrap',
-                  background: tab === k ? '#fff' : 'transparent',
-                  color: tab === k ? C.ink : C.sub,
-                  boxShadow: tab === k ? '0 1px 2px rgba(0,0,0,.06)' : 'none',
-                }}
-              >
-                {label}
-              </button>
-            ))}
+          <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 8 }}>
+            {groups.map((g) => {
+              const on = activeGroup.key === g.key
+              const badge =
+                g.key === 'sched' ? unmadeUp.length : g.key === 'money' ? unpaidCount : 0
+              return (
+                <button
+                  key={g.key}
+                  onClick={() => !on && setTab(g.items[0][0])}
+                  style={{
+                    border: 'none', cursor: 'pointer', padding: '7px 16px', borderRadius: 6,
+                    fontSize: 13.5, fontWeight: 700, whiteSpace: 'nowrap',
+                    background: on ? '#fff' : 'transparent',
+                    color: on ? C.ink : C.sub,
+                    boxShadow: on ? '0 1px 2px rgba(0,0,0,.06)' : 'none',
+                  }}
+                >
+                  <span>{g.label}</span>
+                  {!on && badge > 0 && (
+                    <span
+                      style={{
+                        display: 'inline-block', width: 6, height: 6, borderRadius: 99,
+                        background: C.pkd, marginLeft: 5, verticalAlign: 'middle',
+                      }}
+                    />
+                  )}
+                </button>
+              )
+            })}
           </div>
 
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -3724,7 +3789,56 @@ function App() {
         </div>
       </div>
 
+      {activeGroup.items.length > 1 && (
+        <div
+          className="no-print"
+          style={{ background: '#fff', borderBottom: `1px solid ${C.line}`, padding: '0 16px' }}
+        >
+          <div style={{ display: 'flex', gap: 2, maxWidth: 1200, margin: '0 auto', overflowX: 'auto' }}>
+            {activeGroup.items.map(([k, label]) => (
+              <button
+                key={k}
+                onClick={() => setTab(k)}
+                style={{
+                  border: 'none', background: 'none', cursor: 'pointer',
+                  padding: '10px 14px', fontSize: 13.5, whiteSpace: 'nowrap',
+                  fontWeight: tab === k ? 700 : 500,
+                  color: tab === k ? C.pkd : C.sub,
+                  borderBottom: `2px solid ${tab === k ? C.pkd : 'transparent'}`,
+                  marginBottom: -1,
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div style={{ padding: 16, maxWidth: 1200, margin: '0 auto' }}>
+        {!loading && isAdmin && needRegen && (
+          <div
+            className="no-print"
+            style={{
+              marginBottom: 14, padding: '12px 15px', borderRadius: 10,
+              border: `1px solid ${C.pk}`, background: C.pkl,
+              display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+            }}
+          >
+            <div style={{ flex: 1, minWidth: 200 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: C.pkd }}>
+                시간표가 바뀌었습니다
+              </div>
+              <div style={{ fontSize: 12, color: '#8A3550', marginTop: 2, lineHeight: 1.6 }}>
+                수업에 반영하려면 회차를 다시 만들어야 합니다. 이미 출결을 찍은 회차는 그대로 남아요.
+              </div>
+            </div>
+            <Btn variant="primary" disabled={busy} onClick={doGenerate}>
+              {ym.replace('-', '년 ')}월 회차 다시 만들기
+            </Btn>
+          </div>
+        )}
+
         {!loading && isAdmin && unmadeUp.length > 0 && (
           <div className="no-print" style={{ marginBottom: 14 }}>
             <button
@@ -4081,7 +4195,8 @@ function App() {
               setBusy(true)
               try {
                 await saveTemplate(v)
-                say('수업을 추가했습니다. 정산 탭에서 회차 생성을 눌러주세요')
+                setNeedRegen(true)
+                say('수업을 추가했습니다')
                 await reloadManage()
               } catch (e) {
                 fail(e)
@@ -4103,6 +4218,7 @@ function App() {
               setBusy(true)
               try {
                 const msg = await changeTemplate(id, v)
+                setNeedRegen(true)
                 say(msg || '수정했습니다')
                 await reloadAll()
               } catch (e) {
@@ -4114,6 +4230,7 @@ function App() {
               setBusy(true)
               try {
                 const msg = await endTemplate(id)
+                setNeedRegen(true)
                 say(msg || '수업을 삭제했습니다')
                 await reloadAll()
               } catch (e) {
@@ -4133,6 +4250,7 @@ function App() {
               setBusy(true)
               try {
                 const msg = await addLeave(v)
+                setNeedRegen(true)
                 say(msg || '등록했습니다')
                 await reloadAll()
               } catch (e) {
@@ -4144,7 +4262,8 @@ function App() {
               setBusy(true)
               try {
                 await removeLeave(id)
-                say('삭제했습니다. 회차 생성을 다시 눌러주세요')
+                setNeedRegen(true)
+                say('삭제했습니다')
                 await reloadAll()
               } catch (e) {
                 fail(e)
