@@ -1483,7 +1483,7 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
               >
                 <div style={{ fontSize: 15, fontWeight: 700 }}>{g.name}</div>
                 <div style={{ fontSize: 12, color: C.sub }}>
-                  아동 {g.students.size}명 · {g.count}회 · {(g.minutes / 60).toFixed(1)}시간
+                  아동 {g.students.size}명 · {g.count}회
                 </div>
                 <div style={{ marginLeft: 'auto', fontSize: 16, fontWeight: 700, color: C.pkd }}>
                   {won(g.amount)}원
@@ -1495,11 +1495,8 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
                     <tr key={i} style={{ borderBottom: `1px solid ${C.line2}` }}>
                       <td style={{ padding: '8px 16px', fontWeight: 600, width: '22%' }}>{r.student_name}</td>
                       <td style={{ padding: '8px 8px', color: '#4B5057' }}>{r.program_label}</td>
-                      <td style={{ padding: '8px 8px', textAlign: 'right', width: '13%' }}>{r.lesson_count}회</td>
-                      <td style={{ padding: '8px 8px', textAlign: 'right', color: C.sub, width: '16%' }}>
-                        {(r.minutes / 60).toFixed(1)}h
-                      </td>
-                      <td style={{ padding: '8px 16px', textAlign: 'right', fontWeight: 600, width: '20%' }}>
+                      <td style={{ padding: '8px 8px', textAlign: 'right', width: '16%' }}>{r.lesson_count}회</td>
+                      <td style={{ padding: '8px 16px', textAlign: 'right', fontWeight: 600, width: '24%' }}>
                         {won(r.amount)}
                       </td>
                     </tr>
@@ -2040,12 +2037,22 @@ const PUBLIC_HOLIDAYS = [
 ]
 
 function LeaveView({ leaves, staff, busy, onAdd, onRemove }) {
+  const [showPast, setShowPast] = useState(false)
   const [d, setD] = useState('')
   const [label, setLabel] = useState('')
   const [staffId, setStaffId] = useState('')
   const [mode, setMode] = useState('취소')
 
   const isCenter = !staffId
+
+  const today = isoOf(new Date())
+  const past = leaves.filter((h) => h.d < today)
+  // 앞으로의 휴무일은 가까운 날부터, 지나간 것은 최근 순으로
+  const shown = showPast
+    ? [...leaves].sort((a, b) => (a.d >= today) === (b.d >= today)
+        ? (a.d >= today ? a.d.localeCompare(b.d) : b.d.localeCompare(a.d))
+        : a.d >= today ? -1 : 1)
+    : leaves.filter((h) => h.d >= today).sort((a, b) => a.d.localeCompare(b.d))
 
   return (
     <div style={{ maxWidth: 560 }}>
@@ -2126,16 +2133,45 @@ function LeaveView({ leaves, staff, busy, onAdd, onRemove }) {
         </div>
       </Card>
 
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+        <div style={{ fontSize: 13.5, fontWeight: 700 }}>
+          앞으로의 휴무일 {leaves.filter((h) => h.d >= today).length}일
+        </div>
+        {past.length > 0 && (
+          <label
+            style={{
+              marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6,
+              fontSize: 12.5, color: C.sub, cursor: 'pointer', userSelect: 'none',
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={showPast}
+              onChange={(e) => setShowPast(e.target.checked)}
+              style={{ width: 15, height: 15, cursor: 'pointer' }}
+            />
+            지나간 휴무일 {past.length}일도 보기
+          </label>
+        )}
+      </div>
+
       <Card style={{ overflow: 'hidden' }}>
-        {leaves.length === 0 ? (
-          <Empty>등록된 휴무일이 없습니다.</Empty>
+        {shown.length === 0 ? (
+          <Empty>
+            {leaves.length === 0 ? '등록된 휴무일이 없습니다.' : '앞으로 예정된 휴무일이 없습니다.'}
+          </Empty>
         ) : (
-          leaves.map((h) => (
+          shown.map((h) => (
             <div
               key={h.id}
               style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '11px 16px', borderBottom: `1px solid ${C.line2}`, flexWrap: 'wrap' }}
             >
-              <div style={{ fontSize: 14, fontWeight: 700, minWidth: 108 }}>
+              <div
+                style={{
+                  fontSize: 14, fontWeight: 700, minWidth: 108,
+                  color: h.d < today ? C.mut : C.ink,
+                }}
+              >
                 {h.d} ({h.weekday})
               </div>
               {h.staff_name ? (
@@ -2647,6 +2683,8 @@ function PlanView({
         program_code: programs[0]?.code,
         weekday: 1,
         start_time: '16:00',
+        from: '',           // 비우면 1일부터
+        isNewRow: true,
         removed: false,
       },
     ])
@@ -2719,6 +2757,7 @@ function PlanView({
                       program_code: r.program_code,
                       weekday: r.weekday,
                       start_time: r.start_time,
+                      ...(r.from ? { from: r.from } : {}),
                     }))
                   )
               }}
@@ -2740,6 +2779,8 @@ function PlanView({
           )}
           <br />
           <b>{prev.replace('-', '년 ')}월 이전 기록은 절대 바뀌지 않습니다.</b>
+          <br />
+          달 중간에 들어온 아동은 <b>수업 추가</b>로 넣고 <b>시작</b> 날짜를 정해주세요.
         </div>
       </Card>
 
@@ -2857,6 +2898,21 @@ function PlanView({
                           </option>
                         ))}
                     </select>
+                    {r.isNewRow && !r.removed && (
+                      <label
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11.5, color: C.sub }}
+                        title="비우면 이 달 1일부터 시작합니다"
+                      >
+                        <span>시작</span>
+                        <input
+                          type="date"
+                          value={r.from || ''}
+                          min={ym + '-01'}
+                          onChange={(e) => set(r.uid, { from: e.target.value })}
+                          style={{ ...planSel, width: 132, padding: '5px 7px' }}
+                        />
+                      </label>
+                    )}
                     {r.removed ? (
                       <>
                         <Pill tone="pink">뺌</Pill>
