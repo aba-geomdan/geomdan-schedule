@@ -14,7 +14,7 @@ const hasKey = !!ANON
 // 키가 없으면 createClient 가 예외를 던져 앱이 통째로 죽습니다.
 // 빈 화면 대신 안내를 띄우려고 더미 키로 만들어 둡니다.
 const supabase = createClient(SUPABASE_URL, ANON || 'missing-anon-key', {
-  auth: { persistSession: true, autoRefreshToken:a true },
+  auth: { persistSession: true, autoRefreshToken: true },
 })
 
 // ---- 도메인 가드 ----
