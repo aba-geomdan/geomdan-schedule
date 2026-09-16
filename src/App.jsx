@@ -14,7 +14,7 @@ const hasKey = !!ANON
 // 키가 없으면 createClient 가 예외를 던져 앱이 통째로 죽습니다.
 // 빈 화면 대신 안내를 띄우려고 더미 키로 만들어 둡니다.
 const supabase = createClient(SUPABASE_URL, ANON || 'missing-anon-key', {
-  auth: { persistSession: true, autoRefreshToken: true },
+  auth: { persistSession: true, autoRefreshToken:a true },
 })
 
 // ---- 도메인 가드 ----
@@ -150,6 +150,15 @@ async function loadRevenue() {
 async function addDeposit(studentId, { amount, date, method, memo }) {
   return ok(
     await supabase.rpc('add_deposit', {
+      p_student: studentId, p_amount: amount,
+      p_date: date, p_method: method ?? null, p_memo: memo ?? null,
+    })
+  )
+}
+
+async function addRefund(studentId, { amount, date, method, memo }) {
+  return ok(
+    await supabase.rpc('add_refund', {
       p_student: studentId, p_amount: amount,
       p_date: date, p_method: method ?? null, p_memo: memo ?? null,
     })
@@ -3110,10 +3119,11 @@ function AddField({ label, children }) {
 /* ═════════════════ PaymentView.jsx ═════════════════ */
 
 function PaymentView({
-  ym, rows, revenue, busy, onDeposit, onRemoveDeposit, loadHistory, say,
+  ym, rows, revenue, busy, onDeposit, onRefund, onRemoveDeposit, loadHistory, say,
 }) {
   const [filter, setFilter] = useState('unpaid')
   const [depositFor, setDepositFor] = useState(null)
+  const [refundFor, setRefundFor] = useState(null)
   const [historyFor, setHistoryFor] = useState(null)
 
   const t = useMemo(() => {
@@ -3278,6 +3288,13 @@ function PaymentView({
                     >
                       입금
                     </Btn>
+                    <Btn
+                      disabled={busy}
+                      onClick={() => setRefundFor(r)}
+                      style={{ padding: '5px 11px', fontSize: 12, marginRight: 5, color: C.danger }}
+                    >
+                      환불
+                    </Btn>
                     <Btn disabled={busy} onClick={() => setHistoryFor(r)} style={{ padding: '5px 11px', fontSize: 12 }}>
                       내역
                     </Btn>
@@ -3334,6 +3351,18 @@ function PaymentView({
           onSave={(v) => {
             onDeposit(depositFor.student_id, v)
             setDepositFor(null)
+          }}
+        />
+      )}
+
+      {refundFor && (
+        <RefundModal
+          row={refundFor}
+          busy={busy}
+          onClose={() => setRefundFor(null)}
+          onSave={(v) => {
+            onRefund(refundFor.student_id, v)
+            setRefundFor(null)
           }}
         />
       )}
@@ -3443,6 +3472,102 @@ function DepositModal({ row, onClose, onSave, busy }) {
   )
 }
 
+function RefundModal({ row, onClose, onSave, busy }) {
+  const [amount, setAmount] = useState(row.credit_left > 0 ? row.credit_left : 0)
+  const [date, setDate] = useState(isoOf(new Date()))
+  const [method, setMethod] = useState('계좌이체')
+  const [memo, setMemo] = useState('')
+
+  const after = (row.credit_left || 0) - amount
+
+  return (
+    <Modal onClose={onClose} max={350}>
+      <div style={{ padding: '16px 18px', borderBottom: `1px solid ${C.line2}` }}>
+        <div style={{ fontSize: 17, fontWeight: 700 }}>{row.student_name} 환불</div>
+        <div style={{ fontSize: 12.5, color: C.sub, marginTop: 3 }}>
+          누적 입금 {won(row.deposit_total)}원
+          {row.credit_left > 0 && ` · 남은 선입금 ${won(row.credit_left)}원`}
+        </div>
+      </div>
+      <div style={{ padding: 18 }}>
+        <div style={{ fontSize: 12, color: C.sub, marginBottom: 6 }}>환불액</div>
+        <input
+          type="number"
+          value={amount}
+          onChange={(e) => setAmount(Number(e.target.value) || 0)}
+          style={{ width: '100%', fontSize: 16, padding: '11px 12px', border: '1px solid #DEE0E3', borderRadius: 8, fontWeight: 700 }}
+        />
+        {row.credit_left > 0 && (
+          <div style={{ display: 'flex', gap: 5, marginTop: 7, flexWrap: 'wrap' }}>
+            <Btn onClick={() => setAmount(row.credit_left)} style={{ padding: '5px 10px', fontSize: 12 }}>
+              남은 선입금 전액
+            </Btn>
+          </div>
+        )}
+        {amount > 0 && (
+          <div
+            style={{
+              marginTop: 10, padding: '9px 12px', borderRadius: 8, fontSize: 12, lineHeight: 1.6,
+              background: after < 0 ? '#FDECEF' : '#F4F5F6',
+              color: after < 0 ? C.danger : C.sub,
+            }}
+          >
+            {after < 0
+              ? `남은 선입금보다 ${won(-after)}원 많습니다. 이미 받은 수업료에서 돌려주는 경우라면 그대로 진행하세요.`
+              : `환불 후 남은 선입금 ${won(after)}원`}
+          </div>
+        )}
+
+        <div style={{ fontSize: 12, color: C.sub, margin: '13px 0 6px' }}>환불일</div>
+        <input
+          type="date"
+          value={date}
+          onChange={(e) => setDate(e.target.value)}
+          style={{ width: '100%', fontSize: 14, padding: '10px 11px', border: '1px solid #DEE0E3', borderRadius: 8 }}
+        />
+
+        <div style={{ fontSize: 12, color: C.sub, margin: '13px 0 6px' }}>방법</div>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {['계좌이체', '현금', '카드'].map((m) => (
+            <Btn key={m} variant={method === m ? 'primary' : 'default'} onClick={() => setMethod(m)} style={{ flex: 1, padding: '9px 0', fontSize: 13 }}>
+              {m}
+            </Btn>
+          ))}
+        </div>
+
+        <div style={{ fontSize: 12, color: C.sub, margin: '13px 0 6px' }}>사유</div>
+        <div style={{ display: 'flex', gap: 5, marginBottom: 7, flexWrap: 'wrap' }}>
+          {['퇴소 환불', '수업 불만족', '센터 사정'].map((m) => (
+            <Btn key={m} onClick={() => setMemo(m)} style={{ padding: '5px 10px', fontSize: 12 }}>
+              {m}
+            </Btn>
+          ))}
+        </div>
+        <input
+          placeholder="사유를 적어주세요"
+          value={memo}
+          onChange={(e) => setMemo(e.target.value)}
+          style={{ width: '100%', fontSize: 13, padding: '9px 11px', border: '1px solid #DEE0E3', borderRadius: 8 }}
+        />
+
+        <div style={{ display: 'flex', gap: 7, marginTop: 16 }}>
+          <Btn
+            variant="danger"
+            disabled={busy || !amount}
+            onClick={() => onSave({ amount, date, method, memo: memo.trim() || '환불' })}
+            style={{ flex: 1, padding: '11px 0' }}
+          >
+            환불 기록
+          </Btn>
+          <Btn onClick={onClose} style={{ flex: 1, padding: '11px 0' }}>
+            취소
+          </Btn>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
 function HistoryModal({ row, onClose, onRemove, loadHistory, busy }) {
   const [list, setList] = useState(null)
 
@@ -3478,7 +3603,9 @@ function HistoryModal({ row, onClose, onRemove, loadHistory, busy }) {
                 {d.received_on.slice(2).replace(/-/g, '/')}
               </div>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 15, fontWeight: 700 }}>{won(d.amount)}원</div>
+                <div style={{ fontSize: 15, fontWeight: 700, color: d.amount < 0 ? C.danger : C.ink }}>
+                  {d.amount < 0 ? `환불 ${won(-d.amount)}` : won(d.amount)}원
+                </div>
                 <div style={{ fontSize: 11.5, color: C.mut }}>
                   {[d.method, d.memo].filter(Boolean).join(' · ') || '—'}
                 </div>
@@ -4559,6 +4686,17 @@ function App() {
                 try {
                   await addDeposit(sid, v)
                   say('입금을 기록했습니다')
+                  await reloadMonth()
+                } catch (e) {
+                  fail(e)
+                }
+                setBusy(false)
+              }}
+              onRefund={async (sid, v) => {
+                setBusy(true)
+                try {
+                  await addRefund(sid, v)
+                  say('환불을 기록했습니다')
                   await reloadMonth()
                 } catch (e) {
                   fail(e)
