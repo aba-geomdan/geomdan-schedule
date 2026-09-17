@@ -597,15 +597,13 @@ const toMin = (t) => {
 // 선생님마다 고정된 세로 열을 줍니다.
 //   같은 선생님이 같은 시간에 두 수업을 할 수 없으므로 열이 겹치지 않고,
 //   하루 안에서 한 선생님 수업이 같은 줄에 쭉 이어집니다.
-function layout(items, order) {
-  if (!items.length) return []
-  const names = [...new Set(items.map((s) => s.staff_name))].sort((a, b) => {
-    const ia = order.indexOf(a)
-    const ib = order.indexOf(b)
-    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b, 'ko')
-  })
+function layout(items, names) {
+  if (!items.length || !names.length) return []
   const cols = names.length
-  return items.map((s) => ({ s, col: Math.max(0, names.indexOf(s.staff_name)), cols }))
+  return items.map((s) => {
+    const i = names.indexOf(s.staff_name)
+    return { s, col: i < 0 ? 0 : i, cols }
+  })
 }
 
 
@@ -621,6 +619,14 @@ function WeekGrid({ weekStart, sessions, holidays, colorOf, toneOf, staffOrder =
   )
 
   const holidaySet = useMemo(() => new Set(holidays.map((h) => h.d)), [holidays])
+
+  // 주 전체에서 수업이 있는 선생님을 순서대로 — 모든 날이 같은 폭, 같은 줄을 씁니다
+  const weekNames = useMemo(() => {
+    const seen = new Set(sessions.map((s) => s.staff_name))
+    const ordered = staffOrder.filter((n) => seen.has(n))
+    const rest = [...seen].filter((n) => !staffOrder.includes(n)).sort((a, b) => a.localeCompare(b, 'ko'))
+    return [...ordered, ...rest]
+  }, [sessions, staffOrder])
   const height = (DAY_END - DAY_START) * PX
 
   return (
@@ -635,9 +641,15 @@ function WeekGrid({ weekStart, sessions, holidays, colorOf, toneOf, staffOrder =
               style={{
                 padding: '8px 0',
                 textAlign: 'center',
-                borderLeft: `1px solid ${C.line2}`,
+                borderLeft: `2px solid ${C.line}`,
                 borderBottom: `1px solid ${C.line}`,
-                background: isToday ? C.pkl : '#FBFBFC',
+                background: isToday
+                  ? C.pkl
+                  : d.getDay() === 6
+                    ? '#F7F5EF'
+                    : i % 2 === 1
+                      ? '#F4F5F6'
+                      : '#FBFBFC',
               }}
             >
               <div style={{ fontSize: 10.5, color: C.mut }}>{'일월화수목금토'[d.getDay()]}</div>
@@ -680,8 +692,15 @@ function WeekGrid({ weekStart, sessions, holidays, colorOf, toneOf, staffOrder =
               style={{
                 position: 'relative',
                 height,
-                borderLeft: `1px solid ${C.line2}`,
-                background: isHoliday ? '#FAFAFB' : '#fff',
+                // 요일 경계를 뚜렷하게, 홀짝으로 배경을 살짝 다르게
+                borderLeft: `2px solid ${C.line}`,
+                background: isHoliday
+                  ? '#F4F5F6'
+                  : d.getDay() === 6
+                    ? '#FCFBF8'
+                    : i % 2 === 1
+                      ? '#FAFAFB'
+                      : '#fff',
               }}
             >
               {Array.from({ length: Math.floor((DAY_END - DAY_START) / 60) }, (_, k) => (
@@ -711,7 +730,7 @@ function WeekGrid({ weekStart, sessions, holidays, colorOf, toneOf, staffOrder =
                   휴원
                 </div>
               )}
-              {layout(items, staffOrder).map(({ s, col, cols }) => {
+              {layout(items, weekNames).map(({ s, col, cols }) => {
                 // 배경은 선생님 색, 결강·취소는 빗금과 취소선으로 구분합니다
                 const tone = toneOf ? toneOf(s.staff_name) : styleOf(s)
                 const tc = colorOf(s.staff_name)
