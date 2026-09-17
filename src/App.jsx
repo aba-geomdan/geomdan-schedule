@@ -318,6 +318,10 @@ async function loadPlanLocked(ym) {
   return ok(await supabase.rpc('month_plan_locked', { p_ym: ym }))
 }
 
+async function checkMonthPlan(rows) {
+  return ok(await supabase.rpc('check_month_plan', { p_rows: rows }))
+}
+
 async function applyMonthPlan(ym, rows) {
   return ok(await supabase.rpc('apply_month_plan', { p_ym: ym, p_rows: rows }))
 }
@@ -421,6 +425,16 @@ const STATUS = {
 }
 
 const TEACHER_COLORS = ['#D4728A', '#4A7FD4', '#2E9E8F', '#9B72C4', '#C98A3A', '#5C8A3A']
+
+// 시간표 칸 배경용 — 선생님마다 연한 색 + 글씨 색 (위 순서와 짝)
+const TEACHER_TONES = [
+  { bg: '#FBEAF0', bd: '#ED93B1', fg: '#72243E' },
+  { bg: '#E6F1FB', bd: '#85B7EB', fg: '#0C447C' },
+  { bg: '#E1F5EE', bd: '#5DCAA5', fg: '#085041' },
+  { bg: '#F0EAFA', bd: '#B59BE0', fg: '#3F2570' },
+  { bg: '#FAEEDA', bd: '#EF9F27', fg: '#633806' },
+  { bg: '#EAF3DE', bd: '#96C466', fg: '#27500A' },
+]
 
 function styleOf(s) {
   if (s.status === '결강') return s.needs_makeup ? STATUS.미보강 : STATUS.결강완
@@ -615,7 +629,7 @@ function layout(items) {
   return out
 }
 
-function WeekGrid({ weekStart, sessions, holidays, colorOf, onPick, today }) {
+function WeekGrid({ weekStart, sessions, holidays, colorOf, toneOf, onPick, today }) {
   const days = useMemo(
     () =>
       [...Array(6)].map((_, i) => {
@@ -718,8 +732,11 @@ function WeekGrid({ weekStart, sessions, holidays, colorOf, onPick, today }) {
                 </div>
               )}
               {layout(items).map(({ s, col, cols }) => {
-                const st = styleOf(s)
+                // 배경은 선생님 색, 결강·취소는 빗금과 취소선으로 구분합니다
+                const tone = toneOf ? toneOf(s.staff_name) : styleOf(s)
                 const tc = colorOf(s.staff_name)
+                const off = s.status === '결강' || s.status === '취소'
+                const isMakeup = s.status === '보강'
                 const h = (toMin(s.end_time) - toMin(s.start_time)) * PX
                 const w = 100 / cols
                 const narrow = cols > 1
@@ -734,11 +751,14 @@ function WeekGrid({ weekStart, sessions, holidays, colorOf, onPick, today }) {
                       left: `calc(${col * w}% + 2px)`,
                       width: `calc(${w}% - 4px)`,
                       height: Math.max(h - 2, 18),
-                      background: st.bg,
-                      border: `1px solid ${st.bd}`,
+                      background: off
+                        ? `repeating-linear-gradient(135deg, ${tone.bg}, ${tone.bg} 5px, #FFFFFF 5px, #FFFFFF 10px)`
+                        : tone.bg,
+                      border: `1px solid ${tone.bd}`,
                       borderLeft: `3px solid ${tc}`,
+                      opacity: off ? 0.75 : 1,
                       borderRadius: 5,
-                      padding: narrow ? '2px 3px' : '3px 5px',
+                      padding: cols >= 3 ? '2px 1px' : narrow ? '2px 3px' : '3px 5px',
                       textAlign: 'left',
                       cursor: 'pointer',
                       overflow: 'hidden',
@@ -747,9 +767,10 @@ function WeekGrid({ weekStart, sessions, holidays, colorOf, onPick, today }) {
                   >
                     <div
                       style={{
-                        fontSize: narrow ? 10.5 : 12,
+                        fontSize: cols >= 3 ? 9.5 : narrow ? 10.5 : 12,
                         fontWeight: 700,
-                        color: st.fg,
+                        color: tone.fg,
+                        textDecoration: off ? 'line-through' : 'none',
                         lineHeight: 1.2,
                         whiteSpace: 'nowrap',
                         overflow: 'hidden',
@@ -759,19 +780,28 @@ function WeekGrid({ weekStart, sessions, holidays, colorOf, onPick, today }) {
                       {s.student_name}
                     </div>
                     {h > 44 && !narrow && (
-                      <div style={{ fontSize: 10, color: st.fg, opacity: 0.75 }}>
+                      <div style={{ fontSize: 10, color: tone.fg, opacity: 0.75 }}>
                         {hhmm(s.start_time)}
                       </div>
                     )}
-                    {h > 40 && narrow && (
-                      <div style={{ fontSize: 9, color: st.fg, opacity: 0.7, whiteSpace: 'nowrap' }}>
+                    {h > 40 && narrow && cols <= 2 && (
+                      <div style={{ fontSize: 9, color: tone.fg, opacity: 0.7, whiteSpace: 'nowrap' }}>
                         {(s.staff_name || '').slice(-2)}
                       </div>
                     )}
                     {s.status === '결강' && h > 52 && (
-                      <div style={{ fontSize: 9.5, fontWeight: 700, color: st.fg }}>
-                        {s.needs_makeup ? '미보강' : '보강완료'}
+                      <div style={{ fontSize: 9.5, fontWeight: 700, color: C.danger }}>
+                        {s.needs_makeup ? '결강 · 미보강' : '결강 · 보강완료'}
                       </div>
+                    )}
+                    {s.status === '결강' && h <= 52 && !narrow && (
+                      <div style={{ fontSize: 9.5, fontWeight: 700, color: C.danger }}>결강</div>
+                    )}
+                    {s.status === '취소' && h > 40 && (
+                      <div style={{ fontSize: 9.5, fontWeight: 700, color: C.mut }}>취소</div>
+                    )}
+                    {isMakeup && h > 40 && (
+                      <div style={{ fontSize: 9.5, fontWeight: 700, color: tone.fg }}>↻ 보강</div>
                     )}
                   </button>
                 )
@@ -2610,13 +2640,14 @@ const key = (r) => `${r.student_id}|${r.staff_id}|${r.program_code}|${r.weekday}
 
 function PlanView({
   ym, students, staff, programs, busy, onLoadPlan, onLoadLocked, onApply,
-  onLoadBackups, onRestore, say,
+  onLoadBackups, onRestore, onCheck, say,
 }) {
   const [rows, setRows] = useState(null)
   const [base, setBase] = useState(null)
   const [locked, setLocked] = useState(0)
   const [loading, setLoading] = useState(true)
   const [backups, setBackups] = useState(null)
+  const [clash, setClash] = useState([])
 
   const prev = shiftYm(ym, -1)
   const [from, setFrom] = useState(ym)
@@ -2658,6 +2689,11 @@ function PlanView({
     }
   }, [ym])
 
+  // 줄을 하나라도 고치면 빨간 표시를 지웁니다
+  useEffect(() => {
+    setClash((c) => (c.length ? [] : c))
+  }, [rows])
+
   const byStudent = useMemo(() => {
     if (!rows) return []
     const m = {}
@@ -2697,6 +2733,19 @@ function PlanView({
         removed: false,
       },
     ])
+
+  // 겹치는 줄인지 (선생님·요일·시간이 검사 결과와 같으면)
+  const clashKeys = useMemo(() => {
+    const set = new Set()
+    clash.forEach((c) => {
+      const sf = staff.find((x) => x.name === c.staff_name)?.id
+      set.add(`${sf}|${c.weekday}|${c.a_start.slice(0, 5)}`)
+      set.add(`${sf}|${c.weekday}|${c.b_start.slice(0, 5)}`)
+    })
+    return set
+  }, [clash, staff])
+
+  const isClash = (r) => clashKeys.has(`${r.staff_id}|${r.weekday}|${r.start_time}`)
 
   const endOf = (r) => {
     const mins = programs.find((p) => p.code === r.program_code)?.minutes || 50
@@ -2748,9 +2797,29 @@ function PlanView({
             <Btn
               variant="primary"
               disabled={busy}
-              onClick={() => {
+              onClick={async () => {
                 const live = rows.filter((r) => !r.removed)
                 if (!live.length) return say('수업이 하나도 없습니다', 'err')
+                const payload = live.map((r) => ({
+                  student_id: r.student_id,
+                  staff_id: r.staff_id,
+                  program_code: r.program_code,
+                  weekday: r.weekday,
+                  start_time: r.start_time,
+                  ...(r.from ? { from: r.from } : {}),
+                }))
+                // 적용 전에 겹치는 곳을 미리 찾아 화면에 표시합니다
+                let bad = []
+                try {
+                  bad = (await onCheck(payload)) || []
+                } catch {
+                  bad = []
+                }
+                setClash(bad)
+                if (bad.length) {
+                  say(`시간이 겹치는 곳이 ${bad.length}군데 있습니다. 빨간 줄을 고쳐주세요`, 'err')
+                  return
+                }
                 if (
                   confirm(
                     `${ym.replace('-', '년 ')}월 시간표를 이대로 적용할까요?\n\n` +
@@ -2759,16 +2828,7 @@ function PlanView({
                       `· ${prev.replace('-', '년 ')}월까지는 바뀌지 않습니다`
                   )
                 )
-                  onApply(
-                    live.map((r) => ({
-                      student_id: r.student_id,
-                      staff_id: r.staff_id,
-                      program_code: r.program_code,
-                      weekday: r.weekday,
-                      start_time: r.start_time,
-                      ...(r.from ? { from: r.from } : {}),
-                    }))
-                  )
+                  onApply(payload)
               }}
             >
               {ym.replace('-', '년 ')}월에 적용
@@ -2792,6 +2852,29 @@ function PlanView({
           달 중간에 들어온 아동은 <b>수업 추가</b>로 넣고 <b>시작</b> 날짜를 정해주세요.
         </div>
       </Card>
+
+      {clash.length > 0 && (
+        <Card style={{ padding: '13px 16px', marginBottom: 14, border: `1px solid ${C.danger}`, background: '#FDECEF' }}>
+          <div style={{ fontSize: 14.5, fontWeight: 700, color: C.danger, marginBottom: 6 }}>
+            시간이 겹치는 곳 {clash.length}군데
+          </div>
+          {clash.map((c, i) => (
+            <div key={i} style={{ fontSize: 12.5, color: '#8A3550', lineHeight: 1.75 }}>
+              {c.staff_name} {PLAN_DOW[c.weekday]}요일 —{' '}
+              <b>
+                {c.a_student} {c.a_start.slice(0, 5)}~{c.a_end.slice(0, 5)}
+              </b>{' '}
+              와{' '}
+              <b>
+                {c.b_student} {c.b_start.slice(0, 5)}~{c.b_end.slice(0, 5)}
+              </b>
+            </div>
+          ))}
+          <div style={{ fontSize: 12, color: '#8A3550', marginTop: 7, lineHeight: 1.6 }}>
+            아래 빨간 줄의 시간이나 선생님을 바꾸고 다시 적용하세요. 고친 내용은 그대로 남아 있습니다.
+          </div>
+        </Card>
+      )}
 
       {backups && (
         <Card style={{ overflow: 'hidden', marginBottom: 14 }}>
@@ -2849,6 +2932,7 @@ function PlanView({
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
               {s.items.map((r) => {
                 const isNew = !base.has(key(r)) && !r.removed
+                const bad = !r.removed && isClash(r)
                 return (
                   <div
                     key={r.uid}
@@ -2858,6 +2942,11 @@ function PlanView({
                       alignItems: 'center',
                       flexWrap: 'wrap',
                       opacity: r.removed ? 0.42 : 1,
+                      background: bad ? '#FDECEF' : 'transparent',
+                      border: bad ? `1px solid ${C.danger}` : '1px solid transparent',
+                      borderRadius: 8,
+                      padding: bad ? '5px 7px' : '0',
+                      margin: bad ? '-1px 0' : 0,
                     }}
                   >
                     <select
@@ -4036,6 +4125,14 @@ function App() {
     return say(raw, 'err')
   }
 
+  const toneOf = useCallback(
+    (name) => {
+      const i = staff.findIndex((s) => s.name === name)
+      return TEACHER_TONES[i < 0 ? 0 : i % TEACHER_TONES.length]
+    },
+    [staff]
+  )
+
   const colorOf = useCallback(
     (name) => {
       const i = staff.findIndex((s) => s.name === name)
@@ -4510,23 +4607,39 @@ function App() {
               sessions={visible}
               holidays={holidays}
               colorOf={colorOf}
+              toneOf={toneOf}
               onPick={setPick}
               today={isoOf(new Date())}
             />
 
-            <div style={{ display: 'flex', gap: 13, marginTop: 11, flexWrap: 'wrap', fontSize: 11, color: C.sub }}>
-              {[
-                ['진행', STATUS.진행],
-                ['결강·보강완료', STATUS.결강완],
-                ['결강·미보강', STATUS.미보강],
-                ['보강', STATUS.보강],
-                ['취소', STATUS.취소],
-              ].map(([l, s]) => (
-                <span key={l} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-                  <span style={{ width: 11, height: 11, borderRadius: 3, background: s.bg, border: `1px solid ${s.bd}` }} />
-                  {l}
-                </span>
-              ))}
+            <div style={{ display: 'flex', gap: 14, marginTop: 11, flexWrap: 'wrap', fontSize: 11.5, color: C.sub }}>
+              {staff
+                .filter((x) => x.active)
+                .map((x) => {
+                  const t = toneOf(x.name)
+                  return (
+                    <span key={x.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                      <span
+                        style={{
+                          width: 12, height: 12, borderRadius: 3,
+                          background: t.bg, border: `1px solid ${t.bd}`,
+                          borderLeft: `3px solid ${colorOf(x.name)}`,
+                        }}
+                      />
+                      {x.name}
+                    </span>
+                  )
+                })}
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, marginLeft: 6 }}>
+                <span
+                  style={{
+                    width: 12, height: 12, borderRadius: 3, border: `1px solid ${C.line}`,
+                    background:
+                      'repeating-linear-gradient(135deg, #EFEFF1, #EFEFF1 3px, #FFFFFF 3px, #FFFFFF 6px)',
+                  }}
+                />
+                <span style={{ textDecoration: 'line-through' }}>결강 · 취소</span>
+              </span>
             </div>
           </>
         )}
@@ -4806,6 +4919,7 @@ function App() {
               onLoadPlan={loadMonthPlan}
               onLoadLocked={loadPlanLocked}
               onLoadBackups={loadPlanBackups}
+              onCheck={checkMonthPlan}
               onRestore={async (id) => {
                 setBusy(true)
                 try {
