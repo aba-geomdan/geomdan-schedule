@@ -594,42 +594,22 @@ const toMin = (t) => {
 }
 
 // 시간이 겹치는 수업을 가로로 나눠 배치
-function layout(items) {
-  const sorted = [...items].sort(
-    (a, b) => toMin(a.start_time) - toMin(b.start_time) || toMin(a.end_time) - toMin(b.end_time)
-  )
-  const groups = []
-  let cur = []
-  let curEnd = -1
-  sorted.forEach((s) => {
-    if (cur.length && toMin(s.start_time) >= curEnd) {
-      groups.push(cur)
-      cur = []
-      curEnd = -1
-    }
-    cur.push(s)
-    curEnd = Math.max(curEnd, toMin(s.end_time))
+// 선생님마다 고정된 세로 열을 줍니다.
+//   같은 선생님이 같은 시간에 두 수업을 할 수 없으므로 열이 겹치지 않고,
+//   하루 안에서 한 선생님 수업이 같은 줄에 쭉 이어집니다.
+function layout(items, order) {
+  if (!items.length) return []
+  const names = [...new Set(items.map((s) => s.staff_name))].sort((a, b) => {
+    const ia = order.indexOf(a)
+    const ib = order.indexOf(b)
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b, 'ko')
   })
-  if (cur.length) groups.push(cur)
-
-  const out = []
-  groups.forEach((g) => {
-    const colEnd = []
-    const placed = []
-    g.forEach((s) => {
-      let c = colEnd.findIndex((e) => toMin(s.start_time) >= e)
-      if (c === -1) {
-        c = colEnd.length
-        colEnd.push(toMin(s.end_time))
-      } else colEnd[c] = toMin(s.end_time)
-      placed.push({ s, col: c })
-    })
-    placed.forEach((p) => out.push({ ...p, cols: colEnd.length }))
-  })
-  return out
+  const cols = names.length
+  return items.map((s) => ({ s, col: Math.max(0, names.indexOf(s.staff_name)), cols }))
 }
 
-function WeekGrid({ weekStart, sessions, holidays, colorOf, toneOf, onPick, today }) {
+
+function WeekGrid({ weekStart, sessions, holidays, colorOf, toneOf, staffOrder = [], onPick, today }) {
   const days = useMemo(
     () =>
       [...Array(6)].map((_, i) => {
@@ -731,7 +711,7 @@ function WeekGrid({ weekStart, sessions, holidays, colorOf, toneOf, onPick, toda
                   휴원
                 </div>
               )}
-              {layout(items).map(({ s, col, cols }) => {
+              {layout(items, staffOrder).map(({ s, col, cols }) => {
                 // 배경은 선생님 색, 결강·취소는 빗금과 취소선으로 구분합니다
                 const tone = toneOf ? toneOf(s.staff_name) : styleOf(s)
                 const tc = colorOf(s.staff_name)
@@ -4608,6 +4588,7 @@ function App() {
               holidays={holidays}
               colorOf={colorOf}
               toneOf={toneOf}
+              staffOrder={staff.map((x) => x.name)}
               onPick={setPick}
               today={isoOf(new Date())}
             />
