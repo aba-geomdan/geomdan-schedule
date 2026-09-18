@@ -377,6 +377,24 @@ async function endTemplate(id) {
   return ok(await supabase.rpc('remove_template', { p_id: id }))
 }
 
+// 외부 일정 (수업 아님 — 학교 자문·슈퍼비전 등)
+async function loadOutside() {
+  return ok(await supabase.from('v_outside').select('*').order('d'))
+}
+
+async function addOutside(v) {
+  return ok(
+    await supabase.rpc('add_outside_event', {
+      p_d: v.d, p_start: v.start_time, p_end: v.end_time,
+      p_label: v.label, p_memo: v.memo ?? null,
+    })
+  )
+}
+
+async function removeOutside(id) {
+  return ok(await supabase.rpc('remove_outside_event', { p_id: id }))
+}
+
 async function loadLeaves() {
   return ok(await supabase.from('v_leaves').select('*'))
 }
@@ -607,7 +625,7 @@ function layout(items, names) {
 }
 
 
-function WeekGrid({ weekStart, sessions, holidays, colorOf, toneOf, staffOrder = [], onPick, today }) {
+function WeekGrid({ weekStart, sessions, holidays, outside = [], colorOf, toneOf, staffOrder = [], onPick, today }) {
   const days = useMemo(
     () =>
       [...Array(6)].map((_, i) => {
@@ -619,6 +637,15 @@ function WeekGrid({ weekStart, sessions, holidays, colorOf, toneOf, staffOrder =
   )
 
   const holidaySet = useMemo(() => new Set(holidays.map((h) => h.d)), [holidays])
+
+  const outByDay = useMemo(() => {
+    const m = {}
+    outside.forEach((e) => {
+      if (!m[e.d]) m[e.d] = []
+      m[e.d].push(e)
+    })
+    return m
+  }, [outside])
 
   // 주 전체에서 수업이 있는 선생님을 순서대로 — 모든 날이 같은 폭, 같은 줄을 씁니다
   const weekNames = useMemo(() => {
@@ -730,6 +757,40 @@ function WeekGrid({ weekStart, sessions, holidays, colorOf, toneOf, staffOrder =
                   휴원
                 </div>
               )}
+              {(outByDay[ds] || []).map((e) => {
+                const top = (toMin(e.start_time) - DAY_START) * PX
+                const eh = (toMin(e.end_time) - toMin(e.start_time)) * PX
+                return (
+                  <div
+                    key={e.id}
+                    title={`${e.label}${e.memo ? ' · ' + e.memo : ''}`}
+                    style={{
+                      position: 'absolute',
+                      top,
+                      height: Math.max(eh - 2, 16),
+                      left: 2,
+                      right: 2,
+                      borderRadius: 7,
+                      background:
+                        'repeating-linear-gradient(135deg, #EDEEF0, #EDEEF0 6px, #F6F7F8 6px, #F6F7F8 12px)',
+                      border: `1px dashed ${C.line}`,
+                      padding: '3px 6px',
+                      overflow: 'hidden',
+                      pointerEvents: 'none',
+                    }}
+                  >
+                    <div style={{ fontSize: 10.5, fontWeight: 700, color: '#5B6069', lineHeight: 1.25 }}>
+                      {e.label}
+                    </div>
+                    {eh > 40 && (
+                      <div style={{ fontSize: 9, color: C.mut }}>
+                        {hhmm(e.start_time)}~{hhmm(e.end_time)} · 외부
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+
               {layout(items, weekNames).map(({ s, col, cols }) => {
                 // 배경은 선생님 색, 결강·취소는 빗금과 취소선으로 구분합니다
                 const tone = toneOf ? toneOf(s.staff_name) : styleOf(s)
@@ -2074,7 +2135,111 @@ const PUBLIC_HOLIDAYS = [
   ['2030-12-25', '크리스마스'],
 ]
 
-function LeaveView({ leaves, staff, busy, onAdd, onRemove }) {
+function OutsideCard({ outside, busy, today, onAdd, onRemove }) {
+  const [open, setOpen] = useState(false)
+  const [d, setD] = useState('')
+  const [st, setSt] = useState('14:00')
+  const [en, setEn] = useState('16:00')
+  const [label, setLabel] = useState('')
+  const [memo, setMemo] = useState('')
+
+  const upcoming = outside.filter((e) => e.d >= today).sort((a, b) => a.d.localeCompare(b.d))
+
+  const save = () => {
+    if (!d) return
+    if (!label.trim()) return
+    onAdd({ d, start_time: st, end_time: en, label: label.trim(), memo: memo.trim() })
+    setD('')
+    setLabel('')
+    setMemo('')
+    setOpen(false)
+  }
+
+  return (
+    <Card style={{ marginBottom: 14, overflow: 'hidden' }}>
+      <div style={{ padding: '12px 15px', borderBottom: upcoming.length ? `1px solid ${C.line2}` : 'none' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 9, flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 14.5, fontWeight: 700 }}>외부 일정</div>
+          <div style={{ fontSize: 12, color: C.sub }}>
+            학교 자문·슈퍼비전처럼 수업이 아닌 일정입니다. 시간표에만 보이고 수강료·급여에는 안 들어갑니다.
+          </div>
+          <Btn
+            variant={open ? 'default' : 'primary'}
+            onClick={() => setOpen(!open)}
+            style={{ marginLeft: 'auto', padding: '6px 12px', fontSize: 12.5 }}
+          >
+            {open ? '접기' : '일정 추가'}
+          </Btn>
+        </div>
+
+        {open && (
+          <div style={{ marginTop: 11, display: 'flex', gap: 7, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <label style={{ fontSize: 12, color: C.sub }}>
+              날짜
+              <input type="date" value={d} onChange={(e) => setD(e.target.value)} style={{ ...inp, width: 150, marginTop: 4 }} />
+            </label>
+            <label style={{ fontSize: 12, color: C.sub }}>
+              시작
+              <input type="time" step={300} value={st} onChange={(e) => setSt(e.target.value)} style={{ ...inp, width: 116, marginTop: 4 }} />
+            </label>
+            <label style={{ fontSize: 12, color: C.sub }}>
+              종료
+              <input type="time" step={300} value={en} onChange={(e) => setEn(e.target.value)} style={{ ...inp, width: 116, marginTop: 4 }} />
+            </label>
+            <label style={{ fontSize: 12, color: C.sub, flex: 1, minWidth: 160 }}>
+              일정 이름
+              <input
+                value={label}
+                onChange={(e) => setLabel(e.target.value)}
+                placeholder="서희학교 PBS 자문"
+                style={{ ...inp, marginTop: 4 }}
+              />
+            </label>
+            <label style={{ fontSize: 12, color: C.sub, flex: 1, minWidth: 140 }}>
+              메모 (선택)
+              <input value={memo} onChange={(e) => setMemo(e.target.value)} style={{ ...inp, marginTop: 4 }} />
+            </label>
+            <Btn variant="primary" disabled={busy || !d || !label.trim()} onClick={save} style={{ padding: '9px 16px' }}>
+              등록
+            </Btn>
+          </div>
+        )}
+      </div>
+
+      {upcoming.map((e, i) => (
+        <div
+          key={e.id}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 10, padding: '10px 15px',
+            borderBottom: i === upcoming.length - 1 ? 'none' : `1px solid ${C.line2}`, flexWrap: 'wrap',
+          }}
+        >
+          <div style={{ fontSize: 13.5, fontWeight: 700, minWidth: 108 }}>
+            {e.d} ({e.weekday})
+          </div>
+          <div style={{ fontSize: 12.5, color: C.sub, minWidth: 92 }}>
+            {hhmm(e.start_time)}~{hhmm(e.end_time)}
+          </div>
+          <div style={{ flex: 1, fontSize: 13.5, minWidth: 120 }}>
+            {e.label}
+            {e.memo && <span style={{ fontSize: 12, color: C.mut, marginLeft: 7 }}> · {e.memo}</span>}
+          </div>
+          <Btn
+            disabled={busy}
+            onClick={() => {
+              if (confirm(`${e.d} ${e.label} 일정을 삭제할까요?`)) onRemove(e.id)
+            }}
+            style={{ padding: '5px 11px', fontSize: 12, color: C.danger }}
+          >
+            삭제
+          </Btn>
+        </div>
+      ))}
+    </Card>
+  )
+}
+
+function LeaveView({ leaves, staff, outside = [], busy, onAdd, onRemove, onAddOutside, onRemoveOutside }) {
   const [showPast, setShowPast] = useState(false)
   const [d, setD] = useState('')
   const [label, setLabel] = useState('')
@@ -2192,6 +2357,14 @@ function LeaveView({ leaves, staff, busy, onAdd, onRemove }) {
           </label>
         )}
       </div>
+
+      <OutsideCard
+        outside={outside}
+        busy={busy}
+        today={today}
+        onAdd={onAddOutside}
+        onRemove={onRemoveOutside}
+      />
 
       <Card style={{ overflow: 'hidden' }}>
         {shown.length === 0 ? (
@@ -4104,6 +4277,7 @@ function App() {
   const [templates, setTemplates] = useState([])
   const [programs, setPrograms] = useState([])
   const [leaves, setLeaves] = useState([])
+  const [outside, setOutside] = useState([])
   const [holidaySeeded, setHolidaySeeded] = useState(false)
   const [manageLoaded, setManageLoaded] = useState(false)
 
@@ -4204,16 +4378,18 @@ function App() {
 
   const reloadManage = useCallback(async () => {
     if (!isAdmin) return
-    const [st, tp, pg, lv] = await Promise.all([
+    const [st, tp, pg, lv, ev] = await Promise.all([
       loadStudents(),
       loadTemplates(),
       loadPrograms(),
       loadLeaves(),
+      loadOutside(),
     ])
     setStudents(st)
     setTemplates(tp)
     setPrograms(pg)
     setLeaves(lv)
+    setOutside(ev)
     setManageLoaded(true)
   }, [isAdmin])
 
@@ -4608,6 +4784,7 @@ function App() {
               colorOf={colorOf}
               toneOf={toneOf}
               staffOrder={staff.map((x) => x.name)}
+              outside={outside}
               onPick={setPick}
               today={isoOf(new Date())}
             />
@@ -4954,7 +5131,30 @@ function App() {
           <LeaveView
             leaves={leaves}
             staff={staff}
+            outside={outside}
             busy={busy}
+            onAddOutside={async (v) => {
+              setBusy(true)
+              try {
+                await addOutside(v)
+                say('일정을 등록했습니다')
+                await reloadManage()
+              } catch (e) {
+                fail(e)
+              }
+              setBusy(false)
+            }}
+            onRemoveOutside={async (id) => {
+              setBusy(true)
+              try {
+                await removeOutside(id)
+                say('삭제했습니다')
+                await reloadManage()
+              } catch (e) {
+                fail(e)
+              }
+              setBusy(false)
+            }}
             onAdd={async (v) => {
               setBusy(true)
               try {
