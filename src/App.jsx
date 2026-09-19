@@ -378,6 +378,16 @@ async function endTemplate(id) {
 }
 
 // 외부 일정 (수업 아님 — 학교 자문·슈퍼비전 등)
+// 홈 화면 요약
+async function loadHome(ym) {
+  const r = ok(await supabase.rpc('home_summary', { p_ym: ym }))
+  return Array.isArray(r) ? r[0] || null : r
+}
+
+async function loadRecentSessions(days = 7) {
+  return ok(await supabase.rpc('recent_sessions', { p_days: days }))
+}
+
 async function loadOutside() {
   return ok(await supabase.from('v_outside').select('*').order('d'))
 }
@@ -432,6 +442,7 @@ const C = {
   line2: '#F5F6F7',
   bg: '#FAFAFB',
   danger: '#AE2340',
+  ok: '#2E9E8F',
 }
 
 const STATUS = {
@@ -1328,7 +1339,7 @@ function MyClosingView({ ym, summary, closing, onSubmit, onPrevYm, onNextYm, bus
 /* ═════════════════ AdminViews.jsx ═════════════════ */
 
 /* ---------------- 정산 ---------------- */
-function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onPrintAll, onSetRate, onDetail, busy }) {
+function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onPrintAll, onSetRate, onDetail, busy, closing }) {
   const [group, setGroup] = useState('student')
   const [detailFor, setDetailFor] = useState(null)
   const [detail, setDetail] = useState(null)
@@ -1379,7 +1390,7 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
         <div style={{ fontSize: 15, fontWeight: 700 }}>{ym.replace('-', '년 ')}월 정산</div>
         <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 8 }}>
-          {[['student', '아동별'], ['staff', '선생님별'], ['payroll', '급여']].map(([k, label]) => (
+          {[['student', '아동별'], ['staff', '선생님별'], ['payroll', '급여'], ['closing', '마감']].map(([k, label]) => (
             <button
               key={k}
               onClick={() => setGroup(k)}
@@ -1395,15 +1406,19 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
             </button>
           ))}
         </div>
-        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
-          <Btn onClick={() => onPrintAll(byStudent)} disabled={byStudent.length === 0}>
-            영수증 {byStudent.length}장 인쇄
-          </Btn>
-          <div style={{ fontSize: 20, fontWeight: 700, color: C.pkd }}>{won(total)}원</div>
-        </div>
+        {group !== 'closing' && (
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
+            <Btn onClick={() => onPrintAll(byStudent)} disabled={byStudent.length === 0}>
+              영수증 {byStudent.length}장 인쇄
+            </Btn>
+            <div style={{ fontSize: 20, fontWeight: 700, color: C.pkd }}>{won(total)}원</div>
+          </div>
+        )}
       </div>
 
-      {group === 'payroll' ? (
+      {group === 'closing' ? (
+        closing
+      ) : group === 'payroll' ? (
         <div>
           <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.75, marginBottom: 12 }}>
             급여 = <b>(진행 + 보강)</b> 회차의 수강료 합계 × 선생님 비율. 결강은 보강해야 집계됩니다.
@@ -1894,7 +1909,7 @@ function ReceiptModal({ ym, student, receipt, onClose, onIssue, onUnlock, onSave
 }
 
 /* ---------------- 마감 ---------------- */
-function ClosingView({ ym, rows, staff, onRequest, onReview, onPrevYm, onNextYm, busy }) {
+function ClosingView({ ym, rows, staff, onRequest, onReview, onPrevYm, onNextYm, busy, embedded }) {
   const [copied, setCopied] = useState(false)
   const map = Object.fromEntries(rows.map((r) => [r.staff_name, r]))
 
@@ -1914,11 +1929,15 @@ function ClosingView({ ym, rows, staff, onRequest, onReview, onPrevYm, onNextYm,
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
-        <Btn onClick={onPrevYm} style={{ padding: '6px 11px' }}>←</Btn>
-        <div style={{ fontSize: 15, fontWeight: 700, minWidth: 96, textAlign: 'center' }}>
-          {ym.replace('-', '년 ')}월 마감
-        </div>
-        <Btn onClick={onNextYm} style={{ padding: '6px 11px' }}>→</Btn>
+        {!embedded && (
+          <>
+            <Btn onClick={onPrevYm} style={{ padding: '6px 11px' }}>←</Btn>
+            <div style={{ fontSize: 15, fontWeight: 700, minWidth: 96, textAlign: 'center' }}>
+              {ym.replace('-', '년 ')}월 마감
+            </div>
+            <Btn onClick={onNextYm} style={{ padding: '6px 11px' }}>→</Btn>
+          </>
+        )}
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 7 }}>
           <Btn disabled={busy} onClick={() => onRequest(null)}>
             전원 마감 대상으로
@@ -2808,11 +2827,186 @@ function Field({ label, children }) {
 /* ═════════════════ PlanView.jsx ═════════════════ */
 
 const PLAN_DOW = ['일', '월', '화', '수', '목', '금', '토']
+
+// 그 달에만 있는 일 — 휴무일과 외부 일정
+function MonthOnlyCard({ ym, leaves, outside, staff, busy, onAddLeave, onRemoveLeave, onAddOutside, onRemoveOutside }) {
+  const [open, setOpen] = useState(null) // 'leave' | 'out' | null
+  const [d, setD] = useState('')
+  const [label, setLabel] = useState('')
+  const [staffId, setStaffId] = useState('')
+  const [mode, setMode] = useState('취소')
+  const [st, setSt] = useState('14:00')
+  const [en, setEn] = useState('16:00')
+  const [memo, setMemo] = useState('')
+
+  const rows = [
+    ...leaves.map((h) => ({ kind: 'leave', ...h })),
+    ...outside.map((e) => ({ kind: 'out', ...e })),
+  ].sort((a, b) => a.d.localeCompare(b.d) || (a.start_time || '').localeCompare(b.start_time || ''))
+
+  const reset = () => {
+    setD('')
+    setLabel('')
+    setMemo('')
+    setOpen(null)
+  }
+
+  return (
+    <Card style={{ marginBottom: 16, overflow: 'hidden' }}>
+      <div style={{ padding: '12px 15px', borderBottom: rows.length ? `1px solid ${C.line2}` : 'none' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 9, flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 14, fontWeight: 700 }}>이 달에만 있는 일</div>
+          <div style={{ fontSize: 12, color: C.sub }}>쉬는 날과 외부 일정입니다. 매주 반복되지 않습니다.</div>
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+            <Btn
+              variant={open === 'leave' ? 'primary' : 'default'}
+              onClick={() => setOpen(open === 'leave' ? null : 'leave')}
+              style={{ padding: '6px 12px', fontSize: 12.5 }}
+            >
+              + 휴무일
+            </Btn>
+            <Btn
+              variant={open === 'out' ? 'primary' : 'default'}
+              onClick={() => setOpen(open === 'out' ? null : 'out')}
+              style={{ padding: '6px 12px', fontSize: 12.5 }}
+            >
+              + 외부 일정
+            </Btn>
+          </div>
+        </div>
+
+        {open === 'leave' && (
+          <div style={{ marginTop: 11, display: 'flex', gap: 7, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <label style={{ fontSize: 12, color: C.sub }}>
+              날짜
+              <input type="date" value={d} min={ym + '-01'} onChange={(e) => setD(e.target.value)} style={{ ...planSel, width: 150, marginTop: 4 }} />
+            </label>
+            <label style={{ fontSize: 12, color: C.sub, flex: 1, minWidth: 140 }}>
+              이름
+              <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="센터 휴무" style={{ ...planSel, width: '100%', marginTop: 4 }} />
+            </label>
+            <label style={{ fontSize: 12, color: C.sub }}>
+              누구
+              <select value={staffId} onChange={(e) => setStaffId(e.target.value)} style={{ ...planSel, width: 128, marginTop: 4 }}>
+                <option value="">센터 전체</option>
+                {staff.filter((x) => x.active).map((x) => (
+                  <option key={x.id} value={x.id}>{x.name}</option>
+                ))}
+              </select>
+            </label>
+            <label style={{ fontSize: 12, color: C.sub }}>
+              그날 수업은
+              <select value={mode} onChange={(e) => setMode(e.target.value)} style={{ ...planSel, width: 112, marginTop: 4 }}>
+                <option value="취소">취소</option>
+                <option value="결강">결강</option>
+                <option value="유지">그대로</option>
+              </select>
+            </label>
+            <Btn
+              variant="primary"
+              disabled={busy || !d || !label.trim()}
+              onClick={() => {
+                onAddLeave({ d, label: label.trim(), staffId: staffId || null, mode })
+                reset()
+              }}
+              style={{ padding: '9px 16px' }}
+            >
+              등록
+            </Btn>
+          </div>
+        )}
+
+        {open === 'out' && (
+          <div style={{ marginTop: 11, display: 'flex', gap: 7, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <label style={{ fontSize: 12, color: C.sub }}>
+              날짜
+              <input type="date" value={d} min={ym + '-01'} onChange={(e) => setD(e.target.value)} style={{ ...planSel, width: 150, marginTop: 4 }} />
+            </label>
+            <label style={{ fontSize: 12, color: C.sub }}>
+              시작
+              <input type="time" step={300} value={st} onChange={(e) => setSt(e.target.value)} style={{ ...planSel, width: 116, marginTop: 4 }} />
+            </label>
+            <label style={{ fontSize: 12, color: C.sub }}>
+              종료
+              <input type="time" step={300} value={en} onChange={(e) => setEn(e.target.value)} style={{ ...planSel, width: 116, marginTop: 4 }} />
+            </label>
+            <label style={{ fontSize: 12, color: C.sub, flex: 1, minWidth: 150 }}>
+              일정 이름
+              <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="서희학교 PBS 자문" style={{ ...planSel, width: '100%', marginTop: 4 }} />
+            </label>
+            <label style={{ fontSize: 12, color: C.sub, flex: 1, minWidth: 120 }}>
+              메모 (선택)
+              <input value={memo} onChange={(e) => setMemo(e.target.value)} style={{ ...planSel, width: '100%', marginTop: 4 }} />
+            </label>
+            <Btn
+              variant="primary"
+              disabled={busy || !d || !label.trim()}
+              onClick={() => {
+                onAddOutside({ d, start_time: st, end_time: en, label: label.trim(), memo: memo.trim() })
+                reset()
+              }}
+              style={{ padding: '9px 16px' }}
+            >
+              등록
+            </Btn>
+          </div>
+        )}
+      </div>
+
+      {rows.map((r, i) => (
+        <div
+          key={r.kind + r.id}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 10, padding: '10px 15px',
+            borderBottom: i === rows.length - 1 ? 'none' : `1px solid ${C.line2}`, flexWrap: 'wrap',
+          }}
+        >
+          <Pill tone={r.kind === 'leave' ? 'gray' : 'blue'}>{r.kind === 'leave' ? '휴무' : '외부'}</Pill>
+          <div style={{ fontSize: 13.5, fontWeight: 700, minWidth: 100 }}>
+            {r.d.slice(5)} ({r.weekday})
+          </div>
+          {r.kind === 'out' && (
+            <div style={{ fontSize: 12.5, color: C.sub, minWidth: 92 }}>
+              {hhmm(r.start_time)}~{hhmm(r.end_time)}
+            </div>
+          )}
+          <div style={{ flex: 1, fontSize: 13.5, minWidth: 110 }}>
+            {r.label}
+            {r.kind === 'leave' && r.staff_name && (
+              <span style={{ fontSize: 12, color: C.mut, marginLeft: 7 }}>· {r.staff_name}</span>
+            )}
+            {r.kind === 'out' && r.memo && (
+              <span style={{ fontSize: 12, color: C.mut, marginLeft: 7 }}>· {r.memo}</span>
+            )}
+          </div>
+          <Btn
+            disabled={busy}
+            onClick={() => {
+              if (!confirm(`${r.d} ${r.label} 을(를) 삭제할까요?`)) return
+              r.kind === 'leave' ? onRemoveLeave(r.id) : onRemoveOutside(r.id)
+            }}
+            style={{ padding: '5px 11px', fontSize: 12, color: C.danger }}
+          >
+            삭제
+          </Btn>
+        </div>
+      ))}
+
+      {rows.length === 0 && (
+        <div style={{ padding: '14px 15px', fontSize: 12.5, color: C.mut }}>
+          이 달에 등록된 휴무일이나 외부 일정이 없습니다.
+        </div>
+      )}
+    </Card>
+  )
+}
+
 const key = (r) => `${r.student_id}|${r.staff_id}|${r.program_code}|${r.weekday}|${r.start_time}`
 
 function PlanView({
   ym, students, staff, programs, busy, onLoadPlan, onLoadLocked, onApply,
   onLoadBackups, onRestore, onCheck, say,
+  leaves = [], outside = [], onAddLeave, onRemoveLeave, onAddOutside, onRemoveOutside,
 }) {
   const [rows, setRows] = useState(null)
   const [base, setBase] = useState(null)
@@ -2865,6 +3059,15 @@ function PlanView({
   useEffect(() => {
     setClash((c) => (c.length ? [] : c))
   }, [rows])
+
+  const monthLeaves = useMemo(
+    () => leaves.filter((h) => h.d.slice(0, 7) === ym).sort((a, b) => a.d.localeCompare(b.d)),
+    [leaves, ym]
+  )
+  const monthOutside = useMemo(
+    () => outside.filter((e) => e.d.slice(0, 7) === ym).sort((a, b) => a.d.localeCompare(b.d)),
+    [outside, ym]
+  )
 
   const byStudent = useMemo(() => {
     if (!rows) return []
@@ -3088,6 +3291,25 @@ function PlanView({
         </Card>
       )}
 
+      <MonthOnlyCard
+        ym={ym}
+        leaves={monthLeaves}
+        outside={monthOutside}
+        staff={staff}
+        busy={busy}
+        onAddLeave={onAddLeave}
+        onRemoveLeave={onRemoveLeave}
+        onAddOutside={onAddOutside}
+        onRemoveOutside={onRemoveOutside}
+      />
+
+      <div style={{ fontSize: 14, fontWeight: 700, margin: '4px 0 8px' }}>
+        매주 반복되는 수업{' '}
+        <span style={{ fontSize: 12, fontWeight: 400, color: C.sub, marginLeft: 7 }}>
+          고치고 아래 적용을 누르세요
+        </span>
+      </div>
+
       <Card style={{ overflow: 'hidden' }}>
         {byStudent.map((s, si) => (
           <div
@@ -3227,6 +3449,321 @@ const planSel = {
   border: '1px solid #DEE0E3',
   borderRadius: 7,
   background: '#fff',
+}
+
+
+/* ═════════════════ HomeView.jsx ═════════════════ */
+
+/* 동그란 진행 표시 */
+function Dot({ state }) {
+  if (state === 'done')
+    return (
+      <span
+        style={{
+          width: 18, height: 18, borderRadius: 99, flex: 'none',
+          background: C.ok, position: 'relative', display: 'inline-block',
+        }}
+      >
+        <span
+          style={{
+            position: 'absolute', left: 6, top: 3, width: 4, height: 8,
+            border: 'solid #fff', borderWidth: '0 2px 2px 0', transform: 'rotate(45deg)',
+          }}
+        />
+      </span>
+    )
+  return (
+    <span
+      style={{
+        width: 18, height: 18, borderRadius: 99, flex: 'none', background: '#fff',
+        border: `2px solid ${state === 'now' ? C.pk : C.line}`,
+        boxShadow: state === 'now' ? `inset 0 0 0 3px ${C.pk}` : 'none',
+        display: 'inline-block',
+      }}
+    />
+  )
+}
+
+function TaskRow({ state, title, desc, action, onGo, first }) {
+  return (
+    <div
+      style={{
+        display: 'flex', alignItems: 'center', gap: 11, padding: '13px 15px',
+        borderBottom: `1px solid ${C.line2}`,
+        background: state === 'now' ? C.pkl : 'transparent',
+      }}
+    >
+      <Dot state={state} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 14.5, fontWeight: 700 }}>{title}</div>
+        <div style={{ fontSize: 12.5, color: C.sub, marginTop: 2, lineHeight: 1.5 }}>{desc}</div>
+      </div>
+      <Btn variant={state === 'now' ? 'primary' : 'default'} onClick={onGo} style={{ padding: '6px 13px', fontSize: 12.5 }}>
+        {action || (state === 'now' ? '지금 하기' : '열기')}
+      </Btn>
+    </div>
+  )
+}
+
+function HomeView({ ym, onPrevYm, onNextYm, onLoad, onGo, busy }) {
+  const [h, setH] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [showLater, setShowLater] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    setLoading(true)
+    onLoad(ym)
+      .then((r) => alive && setH(r))
+      .catch(() => alive && setH(null))
+      .finally(() => alive && setLoading(false))
+  }, [ym])
+
+  const nextYm = shiftYm(ym, 1)
+  const nextLabel = `${Number(nextYm.slice(5))}월`
+  const thisLabel = `${Number(ym.slice(5))}월`
+
+  // 오늘 날짜로 지금 할 일과 나중 할 일을 나눕니다
+  const today = new Date()
+  const isThisMonth = ym === `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`
+  const day = today.getDate()
+
+  const tasks = useMemo(() => {
+    if (!h) return { now: [], later: [] }
+    const madePlan = (h.next_sessions || 0) > 0
+    const allReceipts = (h.next_students || 0) > 0 && h.next_receipts >= h.next_students
+    const closingDone = (h.closing_total || 0) > 0 && h.closing_done >= h.closing_total
+    const paidAll = (h.unpaid_students || 0) === 0
+
+    const plan = {
+      key: 'plan',
+      state: madePlan ? 'done' : 'todo',
+      title: `${nextLabel} 시간표 짜기`,
+      desc: madePlan
+        ? `수업 ${h.next_templates}개 · 회차 ${h.next_sessions}건 만들어짐`
+        : '아직 안 짰습니다 · 이번 달 것에서 가져옵니다',
+      go: 'plan',
+    }
+    const receipt = {
+      key: 'receipt',
+      state: allReceipts ? 'done' : 'todo',
+      title: `${nextLabel} 영수증 발행`,
+      desc: h.next_students
+        ? `${h.next_students}명 · ${h.next_receipts} / ${h.next_students}장 발행`
+        : `${nextLabel} 회차를 먼저 만들어주세요`,
+      go: 'billing-next',
+    }
+    const makeup = {
+      key: 'makeup',
+      state: (h.unmade_up || 0) === 0 ? 'done' : 'todo',
+      title: '보강 잡기',
+      desc:
+        (h.unmade_up || 0) === 0
+          ? '보강할 수업이 없습니다'
+          : `미보강 ${h.unmade_up}건 · 가장 오래된 건 ${h.unmade_oldest}일 지났습니다`,
+      go: 'makeup',
+    }
+    const closing = {
+      key: 'closing',
+      state: closingDone ? 'done' : 'todo',
+      title: `${thisLabel} 출결 마감`,
+      desc: h.closing_total
+        ? `선생님 ${h.closing_total}명 중 ${h.closing_done}명 확인`
+        : '아직 마감 대상이 없습니다',
+      go: 'closing',
+    }
+    const pay = {
+      key: 'pay',
+      state: 'todo',
+      title: `${thisLabel} 급여 확인`,
+      desc: h.payroll_staff
+        ? `선생님 ${h.payroll_staff}명 · 합계 ${won(h.payroll_total)}원`
+        : '급여 비율을 먼저 넣어주세요',
+      go: 'payroll',
+    }
+    const paid = {
+      key: 'paid',
+      state: paidAll ? 'done' : 'todo',
+      title: `${thisLabel} 입금 확인`,
+      desc: paidAll ? '미납이 없습니다' : `미납 ${h.unpaid_students}명 · ${won(h.unpaid_amount)}원`,
+      go: 'payment',
+    }
+
+    // 달 중순까지는 다음 달 준비, 월초에는 지난달 마무리를 앞으로
+    const early = isThisMonth && day <= 10
+    const order = early ? [closing, pay, paid, plan, receipt, makeup] : [plan, receipt, makeup, closing, pay, paid]
+
+    const undone = order.filter((t) => t.state !== 'done')
+    const done = order.filter((t) => t.state === 'done')
+    const now = undone.slice(0, 2)
+    if (now.length) now[0] = { ...now[0], state: 'now' }
+    return { now, later: [...undone.slice(2), ...done] }
+  }, [h, nextLabel, thisLabel, isThisMonth, day])
+
+  if (loading) return <Loading />
+  if (!h) return <Empty>불러오지 못했습니다.</Empty>
+
+  return (
+    <div>
+      <Card style={{ overflow: 'hidden' }}>
+        <div style={{ padding: '12px 15px', borderBottom: `1px solid ${C.line2}`, display: 'flex', alignItems: 'center', gap: 9 }}>
+          <Btn onClick={onPrevYm} style={{ padding: '5px 11px' }}>←</Btn>
+          <div style={{ fontSize: 15.5, fontWeight: 700 }}>{ym.replace('-', '년 ')}월</div>
+          <Btn onClick={onNextYm} style={{ padding: '5px 11px' }}>→</Btn>
+        </div>
+
+        {tasks.now.length === 0 ? (
+          <div style={{ padding: '18px 15px', fontSize: 14, color: C.sub, textAlign: 'center' }}>
+            이번 달 할 일을 다 마쳤습니다.
+          </div>
+        ) : (
+          tasks.now.map((t) => (
+            <TaskRow key={t.key} state={t.state} title={t.title} desc={t.desc} onGo={() => onGo(t.go)} />
+          ))
+        )}
+
+        {tasks.later.length > 0 && (
+          <>
+            <button
+              onClick={() => setShowLater(!showLater)}
+              style={{
+                width: '100%', textAlign: 'left', border: 'none', cursor: 'pointer',
+                padding: '11px 15px', fontSize: 13, color: C.sub, background: '#FBFBFC',
+                borderBottom: `1px solid ${C.line2}`,
+              }}
+            >
+              {showLater ? '▾' : '▸'} 나중에 할 일 <b style={{ color: C.ink }}>{tasks.later.length}개</b>
+              {!showLater && (
+                <span style={{ marginLeft: 7, color: C.mut }}>
+                  {tasks.later.map((t) => t.title.replace(/^\d+월\s*/, '')).join(' · ')}
+                </span>
+              )}
+            </button>
+            {showLater &&
+              tasks.later.map((t) => (
+                <TaskRow key={t.key} state={t.state} title={t.title} desc={t.desc} onGo={() => onGo(t.go)} />
+              ))}
+          </>
+        )}
+
+        <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', padding: '13px 15px' }}>
+          <Btn
+            onClick={() => onGo('mark')}
+            style={{ padding: '9px 15px', fontSize: 13.5, borderColor: C.pk, color: C.pkd, fontWeight: 700 }}
+          >
+            결강 찍기
+          </Btn>
+          <Btn onClick={() => onGo('week')} style={{ padding: '9px 15px', fontSize: 13.5 }}>
+            전체 시간표
+          </Btn>
+          <Btn onClick={() => onGo('students')} style={{ padding: '9px 15px', fontSize: 13.5 }}>
+            아동
+          </Btn>
+          <Btn onClick={() => onGo('plan')} style={{ padding: '9px 15px', fontSize: 13.5 }}>
+            휴무일 · 외부 일정
+          </Btn>
+        </div>
+      </Card>
+    </div>
+  )
+}
+
+/* 결강 찍기 — 최근 며칠을 날짜별로 */
+function MarkView({ onLoad, onMark, busy, say }) {
+  const [rows, setRows] = useState(null)
+  const [loading, setLoading] = useState(true)
+
+  const reload = () => {
+    setLoading(true)
+    onLoad(7)
+      .then(setRows)
+      .catch(() => setRows([]))
+      .finally(() => setLoading(false))
+  }
+  useEffect(reload, [])
+
+  const byDay = useMemo(() => {
+    if (!rows) return []
+    const m = {}
+    rows.forEach((r) => {
+      if (!m[r.d]) m[r.d] = []
+      m[r.d].push(r)
+    })
+    return Object.entries(m).sort((a, b) => b[0].localeCompare(a[0]))
+  }, [rows])
+
+  const today = new Date()
+  const iso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+  const yest = new Date(today.getTime() - 86400000)
+  const yiso = `${yest.getFullYear()}-${String(yest.getMonth() + 1).padStart(2, '0')}-${String(yest.getDate()).padStart(2, '0')}`
+
+  if (loading) return <Loading />
+  if (!rows || rows.length === 0) return <Empty>최근 7일에 수업이 없습니다.</Empty>
+
+  return (
+    <Card style={{ overflow: 'hidden' }}>
+      <div style={{ padding: '13px 15px', borderBottom: `1px solid ${C.line2}` }}>
+        <div style={{ fontSize: 15, fontWeight: 700 }}>결강 찍기</div>
+        <div style={{ fontSize: 12.5, color: C.sub, marginTop: 3, lineHeight: 1.6 }}>
+          아이가 안 온 수업만 눌러주세요. 정상 진행한 수업은 아무것도 안 누르시면 됩니다.
+        </div>
+      </div>
+
+      {byDay.map(([d, list]) => (
+        <div key={d}>
+          <div
+            style={{
+              padding: '9px 15px 4px', fontSize: 12, fontWeight: 700, color: C.sub,
+              background: '#FBFBFC', borderBottom: `1px solid ${C.line2}`,
+            }}
+          >
+            {d === iso ? '오늘 · ' : d === yiso ? '어제 · ' : ''}
+            {d.slice(5)} ({list[0].weekday})
+          </div>
+          {list.map((r) => {
+            const off = r.status === '결강'
+            return (
+              <div
+                key={r.id}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 10, padding: '11px 15px',
+                  borderBottom: `1px solid ${C.line2}`, flexWrap: 'wrap',
+                  background: off ? '#FDECEF' : 'transparent',
+                }}
+              >
+                <div style={{ fontSize: 14, fontWeight: 700, minWidth: 62 }}>{r.student_name}</div>
+                <div style={{ fontSize: 12.5, color: C.sub }}>
+                  {hhmm(r.start_time)} · {r.staff_name}
+                </div>
+                {off && (
+                  <div style={{ fontSize: 12, fontWeight: 700, color: C.danger }}>
+                    결강{r.needs_makeup ? ' · 미보강' : ' · 보강완료'}
+                  </div>
+                )}
+                <div style={{ marginLeft: 'auto' }}>
+                  {r.billing_locked ? (
+                    <span style={{ fontSize: 12, color: C.mut }}>정산 끝</span>
+                  ) : (
+                    <Btn
+                      disabled={busy}
+                      variant={off ? 'default' : 'danger'}
+                      onClick={async () => {
+                        await onMark(r.id, off ? '진행' : '결강')
+                        reload()
+                      }}
+                      style={{ padding: '5px 12px', fontSize: 12.5 }}
+                    >
+                      {off ? '되돌리기' : '결강'}
+                    </Btn>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      ))}
+    </Card>
+  )
 }
 
 
@@ -4273,6 +4810,7 @@ function App() {
   const [printAll, setPrintAll] = useState(null)
   const [needRegen, setNeedRegen] = useState(false)
   const [planYm, setPlanYm] = useState(() => shiftYm(ymOf(new Date()), 1))
+  const [schedView, setSchedView] = useState('month')
   const [students, setStudents] = useState([])
   const [templates, setTemplates] = useState([])
   const [programs, setPrograms] = useState([])
@@ -4328,7 +4866,7 @@ function App() {
         setIsAdmin(isAdmin)
         setStaff(staff)
         setMe(me)
-        setTab(isAdmin ? 'week' : 'today')
+        setTab(isAdmin ? 'home' : 'today')
       })
       .catch(fail)
   }, [session])
@@ -4505,14 +5043,11 @@ function App() {
   // 탭을 성격별로 세 묶음으로 나눕니다 (원장님 화면)
   const groups = isAdmin
     ? [
+        { key: 'home', label: '홈', items: [['home', '홈']] },
         {
           key: 'sched',
           label: '시간표',
-          items: [
-            ['month', '월간'],
-            ['week', '주간'],
-            ['makeup', `보강${unmadeUp.length ? ` ${unmadeUp.length}` : ''}`],
-          ],
+          items: [['month', '시간표']],
         },
         {
           key: 'money',
@@ -4520,7 +5055,6 @@ function App() {
           items: [
             ['billing', '청구'],
             ['payment', `입금${unpaidCount ? ` ${unpaidCount}` : ''}`],
-            ['closing', '마감'],
           ],
         },
         {
@@ -4529,7 +5063,6 @@ function App() {
           items: [
             ['plan', '시간표 짜기'],
             ['students', '아동'],
-            ['leave', '휴무일'],
           ],
         },
       ]
@@ -4539,8 +5072,7 @@ function App() {
           label: '수업',
           items: [
             ['today', '오늘'],
-            ['month', '월간'],
-            ['week', '주간'],
+            ['month', '시간표'],
           ],
         },
         { key: 'money', label: '마감', items: [['myclose', '마감']] },
@@ -4648,7 +5180,10 @@ function App() {
         {!loading && isAdmin && unmadeUp.length > 0 && (
           <div className="no-print" style={{ marginBottom: 14 }}>
             <button
-              onClick={() => setTab('makeup')}
+              onClick={() => {
+                setTab('month')
+                setSchedView('makeup')
+              }}
               style={{
                 width: '100%',
                 textAlign: 'left',
@@ -4678,7 +5213,81 @@ function App() {
           <TodayView today={today} weekMinutes={weekMinutes} onMark={doMark} busy={busy} />
         )}
 
+        {!loading && tab === 'home' && isAdmin && (
+          <HomeView
+            ym={ym}
+            busy={busy}
+            onPrevYm={() => setYm(shiftYm(ym, -1))}
+            onNextYm={() => setYm(shiftYm(ym, 1))}
+            onLoad={loadHome}
+            onGo={(where) => {
+              if (where === 'plan') {
+                setPlanYm(shiftYm(ym, 1))
+                setTab('plan')
+              } else if (where === 'billing-next') {
+                setYm(shiftYm(ym, 1))
+                setTab('billing')
+              } else if (where === 'makeup') {
+                setTab('month')
+                setSchedView('makeup')
+              } else if (where === 'week') {
+                setTab('month')
+                setSchedView('week')
+              } else if (where === 'mark') {
+                setTab('mark')
+              } else if (where === 'closing' || where === 'payroll') {
+                setTab('billing')
+              } else {
+                setTab(where)
+              }
+            }}
+          />
+        )}
+
+        {!loading && tab === 'mark' && (
+          <MarkView
+            busy={busy}
+            say={say}
+            onLoad={loadRecentSessions}
+            onMark={async (id, status) => {
+              setBusy(true)
+              try {
+                await markAttendance(id, status)
+                say(status === '결강' ? '결강으로 표시했습니다' : '진행으로 되돌렸습니다')
+                await reloadAll()
+              } catch (e) {
+                fail(e)
+              }
+              setBusy(false)
+            }}
+          />
+        )}
+
         {!loading && tab === 'month' && (
+          <div className="no-print" style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 9, marginBottom: 12, width: 'fit-content' }}>
+            {[
+              ['month', '월'],
+              ['week', '주'],
+              ...(isAdmin ? [['makeup', `보강${unmadeUp.length ? ` ${unmadeUp.length}` : ''}`]] : []),
+            ].map(([k, label]) => (
+              <button
+                key={k}
+                onClick={() => setSchedView(k)}
+                style={{
+                  border: 'none', cursor: 'pointer', padding: '6px 18px', borderRadius: 7,
+                  fontSize: 13, fontWeight: 700,
+                  background: schedView === k ? '#fff' : 'transparent',
+                  color: schedView === k ? C.ink : C.sub,
+                  boxShadow: schedView === k ? '0 1px 2px rgba(0,0,0,.06)' : 'none',
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {!loading && tab === 'month' && schedView === 'month' && (
           <MonthView
             ym={monthYm}
             staff={isAdmin ? staff : null}
@@ -4716,7 +5325,7 @@ function App() {
           />
         )}
 
-        {!loading && tab === 'week' && (
+        {!loading && tab === 'month' && schedView === 'week' && (
           <>
             <div className="no-print" style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 12, flexWrap: 'wrap' }}>
               <Btn
@@ -4821,7 +5430,7 @@ function App() {
           </>
         )}
 
-        {!loading && tab === 'makeup' && (
+        {!loading && tab === 'month' && schedView === 'makeup' && (
           <Card style={{ overflow: 'hidden' }}>
             <div style={{ padding: '14px 18px', borderBottom: `1px solid ${C.line2}` }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -4871,38 +5480,6 @@ function App() {
           </Card>
         )}
 
-        {!loading && tab === 'closing' && isAdmin && (
-          <ClosingView
-            ym={closeYm}
-            onPrevYm={() => setCloseYm(shiftYm(closeYm, -1))}
-            onNextYm={() => setCloseYm(shiftYm(closeYm, 1))}
-            rows={closings}
-            staff={staff}
-            busy={busy}
-            onRequest={async (sid) => {
-              setBusy(true)
-              try {
-                const n = await requestClosing(closeYm, sid)
-                say(`${n}명을 마감 대상으로 표시했습니다. 단톡방 문구를 복사해 보내주세요`)
-                await reloadMonth()
-              } catch (e) {
-                fail(e)
-              }
-              setBusy(false)
-            }}
-            onReview={async (sid, approve, reason) => {
-              setBusy(true)
-              try {
-                await reviewClosing(closeYm, sid, approve, reason)
-                say(approve ? '승인했습니다' : '반려했습니다')
-                await reloadMonth()
-              } catch (e) {
-                fail(e)
-              }
-              setBusy(false)
-            }}
-          />
-        )}
 
         {!loading && tab === 'billing' && isAdmin && (
           <>
@@ -4940,6 +5517,37 @@ function App() {
               onOpenReceipt={setReceiptFor}
               onPrintAll={setPrintAll}
               onDetail={(sid) => loadPayrollDetail(ym, sid)}
+              closing={
+                <ClosingView
+                  ym={ym}
+                  embedded
+                  rows={closings}
+                  staff={staff}
+                  busy={busy}
+                  onRequest={async (sid) => {
+                    setBusy(true)
+                    try {
+                      const n = await requestClosing(ym, sid)
+                      say(`${n}명을 마감 대상으로 표시했습니다. 단톡방 문구를 복사해 보내주세요`)
+                      await reloadMonth()
+                    } catch (e) {
+                      fail(e)
+                    }
+                    setBusy(false)
+                  }}
+                  onReview={async (sid, approve, reason) => {
+                    setBusy(true)
+                    try {
+                      await reviewClosing(ym, sid, approve, reason)
+                      say(approve ? '승인했습니다' : '반려했습니다')
+                      await reloadMonth()
+                    } catch (e) {
+                      fail(e)
+                    }
+                    setBusy(false)
+                  }}
+                />
+              }
               onSetRate={async (sid, rate) => {
                 setBusy(true)
                 try {
@@ -5097,6 +5705,54 @@ function App() {
               onLoadLocked={loadPlanLocked}
               onLoadBackups={loadPlanBackups}
               onCheck={checkMonthPlan}
+              leaves={leaves}
+              outside={outside}
+              onAddLeave={async (v) => {
+                setBusy(true)
+                try {
+                  const msg = await addLeave(v)
+                  setNeedRegen(true)
+                  say(msg || '등록했습니다')
+                  await reloadAll()
+                } catch (e) {
+                  fail(e)
+                }
+                setBusy(false)
+              }}
+              onRemoveLeave={async (id) => {
+                setBusy(true)
+                try {
+                  await removeLeave(id)
+                  setNeedRegen(true)
+                  say('삭제했습니다')
+                  await reloadAll()
+                } catch (e) {
+                  fail(e)
+                }
+                setBusy(false)
+              }}
+              onAddOutside={async (v) => {
+                setBusy(true)
+                try {
+                  await addOutside(v)
+                  say('일정을 등록했습니다')
+                  await reloadManage()
+                } catch (e) {
+                  fail(e)
+                }
+                setBusy(false)
+              }}
+              onRemoveOutside={async (id) => {
+                setBusy(true)
+                try {
+                  await removeOutside(id)
+                  say('삭제했습니다')
+                  await reloadManage()
+                } catch (e) {
+                  fail(e)
+                }
+                setBusy(false)
+              }}
               onRestore={async (id) => {
                 setBusy(true)
                 try {
@@ -5127,60 +5783,6 @@ function App() {
           </>
         )}
 
-        {!loading && tab === 'leave' && isAdmin && (
-          <LeaveView
-            leaves={leaves}
-            staff={staff}
-            outside={outside}
-            busy={busy}
-            onAddOutside={async (v) => {
-              setBusy(true)
-              try {
-                await addOutside(v)
-                say('일정을 등록했습니다')
-                await reloadManage()
-              } catch (e) {
-                fail(e)
-              }
-              setBusy(false)
-            }}
-            onRemoveOutside={async (id) => {
-              setBusy(true)
-              try {
-                await removeOutside(id)
-                say('삭제했습니다')
-                await reloadManage()
-              } catch (e) {
-                fail(e)
-              }
-              setBusy(false)
-            }}
-            onAdd={async (v) => {
-              setBusy(true)
-              try {
-                const msg = await addLeave(v)
-                setNeedRegen(true)
-                say(msg || '등록했습니다')
-                await reloadAll()
-              } catch (e) {
-                fail(e)
-              }
-              setBusy(false)
-            }}
-            onRemove={async (id) => {
-              setBusy(true)
-              try {
-                await removeLeave(id)
-                setNeedRegen(true)
-                say('삭제했습니다')
-                await reloadAll()
-              } catch (e) {
-                fail(e)
-              }
-              setBusy(false)
-            }}
-          />
-        )}
       </div>
 
       {(makeupFor || addOpen) && (
