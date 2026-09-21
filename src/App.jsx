@@ -559,6 +559,10 @@ function Toast({ msg, tone = 'ok' }) {
 /* ═════════════════ WeekGrid.jsx ═════════════════ */
 
 const DAY_START = 540 // 09:00
+// 휴무일 색 — 다른 달·빈 칸의 회색과 헷갈리지 않게 분홍 계열로
+const HOLIDAY = { bg: '#FDECEF', fg: '#AE2340', pill: '#D14B68' }
+// 원장 외부 일정 — 수업(연한 색)과 확실히 다르게 진한 회색
+const OUTSIDE = { bg: '#3F4652', bd: '#2B3038', fg: '#FFFFFF', tag: '#C9CED6' }
 const DAY_END = 1200 // 20:00
 const PX = 1.02
 
@@ -581,7 +585,7 @@ function layout(items, names) {
 }
 
 
-function WeekGrid({ weekStart, sessions, holidays, outside = [], colorOf, toneOf, staffOrder = [], onPick, today }) {
+function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colorOf, toneOf, staffOrder = [], onPick, today }) {
   const days = useMemo(
     () =>
       [...Array(6)].map((_, i) => {
@@ -592,7 +596,13 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], colorOf, toneOf
     [weekStart]
   )
 
-  const holidaySet = useMemo(() => new Set(holidays.map((h) => h.d)), [holidays])
+  const holidayMap = useMemo(() => {
+    const m = {}
+    holidays.forEach((h) => {
+      if (!h.staff_id) m[h.d] = h.label || '휴무'
+    })
+    return m
+  }, [holidays])
 
   const outByDay = useMemo(() => {
     const m = {}
@@ -606,10 +616,14 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], colorOf, toneOf
   // 주 전체에서 수업이 있는 선생님을 순서대로 — 모든 날이 같은 폭, 같은 줄을 씁니다
   const weekNames = useMemo(() => {
     const seen = new Set(sessions.map((s) => s.staff_name))
+    const weekIso = new Set(Array.from({ length: 6 }, (_, i) => {
+      const x = new Date(weekStart); x.setDate(x.getDate() + i); return isoOf(x)
+    }))
+    if (ownerName && outside.some((e) => weekIso.has(e.d))) seen.add(ownerName)
     const ordered = staffOrder.filter((n) => seen.has(n))
     const rest = [...seen].filter((n) => !staffOrder.includes(n)).sort((a, b) => a.localeCompare(b, 'ko'))
     return [...ordered, ...rest]
-  }, [sessions, staffOrder])
+  }, [sessions, staffOrder, outside, ownerName, weekStart])
   const height = (DAY_END - DAY_START) * PX
 
   return (
@@ -618,6 +632,7 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], colorOf, toneOf
         <div style={{ borderBottom: `1px solid ${C.line}`, background: '#FBFBFC' }} />
         {days.map((d, i) => {
           const isToday = isoOf(d) === today
+          const hol = holidayMap[isoOf(d)]
           return (
             <div
               key={i}
@@ -626,18 +641,21 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], colorOf, toneOf
                 textAlign: 'center',
                 borderLeft: `2px solid ${C.line}`,
                 borderBottom: `1px solid ${C.line}`,
-                background: isToday
-                  ? C.pkl
-                  : d.getDay() === 6
-                    ? '#F7F5EF'
-                    : i % 2 === 1
-                      ? '#F4F5F6'
-                      : '#FBFBFC',
+                background: hol
+                  ? HOLIDAY.bg
+                  : isToday
+                    ? '#E6F1FB'
+                    : d.getDay() === 6
+                      ? '#F7F5EF'
+                      : i % 2 === 1
+                        ? '#F4F5F6'
+                        : '#FBFBFC',
               }}
             >
-              <div style={{ fontSize: 10.5, color: C.mut }}>{'일월화수목금토'[d.getDay()]}</div>
-              <div style={{ fontSize: 14, fontWeight: 700, color: isToday ? C.pkd : C.ink }}>
+              <div style={{ fontSize: 10.5, color: hol ? HOLIDAY.fg : C.mut }}>{'일월화수목금토'[d.getDay()]}</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: hol ? HOLIDAY.fg : isToday ? '#0C447C' : C.ink }}>
                 {d.getDate()}
+                {isToday && !hol && <span style={{ fontSize: 10, fontWeight: 700, marginLeft: 4 }}>오늘</span>}
               </div>
             </div>
           )
@@ -667,7 +685,8 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], colorOf, toneOf
 
         {days.map((d, i) => {
           const ds = isoOf(d)
-          const isHoliday = holidaySet.has(ds)
+          const hol = holidayMap[ds]
+          const isHoliday = !!hol
           const items = sessions.filter((s) => s.d === ds)
           return (
             <div
@@ -678,7 +697,7 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], colorOf, toneOf
                 // 요일 경계를 뚜렷하게, 홀짝으로 배경을 살짝 다르게
                 borderLeft: `2px solid ${C.line}`,
                 background: isHoliday
-                  ? '#F4F5F6'
+                  ? HOLIDAY.bg
                   : d.getDay() === 6
                     ? '#FCFBF8'
                     : i % 2 === 1
@@ -701,46 +720,52 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], colorOf, toneOf
               {isHoliday && (
                 <div
                   style={{
-                    position: 'absolute',
-                    inset: 0,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontSize: 12,
-                    color: '#B4B8BD',
+                    position: 'absolute', top: 10, left: 0, right: 0,
+                    display: 'flex', justifyContent: 'center', pointerEvents: 'none',
                   }}
                 >
-                  휴원
+                  <span
+                    style={{
+                      fontSize: 12.5, fontWeight: 700, color: '#fff', background: HOLIDAY.pill,
+                      borderRadius: 99, padding: '3px 11px',
+                    }}
+                  >
+                    {hol}
+                  </span>
                 </div>
               )}
               {(outByDay[ds] || []).map((e) => {
                 const top = (toMin(e.start_time) - DAY_START) * PX
                 const eh = (toMin(e.end_time) - toMin(e.start_time)) * PX
+                // 원장 줄에 놓습니다 (원장 수업과 같은 줄, 색만 다르게)
+                const lane = ownerName ? weekNames.indexOf(ownerName) : -1
+                const n = Math.max(weekNames.length, 1)
+                const w = 100 / n
                 return (
                   <div
                     key={e.id}
                     title={`${e.label}${e.memo ? ' · ' + e.memo : ''}`}
                     style={{
                       position: 'absolute',
-                      top,
-                      height: Math.max(eh - 2, 16),
-                      left: 2,
-                      right: 2,
+                      top: top + 1,
+                      height: Math.max(eh - 3, 18),
+                      left: lane >= 0 ? `calc(${lane * w}% + 2px)` : 2,
+                      width: lane >= 0 ? `calc(${w}% - 4px)` : 'calc(100% - 4px)',
                       borderRadius: 7,
-                      background:
-                        'repeating-linear-gradient(135deg, #EDEEF0, #EDEEF0 6px, #F6F7F8 6px, #F6F7F8 12px)',
-                      border: `1px dashed ${C.line}`,
-                      padding: '3px 6px',
+                      background: OUTSIDE.bg,
+                      border: `1px solid ${OUTSIDE.bd}`,
+                      padding: n >= 3 ? '2px 3px' : '3px 6px',
                       overflow: 'hidden',
-                      pointerEvents: 'none',
+                      zIndex: 2,
                     }}
                   >
-                    <div style={{ fontSize: 10.5, fontWeight: 700, color: '#5B6069', lineHeight: 1.25 }}>
+                    <div style={{ fontSize: 9, fontWeight: 700, color: OUTSIDE.tag, letterSpacing: '0.02em' }}>외부</div>
+                    <div style={{ fontSize: n >= 3 ? 10 : 11.5, fontWeight: 700, color: OUTSIDE.fg, lineHeight: 1.25 }}>
                       {e.label}
                     </div>
-                    {eh > 40 && (
-                      <div style={{ fontSize: 9, color: C.mut }}>
-                        {hhmm(e.start_time)}~{hhmm(e.end_time)} · 외부
+                    {eh > 44 && n < 3 && (
+                      <div style={{ fontSize: 9.5, color: OUTSIDE.tag, marginTop: 1 }}>
+                        {hhmm(e.start_time)}~{hhmm(e.end_time)}
                       </div>
                     )}
                   </div>
@@ -2256,7 +2281,7 @@ function MonthOnlyCard({ ym, leaves, outside, staff, busy, onAddLeave, onRemoveL
             borderBottom: i === rows.length - 1 ? 'none' : `1px solid ${C.line2}`, flexWrap: 'wrap',
           }}
         >
-          <Pill tone={r.kind === 'leave' ? 'gray' : 'blue'}>{r.kind === 'leave' ? '휴무' : '외부'}</Pill>
+          <Pill tone={r.kind === 'leave' ? 'pink' : 'gray'}>{r.kind === 'leave' ? '휴무' : '외부'}</Pill>
           <div style={{ fontSize: 13.5, fontWeight: 700, minWidth: 100 }}>
             {r.d.slice(5)} ({r.weekday})
           </div>
@@ -3109,6 +3134,536 @@ function MarkView({ onLoad, onMark, busy, say }) {
         </div>
       ))}
     </Card>
+  )
+}
+
+
+/* ═════════════════ TimetablePrint.jsx ═════════════════ */
+
+function ttIso(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+/* 선생님 한 분의 한 달 — 날짜마다 한 줄, 시간은 가로 */
+const TT_LANE_MM = 253 // 가로 시간 칸의 실제 폭(mm) — 칸이 좁으면 시간 글자를 뺍니다
+const TT_DOW = '일월화수목금토'
+
+function ttMin(t) {
+  const [h, m] = String(t).split(':').map(Number)
+  return h * 60 + m
+}
+
+function TeacherSheet({ ym, teacher, sessions, holidays, tone }) {
+  const [y, m] = ym.split('-').map(Number)
+  const lastDay = new Date(y, m, 0).getDate()
+
+  // 이 선생님 수업에 맞춰 시간 범위를 잡습니다
+  const mins = sessions.map((s) => ttMin(s.start_time))
+  const maxs = sessions.map((s) => ttMin(s.end_time))
+  let st = mins.length ? Math.floor(Math.min(...mins) / 60) * 60 : 13 * 60
+  let en = maxs.length ? Math.ceil(Math.max(...maxs) / 60) * 60 : 19 * 60
+  if (en - st < 240) en = st + 240
+  const span = en - st
+  const pct = (v) => `${(((v - st) / span) * 100).toFixed(3)}%`
+
+  const byDay = {}
+  sessions.forEach((s) => {
+    if (!byDay[s.d]) byDay[s.d] = []
+    byDay[s.d].push(s)
+  })
+
+  const rows = []
+  let prevWeek = null
+  for (let d = 1; d <= lastDay; d++) {
+    const x = new Date(y, m - 1, d)
+    const w = x.getDay()
+    if (w === 0) continue
+    const iso = ttIso(x)
+    const mon = new Date(x)
+    mon.setDate(mon.getDate() - ((w + 6) % 7))
+    const wk = ttIso(mon)
+    rows.push({ d, w, iso, newWeek: prevWeek !== null && wk !== prevWeek })
+    prevWeek = wk
+  }
+
+  const ticks = []
+  for (let t = st; t <= en; t += 30) ticks.push(t)
+
+  return (
+    <div className="tt-page">
+      <div className="tt-ph">
+        <b>{teacher.name} 선생님</b>
+        <span>
+          {y}년 {m}월
+        </span>
+        <span className="tt-lg">
+          <span>
+            <i style={{ background: '#FFF4C7' }} />
+            50분 이상 빈 시간
+          </span>
+          <span>
+            <i style={{ border: `1px dashed ${tone.bd}`, borderLeft: `3px solid ${tone.line}` }} />
+            보강
+          </span>
+        </span>
+      </div>
+
+      <div className="tt-tbl">
+        <div className="tt-axis">
+          <div />
+          <div className="tt-lane">
+            {ticks
+              .filter((t) => t % 60 === 0)
+              .map((t) => (
+                <span key={t} className="tt-tk" style={{ left: pct(t) }}>
+                  {t / 60}시
+                </span>
+              ))}
+          </div>
+        </div>
+
+        {rows.map((r) => {
+          const off = holidays[r.iso]
+          const list = (byDay[r.iso] || [])
+            .map((s) => ({ ...s, s0: ttMin(s.start_time), s1: ttMin(s.end_time) }))
+            .sort((a, b) => a.s0 - b.s0)
+
+          const gaps = []
+          for (let i = 0; i < list.length - 1; i++) {
+            const g0 = list[i].s1
+            const g1 = list[i + 1].s0
+            if (g1 - g0 >= 50) gaps.push([g0, g1])
+          }
+
+          return (
+            <div key={r.iso} className={`tt-row${r.newWeek ? ' tt-wk' : ''}${off ? ' tt-off' : ''}`}>
+              <div className={`tt-dt${r.w === 6 ? ' tt-sat' : ''}`}>
+                {m}/{r.d} <i>{TT_DOW[r.w]}</i>
+              </div>
+              <div className="tt-lane">
+                {ticks.map((t) => (
+                  <div key={t} className={`tt-vl${t % 60 === 0 ? ' tt-h' : ''}`} style={{ left: pct(t) }} />
+                ))}
+                {off ? (
+                  <span className="tt-lbl">{off}</span>
+                ) : (
+                  <>
+                    {gaps.map(([g0, g1]) => (
+                      <div
+                        key={g0}
+                        className="tt-gap"
+                        style={{ left: pct(g0), width: `${(((g1 - g0) / span) * 100).toFixed(3)}%` }}
+                      />
+                    ))}
+                    {list.map((s) => {
+                      const widthMm = ((s.s1 - s.s0) / span) * TT_LANE_MM
+                      const mk = s.status === '보강'
+                      const ab = s.status === '결강'
+                      return (
+                        <div
+                          key={s.id}
+                          className={`tt-ev${mk ? ' tt-mk' : ''}${ab ? ' tt-ab' : ''}`}
+                          style={{
+                            left: pct(s.s0),
+                            width: `calc(${(((s.s1 - s.s0) / span) * 100).toFixed(3)}% - 1px)`,
+                            background: mk ? '#fff' : tone.bg,
+                            borderColor: tone.bd,
+                            borderLeftColor: tone.line,
+                            color: tone.fg,
+                          }}
+                        >
+                          {mk && <span className="tt-tag">보강</span>}
+                          <b>{s.student_name}</b>
+                          {!mk && widthMm >= 27 && <small>{hhmm(s.start_time)}</small>}
+                        </div>
+                      )
+                    })}
+                  </>
+                )}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+
+/* 전체 — 한 주에 한 장, 날짜마다 선생님 줄 */
+const OUT_TONE = { bg: '#3F4652', bd: '#2B3038', fg: '#FFFFFF' }
+
+function WeekSheet({ ym, days, weekNo, teachers, sessions, outside, holidays, leaves, toneOf, colorOf, ownerName, st, en }) {
+  const span = en - st
+  const pct = (v) => `${(((v - st) / span) * 100).toFixed(3)}%`
+  const ticks = []
+  for (let t = st; t <= en; t += 30) ticks.push(t)
+  const Lines = () =>
+    ticks.map((t) => <div key={t} className={`tt-vl${t % 60 === 0 ? ' tt-h' : ''}`} style={{ left: pct(t) }} />)
+
+  const [y, m] = ym.split('-').map(Number)
+  const a = days[0]
+  const z = days[days.length - 1]
+
+  const dayBlocks = days.map((x) => {
+    const iso = ttIso(x)
+    const hol = holidays[iso]
+    if (hol) return { iso, x, hol, subs: [] }
+    const subs = teachers
+      .map((t) => {
+        const list = sessions
+          .filter((s) => s.d === iso && s.staff_name === t.name)
+          .map((s) => ({ ...s, s0: ttMin(s.start_time), s1: ttMin(s.end_time) }))
+        const outs =
+          t.name === ownerName
+            ? outside
+                .filter((e) => e.d === iso)
+                .map((e) => ({ ...e, out: true, s0: ttMin(e.start_time), s1: ttMin(e.end_time) }))
+            : []
+        const leave = leaves[`${t.id}|${iso}`]
+        const all = [...list, ...outs].sort((p, q) => p.s0 - q.s0)
+        return { t, all, leave }
+      })
+      .filter((r) => r.all.length || r.leave)
+    return { iso, x, hol: null, subs }
+  })
+
+  return (
+    <div className="tt-page">
+      <div className="tt-ph">
+        <b>전체 시간표</b>
+        <span>
+          {y}년 {m}월 {weekNo}주 ({a.getMonth() + 1}/{a.getDate()} ~ {z.getMonth() + 1}/{z.getDate()})
+        </span>
+        <span className="tt-lg">
+          {teachers.map((t) => (
+            <span key={t.id}>
+              <i style={{ background: toneOf(t.name).bg, border: `1px solid ${toneOf(t.name).bd}`, borderLeft: `3px solid ${colorOf(t.name)}` }} />
+              {t.name}
+            </span>
+          ))}
+          <span>
+            <i style={{ background: OUT_TONE.bg }} />
+            외부 일정
+          </span>
+          <span>
+            <i style={{ background: '#FFF4C7' }} />
+            빈 시간
+          </span>
+        </span>
+      </div>
+
+      <div className="tt-tbl">
+        <div className="tt-axis tt-axis3">
+          <div />
+          <div />
+          <div className="tt-lane">
+            {ticks
+              .filter((t) => t % 60 === 0)
+              .map((t) => (
+                <span key={t} className="tt-tk" style={{ left: pct(t) }}>
+                  {t / 60}시
+                </span>
+              ))}
+          </div>
+        </div>
+
+        {dayBlocks.map((d) => {
+          const w = d.x.getDay()
+          const label = (
+            <div className={`tt-dl${w === 6 ? ' tt-sat' : ''}`}>
+              {d.x.getMonth() + 1}/{d.x.getDate()}
+              <i>{TT_DOW[w]}</i>
+            </div>
+          )
+          if (d.hol)
+            return (
+              <div key={d.iso} className="tt-day tt-dayoff" style={{ flex: 1 }}>
+                {label}
+                <div className="tt-lane">
+                  <Lines />
+                  <span className="tt-lbl">{d.hol}</span>
+                </div>
+              </div>
+            )
+          const n = Math.max(d.subs.length, 1)
+          return (
+            <div key={d.iso} className="tt-day" style={{ flex: n }}>
+              {label}
+              <div className="tt-subs">
+                {d.subs.length === 0 && (
+                  <div className="tt-sub">
+                    <div className="tt-tn" />
+                    <div className="tt-lane">
+                      <Lines />
+                    </div>
+                  </div>
+                )}
+                {d.subs.map(({ t, all, leave }) => {
+                  const tone = toneOf(t.name)
+                  const line = colorOf(t.name)
+                  const gaps = []
+                  for (let i = 0; i < all.length - 1; i++) {
+                    if (all[i + 1].s0 - all[i].s1 >= 50) gaps.push([all[i].s1, all[i + 1].s0])
+                  }
+                  return (
+                    <div key={t.id} className="tt-sub">
+                      <div className="tt-tn" style={{ color: tone.fg }}>
+                        {t.name}
+                      </div>
+                      <div className="tt-lane" style={leave && !all.length ? { background: '#FDECEF' } : undefined}>
+                        <Lines />
+                        {leave && !all.length && <span className="tt-lbl tt-lbl-s">{leave}</span>}
+                        {gaps.map(([g0, g1]) => (
+                          <div key={g0} className="tt-gap" style={{ left: pct(g0), width: `${(((g1 - g0) / span) * 100).toFixed(3)}%` }} />
+                        ))}
+                        {all.map((s) => {
+                          const mk = s.status === '보강'
+                          const ab = s.status === '결강'
+                          const style = s.out
+                            ? { background: OUT_TONE.bg, borderColor: OUT_TONE.bd, borderLeftColor: OUT_TONE.bd, color: OUT_TONE.fg }
+                            : { background: mk ? '#fff' : tone.bg, borderColor: tone.bd, borderLeftColor: line, color: tone.fg }
+                          return (
+                            <div
+                              key={s.id}
+                              className={`tt-ev${mk ? ' tt-mk' : ''}${ab ? ' tt-ab' : ''}`}
+                              style={{ ...style, left: pct(s.s0), width: `calc(${(((s.s1 - s.s0) / span) * 100).toFixed(3)}% - 1px)` }}
+                            >
+                              {s.out && <span className="tt-outtag">외부</span>}
+                              {mk && <span className="tt-tag">보강</span>}
+                              <b>{s.out ? s.label : s.student_name}</b>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHolidays, toneOf, colorOf, onClose }) {
+  const teachers = useMemo(() => staff.filter((x) => x.active), [staff])
+  const [picked, setPicked] = useState(() => new Set(teachers.map((t) => t.id)))
+  const [hols, setHols] = useState([])
+  const [mode, setMode] = useState('teacher')
+
+  useEffect(() => {
+    const [y, m] = ym.split('-').map(Number)
+    const last = new Date(y, m, 0).getDate()
+    loadHolidays(`${ym}-01`, `${ym}-${String(last).padStart(2, '0')}`)
+      .then((r) => setHols(r || []))
+      .catch(() => setHols([]))
+  }, [ym])
+
+  // 센터 전체 휴무 + 선생님 개인 휴무
+  const holFor = (t) => {
+    const out = {}
+    hols.forEach((h) => {
+      if (!h.staff_id) out[h.d] = h.label || '휴무'
+      else if (h.staff_id === t.id) out[h.d] = h.label || '휴무'
+    })
+    return out
+  }
+
+  const shown = teachers.filter((t) => picked.has(t.id))
+
+  // ── 전체(주별) 계산 ──
+  const monthOut = outside.filter((e) => e.d.slice(0, 7) === ym)
+  const centerHol = {}
+  const leaves = {}
+  hols.forEach((h) => {
+    if (!h.staff_id) centerHol[h.d] = h.label || '휴무'
+    else leaves[`${h.staff_id}|${h.d}`] = h.label || '휴무'
+  })
+  const live = sessions.filter((s) => s.status !== '취소')
+  const allMin = [...live.map((s) => ttMin(s.start_time)), ...monthOut.map((e) => ttMin(e.start_time))]
+  const allMax = [...live.map((s) => ttMin(s.end_time)), ...monthOut.map((e) => ttMin(e.end_time))]
+  const gSt = allMin.length ? Math.floor(Math.min(...allMin) / 60) * 60 : 9 * 60
+  let gEn = allMax.length ? Math.ceil(Math.max(...allMax) / 60) * 60 : 19 * 60
+  if (gEn - gSt < 240) gEn = gSt + 240
+
+  const weeks = (() => {
+    const [y, m] = ym.split('-').map(Number)
+    const last = new Date(y, m, 0).getDate()
+    const out = []
+    let cur = []
+    for (let d = 1; d <= last; d++) {
+      const x = new Date(y, m - 1, d)
+      if (x.getDay() === 0) {
+        if (cur.length) out.push(cur)
+        cur = []
+        continue
+      }
+      cur.push(x)
+    }
+    if (cur.length) out.push(cur)
+    return out
+  })()
+
+  const pageCount = mode === 'all' ? weeks.length : shown.length
+
+  return createPortal(
+    <div className="tt-root">
+      <style>{`
+        .tt-root { position: fixed; inset: 0; background: #E9EAEC; z-index: 100; overflow: auto; }
+        .tt-bar { position: sticky; top: 0; z-index: 2; background: #fff; border-bottom: 1px solid ${C.line};
+          padding: 11px 16px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+        .tt-wrap { padding: 16px 12px 40px; overflow-x: auto; }
+        .tt-page { width: 297mm; height: 210mm; margin: 0 auto 10mm; background: #fff; padding: 6mm 8mm;
+          box-shadow: 0 1px 4px rgba(0,0,0,.12); display: flex; flex-direction: column; box-sizing: border-box; color: ${C.ink}; }
+        .tt-ph { display: flex; align-items: baseline; gap: 8px; margin-bottom: 2mm; }
+        .tt-ph b { font-size: 16px; }
+        .tt-ph > span { font-size: 14px; color: ${C.sub}; }
+        .tt-lg { margin-left: auto; display: flex; gap: 12px; font-size: 11px !important; align-items: center; }
+        .tt-lg i { display: inline-block; width: 22px; height: 10px; border-radius: 2px; vertical-align: -1px; margin-right: 4px; }
+        .tt-tbl { flex: 1; display: flex; flex-direction: column; border-top: 1.5px solid ${C.ink}; min-height: 0; }
+        .tt-axis, .tt-row { display: grid; grid-template-columns: 20mm 1fr; }
+        .tt-axis { border-bottom: 1.5px solid ${C.ink}; }
+        .tt-axis .tt-lane { height: 16px; }
+        .tt-tk { position: absolute; top: 1px; font-size: 10px; color: ${C.sub}; transform: translateX(-50%); white-space: nowrap; }
+        .tt-row { flex: 1; min-height: 0; border-bottom: 1px solid #E3E5E8; }
+        .tt-row.tt-wk { border-top: 1.5px solid #9AA0A6; }
+        .tt-dt { font-size: 11.5px; font-weight: 700; display: flex; align-items: center; gap: 4px; padding-left: 3px;
+          border-right: 1px solid #D9DBDF; }
+        .tt-dt i { font-style: normal; font-weight: 500; color: #8A8F98; }
+        .tt-dt.tt-sat i { color: #2E6FD0; }
+        .tt-lane { position: relative; margin-right: 6mm; }
+        .tt-vl { position: absolute; top: 0; bottom: 0; border-left: 1px solid #EEF0F2; }
+        .tt-vl.tt-h { border-left-color: #DDE0E4; }
+        .tt-gap { position: absolute; top: 1.5px; bottom: 1.5px; background: #FFF4C7; border-radius: 3px; }
+        .tt-ev { position: absolute; top: 1.5px; bottom: 1.5px; border-radius: 3px; padding: 0 5px; overflow: hidden;
+          white-space: nowrap; display: flex; align-items: center; gap: 5px; border: 1px solid; border-left-width: 3px; }
+        .tt-ev b { font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; }
+        .tt-ev small { font-size: 9.5px; opacity: .8; }
+        .tt-ev.tt-mk { border-style: dashed; border-left-style: solid; }
+        .tt-ev.tt-ab { opacity: .55; }
+        .tt-ev.tt-ab b { text-decoration: line-through; }
+        .tt-tag { font-size: 9.5px; font-weight: 700; color: #fff; background: #2E6FD0; border-radius: 99px; padding: 0 5px; flex: none; }
+        .tt-row.tt-off .tt-lane { background: #FDECEF; }
+        .tt-row.tt-off .tt-dt { color: #AE2340; }
+        .tt-axis3 { grid-template-columns: 17mm 15mm 1fr; }
+        .tt-day { display: grid; grid-template-columns: 17mm 1fr; border-bottom: 1.5px solid #9AA0A6; min-height: 0; }
+        .tt-dl { font-size: 12.5px; font-weight: 700; display: flex; flex-direction: column; justify-content: center;
+          padding-left: 3px; border-right: 1px solid #D9DBDF; }
+        .tt-dl i { font-style: normal; font-size: 11px; color: #8A8F98; font-weight: 500; }
+        .tt-dl.tt-sat i { color: #2E6FD0; }
+        .tt-dayoff .tt-lane { background: #FDECEF; }
+        .tt-dayoff .tt-dl { color: #AE2340; }
+        .tt-subs { display: flex; flex-direction: column; min-height: 0; }
+        .tt-sub { flex: 1; display: grid; grid-template-columns: 15mm 1fr; border-bottom: 1px solid #EEF0F2; min-height: 0; }
+        .tt-sub:last-child { border-bottom: none; }
+        .tt-tn { font-size: 10.5px; font-weight: 700; display: flex; align-items: center; padding-left: 4px; border-right: 1px solid #E3E5E8; }
+        .tt-outtag { font-size: 9px; font-weight: 700; color: #C9CED6; flex: none; }
+        .tt-lbl-s { font-size: 10px !important; padding: 0 7px !important; }
+        .tt-lbl { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); font-size: 11px; font-weight: 700;
+          color: #fff; background: #D14B68; border-radius: 99px; padding: 1px 9px; }
+        @media print {
+          @page { size: A4 landscape; margin: 0; }
+          html, body { height: auto !important; overflow: visible !important; background: #fff !important; }
+          body > *:not(.tt-root) { display: none !important; }
+          .tt-root { position: static !important; overflow: visible !important; background: #fff; }
+          .tt-bar { display: none !important; }
+          .tt-wrap { padding: 0; overflow: visible; }
+          .tt-page { margin: 0; box-shadow: none; page-break-after: always; break-after: page;
+            -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          .tt-page:last-child { page-break-after: auto; break-after: auto; }
+        }
+      `}</style>
+
+      <div className="tt-bar">
+        <div style={{ fontSize: 15, fontWeight: 700 }}>{ym.replace('-', '년 ')}월 시간표 인쇄</div>
+        <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 9 }}>
+          {[['teacher', '선생님별'], ['all', '전체']].map(([k, l]) => (
+            <button
+              key={k}
+              onClick={() => setMode(k)}
+              style={{
+                border: 'none', cursor: 'pointer', padding: '6px 14px', borderRadius: 7, fontSize: 13, fontWeight: 700,
+                background: mode === k ? '#fff' : 'transparent', color: mode === k ? C.ink : C.sub,
+                boxShadow: mode === k ? '0 1px 2px rgba(0,0,0,.06)' : 'none',
+              }}
+            >
+              {l}
+            </button>
+          ))}
+        </div>
+        {mode === 'teacher' && (
+        <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginLeft: 6 }}>
+          {teachers.map((t) => {
+            const on = picked.has(t.id)
+            return (
+              <button
+                key={t.id}
+                onClick={() => {
+                  const n = new Set(picked)
+                  on ? n.delete(t.id) : n.add(t.id)
+                  setPicked(n)
+                }}
+                style={{
+                  border: `1px solid ${on ? colorOf(t.name) : C.line}`,
+                  background: on ? toneOf(t.name).bg : '#fff',
+                  color: on ? toneOf(t.name).fg : C.mut,
+                  borderRadius: 99, padding: '5px 12px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer',
+                }}
+              >
+                {on ? '✓ ' : ''}
+                {t.name}
+              </button>
+            )
+          })}
+        </div>
+        )}
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 7 }}>
+          <Btn variant="primary" disabled={!pageCount} onClick={() => window.print()}>
+            {pageCount}장 인쇄
+          </Btn>
+          <Btn onClick={onClose}>닫기</Btn>
+        </div>
+      </div>
+
+      <div className="tt-wrap">
+        {mode === 'all' &&
+          weeks.map((days, i) => (
+            <WeekSheet
+              key={i}
+              ym={ym}
+              days={days}
+              weekNo={i + 1}
+              teachers={teachers}
+              sessions={live}
+              outside={monthOut}
+              holidays={centerHol}
+              leaves={leaves}
+              toneOf={toneOf}
+              colorOf={colorOf}
+              ownerName={ownerName}
+              st={gSt}
+              en={gEn}
+            />
+          ))}
+        {mode === 'teacher' && shown.map((t) => (
+          <TeacherSheet
+            key={t.id}
+            ym={ym}
+            teacher={t}
+            tone={{ ...toneOf(t.name), line: colorOf(t.name) }}
+            holidays={holFor(t)}
+            sessions={sessions.filter((s) => s.staff_name === t.name && s.status !== '취소')}
+          />
+        ))}
+        {mode === 'teacher' && !shown.length && (
+          <div style={{ textAlign: 'center', color: C.sub, padding: 40 }}>뽑을 선생님을 골라주세요.</div>
+        )}
+      </div>
+    </div>,
+    document.body
   )
 }
 
@@ -4156,6 +4711,7 @@ function App() {
   const [needRegen, setNeedRegen] = useState(false)
   const [schedView, setSchedView] = useState('month')
   const [editStudent, setEditStudent] = useState(null)
+  const [ttPrint, setTtPrint] = useState(false)
   const [students, setStudents] = useState([])
   const [templates, setTemplates] = useState([])
   const [programs, setPrograms] = useState([])
@@ -4607,7 +5163,8 @@ function App() {
         )}
 
         {!loading && tab === 'month' && (
-          <div className="no-print" style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 9, marginBottom: 12, width: 'fit-content' }}>
+          <div className="no-print" style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 9, width: 'fit-content' }}>
             {[
               ['month', '월'],
               ['week', '주'],
@@ -4627,6 +5184,12 @@ function App() {
                 {label}
               </button>
             ))}
+          </div>
+          {isAdmin && (
+            <Btn onClick={() => setTtPrint(true)} style={{ marginLeft: 'auto', padding: '6px 13px', fontSize: 12.5 }}>
+              시간표 인쇄
+            </Btn>
+          )}
           </div>
         )}
 
@@ -4736,7 +5299,8 @@ function App() {
               colorOf={colorOf}
               toneOf={toneOf}
               staffOrder={staff.map((x) => x.name)}
-              outside={outside}
+              outside={!filter || filter === staff.find((x) => x.role === 'admin')?.name ? outside : []}
+              ownerName={staff.find((x) => x.role === 'admin')?.name}
               onPick={setPick}
               today={isoOf(new Date())}
             />
@@ -5146,6 +5710,20 @@ function App() {
             </Btn>
           </div>
         </Modal>
+      )}
+
+      {ttPrint && isAdmin && (
+        <TimetablePrint
+          ym={ym}
+          staff={staff}
+          sessions={monthSessions}
+          outside={outside}
+          ownerName={staff.find((x) => x.role === 'admin')?.name}
+          loadHolidays={loadHolidays}
+          toneOf={toneOf}
+          colorOf={colorOf}
+          onClose={() => setTtPrint(false)}
+        />
       )}
 
       {editStudent && isAdmin && (
