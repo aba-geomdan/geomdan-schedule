@@ -398,16 +398,29 @@ const STATUS = {
   취소: { bg: '#F4F4F5', bd: '#E4E4E7', fg: '#A1A1AA' },
 }
 
-const TEACHER_COLORS = ['#D4728A', '#4A7FD4', '#2E9E8F', '#9B72C4', '#C98A3A', '#5C8A3A']
+// 선생님 색 8가지 — 앞의 4가지는 지금 선생님들 색 그대로.
+// 주황(보강)·노랑(빈 시간)·빨강(휴무)·진회색(외부 일정)은 선생님에게 쓰지 않습니다.
+const TEACHER_COLORS = [
+  '#D4728A', // 0 분홍
+  '#4A7FD4', // 1 파랑
+  '#2E9E8F', // 2 초록
+  '#9B72C4', // 3 보라
+  '#6E9A2C', // 4 올리브
+  '#9A6B4B', // 5 갈색
+  '#4E56C4', // 6 남색
+  '#5E7C93', // 7 청회색
+]
 
-// 시간표 칸 배경용 — 선생님마다 연한 색 + 글씨 색 (위 순서와 짝)
+// 시간표 칸 배경용 — 위 순서와 짝
 const TEACHER_TONES = [
   { bg: '#FBEAF0', bd: '#ED93B1', fg: '#72243E' },
   { bg: '#E6F1FB', bd: '#85B7EB', fg: '#0C447C' },
   { bg: '#E1F5EE', bd: '#5DCAA5', fg: '#085041' },
   { bg: '#F0EAFA', bd: '#B59BE0', fg: '#3F2570' },
-  { bg: '#FAEEDA', bd: '#EF9F27', fg: '#633806' },
-  { bg: '#EAF3DE', bd: '#96C466', fg: '#27500A' },
+  { bg: '#EFF5E3', bd: '#A9C97A', fg: '#3B5512' },
+  { bg: '#F4ECE6', bd: '#CFAE95', fg: '#5A3A22' },
+  { bg: '#ECEDFB', bd: '#A3A8E8', fg: '#262C80' },
+  { bg: '#EAF0F4', bd: '#A9BCCB', fg: '#2C4252' },
 ]
 
 function styleOf(s) {
@@ -560,7 +573,13 @@ function Toast({ msg, tone = 'ok' }) {
 
 const DAY_START = 540 // 09:00
 // 휴무일 색 — 다른 달·빈 칸의 회색과 헷갈리지 않게 분홍 계열로
-const HOLIDAY = { bg: '#FDECEF', fg: '#AE2340', pill: '#D14B68' }
+const HOLIDAY = {
+  bg: 'repeating-linear-gradient(135deg, #F6C9D3 0px, #F6C9D3 4px, #FFFFFF 4px, #FFFFFF 10px)',
+  fg: '#AE2340',
+  pill: '#C8324F',
+}
+// 보강 — 어느 선생님이든 같은 표시 (흰 바탕 · 점선 · 주황 이름표)
+const MAKEUP = '#E07B00'
 // 원장 외부 일정 — 수업(연한 색)과 확실히 다르게 진한 회색
 const OUTSIDE = { bg: '#3F4652', bd: '#2B3038', fg: '#FFFFFF', tag: '#C9CED6' }
 const DAY_END = 1200 // 20:00
@@ -794,8 +813,10 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                       height: Math.max(h - 2, 18),
                       background: off
                         ? `repeating-linear-gradient(135deg, ${tone.bg}, ${tone.bg} 5px, #FFFFFF 5px, #FFFFFF 10px)`
-                        : tone.bg,
-                      border: `1px solid ${tone.bd}`,
+                        : isMakeup
+                          ? '#FFFFFF'
+                          : tone.bg,
+                      border: isMakeup ? `1.5px dashed ${MAKEUP}` : `1px solid ${tone.bd}`,
                       borderLeft: `3px solid ${tc}`,
                       opacity: off ? 0.75 : 1,
                       borderRadius: 5,
@@ -806,6 +827,16 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                       display: 'block',
                     }}
                   >
+                    {isMakeup && (
+                      <span
+                        style={{
+                          display: 'inline-block', fontSize: narrow ? 8.5 : 9.5, fontWeight: 700, color: '#fff',
+                          background: MAKEUP, borderRadius: 99, padding: narrow ? '0 4px' : '0 6px', marginBottom: 1,
+                        }}
+                      >
+                        보강
+                      </span>
+                    )}
                     <div
                       style={{
                         fontSize: cols >= 3 ? 9.5 : narrow ? 10.5 : 12,
@@ -841,9 +872,7 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                     {s.status === '취소' && h > 40 && (
                       <div style={{ fontSize: 9.5, fontWeight: 700, color: C.mut }}>취소</div>
                     )}
-                    {isMakeup && h > 40 && (
-                      <div style={{ fontSize: 9.5, fontWeight: 700, color: tone.fg }}>↻ 보강</div>
-                    )}
+
                   </button>
                 )
               })}
@@ -3145,7 +3174,6 @@ function ttIso(d) {
 }
 
 /* 선생님 한 분의 한 달 — 날짜마다 한 줄, 시간은 가로 */
-const TT_LANE_MM = 253 // 가로 시간 칸의 실제 폭(mm) — 칸이 좁으면 시간 글자를 뺍니다
 const TT_DOW = '일월화수목금토'
 
 function ttMin(t) {
@@ -3198,11 +3226,11 @@ function TeacherSheet({ ym, teacher, sessions, holidays, tone }) {
         </span>
         <span className="tt-lg">
           <span>
-            <i style={{ background: '#FFF4C7' }} />
+            <i style={{ background: '#E9B93A', height: 3, verticalAlign: 2 }} />
             50분 이상 빈 시간
           </span>
           <span>
-            <i style={{ border: `1px dashed ${tone.bd}`, borderLeft: `3px solid ${tone.line}` }} />
+            <i style={{ background: '#fff', border: '1.5px dashed #E07B00', borderLeft: `3px solid ${tone.line}` }} />
             보강
           </span>
         </span>
@@ -3256,7 +3284,6 @@ function TeacherSheet({ ym, teacher, sessions, holidays, tone }) {
                       />
                     ))}
                     {list.map((s) => {
-                      const widthMm = ((s.s1 - s.s0) / span) * TT_LANE_MM
                       const mk = s.status === '보강'
                       const ab = s.status === '결강'
                       return (
@@ -3270,11 +3297,17 @@ function TeacherSheet({ ym, teacher, sessions, holidays, tone }) {
                             borderColor: tone.bd,
                             borderLeftColor: tone.line,
                             color: tone.fg,
+                            '--ln': tone.line,
                           }}
                         >
-                          {mk && <span className="tt-tag">보강</span>}
-                          <b>{s.student_name}</b>
-                          {!mk && widthMm >= 27 && <small>{hhmm(s.start_time)}</small>}
+                          <b>
+                            {mk && <span className="tt-tag">보강</span>}
+                            {s.student_name}
+                          </b>
+                          <small>
+                            {hhmm(s.start_time)}
+                            <span className="tt-end">~{hhmm(s.end_time)}</span>
+                          </small>
                         </div>
                       )
                     })}
@@ -3347,8 +3380,12 @@ function WeekSheet({ ym, days, weekNo, teachers, sessions, outside, holidays, le
             외부 일정
           </span>
           <span>
-            <i style={{ background: '#FFF4C7' }} />
-            빈 시간
+            <i style={{ background: '#fff', border: '1.5px dashed #E07B00' }} />
+            보강
+          </span>
+          <span>
+            <i style={{ background: '#E9B93A', height: 3, verticalAlign: 2 }} />
+            50분 이상 빈 시간
           </span>
         </span>
       </div>
@@ -3411,7 +3448,7 @@ function WeekSheet({ ym, days, weekNo, teachers, sessions, outside, holidays, le
                       <div className="tt-tn" style={{ color: tone.fg }}>
                         {t.name}
                       </div>
-                      <div className="tt-lane" style={leave && !all.length ? { background: '#FDECEF' } : undefined}>
+                      <div className="tt-lane" style={leave && !all.length ? { background: 'repeating-linear-gradient(135deg, #F6C9D3 0px, #F6C9D3 4px, #FFFFFF 4px, #FFFFFF 10px)' } : undefined}>
                         <Lines />
                         {leave && !all.length && <span className="tt-lbl tt-lbl-s">{leave}</span>}
                         {gaps.map(([g0, g1]) => (
@@ -3422,16 +3459,22 @@ function WeekSheet({ ym, days, weekNo, teachers, sessions, outside, holidays, le
                           const ab = s.status === '결강'
                           const style = s.out
                             ? { background: OUT_TONE.bg, borderColor: OUT_TONE.bd, borderLeftColor: OUT_TONE.bd, color: OUT_TONE.fg }
-                            : { background: mk ? '#fff' : tone.bg, borderColor: tone.bd, borderLeftColor: line, color: tone.fg }
+                            : { background: mk ? '#fff' : tone.bg, borderColor: tone.bd, borderLeftColor: line, color: tone.fg, '--ln': line }
                           return (
                             <div
                               key={s.id}
                               className={`tt-ev${mk ? ' tt-mk' : ''}${ab ? ' tt-ab' : ''}`}
                               style={{ ...style, left: pct(s.s0), width: `calc(${(((s.s1 - s.s0) / span) * 100).toFixed(3)}% - 1px)` }}
                             >
-                              {s.out && <span className="tt-outtag">외부</span>}
-                              {mk && <span className="tt-tag">보강</span>}
-                              <b>{s.out ? s.label : s.student_name}</b>
+                              <b>
+                                {mk && <span className="tt-tag">보강</span>}
+                                {s.out ? s.label : s.student_name}
+                              </b>
+                              <small>
+                                {s.out && <span className="tt-outtag">외부</span>}
+                                {hhmm(s.start_time)}
+                                <span className="tt-end">~{hhmm(s.end_time)}</span>
+                              </small>
                             </div>
                           )
                         })}
@@ -3518,10 +3561,12 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
         .tt-wrap { padding: 16px 12px 40px; overflow-x: auto; }
         .tt-page { width: 297mm; height: 210mm; margin: 0 auto 10mm; background: #fff; padding: 6mm 8mm;
           box-shadow: 0 1px 4px rgba(0,0,0,.12); display: flex; flex-direction: column; box-sizing: border-box; color: ${C.ink}; }
-        .tt-ph { display: flex; align-items: baseline; gap: 8px; margin-bottom: 2mm; }
+        .tt-ph { display: flex; align-items: baseline; gap: 8px; margin-bottom: 2mm; flex-wrap: wrap; row-gap: 2px; }
+        .tt-ph b, .tt-ph > span { white-space: nowrap; }
         .tt-ph b { font-size: 16px; }
         .tt-ph > span { font-size: 14px; color: ${C.sub}; }
-        .tt-lg { margin-left: auto; display: flex; gap: 12px; font-size: 11px !important; align-items: center; }
+        .tt-lg { margin-left: auto; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 3px 11px; font-size: 11px !important; align-items: center; white-space: normal !important; }
+        .tt-lg > span { white-space: nowrap; }
         .tt-lg i { display: inline-block; width: 22px; height: 10px; border-radius: 2px; vertical-align: -1px; margin-right: 4px; }
         .tt-tbl { flex: 1; display: flex; flex-direction: column; border-top: 1.5px solid ${C.ink}; min-height: 0; }
         .tt-axis, .tt-row { display: grid; grid-template-columns: 20mm 1fr; }
@@ -3535,18 +3580,21 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
         .tt-dt i { font-style: normal; font-weight: 500; color: #8A8F98; }
         .tt-dt.tt-sat i { color: #2E6FD0; }
         .tt-lane { position: relative; margin-right: 6mm; }
-        .tt-vl { position: absolute; top: 0; bottom: 0; border-left: 1px solid #EEF0F2; }
-        .tt-vl.tt-h { border-left-color: #DDE0E4; }
-        .tt-gap { position: absolute; top: 1.5px; bottom: 1.5px; background: #FFF4C7; border-radius: 3px; }
-        .tt-ev { position: absolute; top: 1.5px; bottom: 1.5px; border-radius: 3px; padding: 0 5px; overflow: hidden;
-          white-space: nowrap; display: flex; align-items: center; gap: 5px; border: 1px solid; border-left-width: 3px; }
-        .tt-ev b { font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; }
-        .tt-ev small { font-size: 9.5px; opacity: .8; }
-        .tt-ev.tt-mk { border-style: dashed; border-left-style: solid; }
+        .tt-vl { position: absolute; top: 0; bottom: 0; border-left: 1px solid #EFF0F2; }
+        .tt-vl:not(.tt-h) { display: none; }
+        .tt-vl.tt-h { border-left-color: #ECEEF1; }
+        .tt-gap { position: absolute; bottom: 2px; height: 3px; background: #E9B93A; border-radius: 2px; }
+        .tt-ev { position: absolute; top: 1.5px; bottom: 1.5px; border-radius: 3px; padding: 0 4px; overflow: hidden;
+          white-space: nowrap; display: flex; flex-direction: column; justify-content: center; align-items: flex-start;
+          border: 0 solid; border-left-width: 3px; }
+        .tt-ev b { font-size: 11px; line-height: 1.12; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+        .tt-ev small { font-size: 9px; line-height: 1.12; opacity: .85; display: flex; align-items: center; gap: 3px; max-width: 100%; overflow: hidden; }
+        .tt-ev.tt-mk { border: 1.5px dashed #E07B00 !important; border-left: 3px solid var(--ln, #999) !important; background: #fff !important; }
+        .tt-ev small { opacity: .8; }
         .tt-ev.tt-ab { opacity: .55; }
         .tt-ev.tt-ab b { text-decoration: line-through; }
-        .tt-tag { font-size: 9.5px; font-weight: 700; color: #fff; background: #2E6FD0; border-radius: 99px; padding: 0 5px; flex: none; }
-        .tt-row.tt-off .tt-lane { background: #FDECEF; }
+        .tt-tag { font-size: 9.5px; font-weight: 700; color: #fff; background: #E07B00; border-radius: 99px; padding: 0 4px; flex: none; font-size: 8.5px !important; line-height: 1.3; }
+        .tt-row.tt-off .tt-lane { background: repeating-linear-gradient(135deg, #F6C9D3 0px, #F6C9D3 4px, #FFFFFF 4px, #FFFFFF 10px); }
         .tt-row.tt-off .tt-dt { color: #AE2340; }
         .tt-axis3 { grid-template-columns: 17mm 15mm 1fr; }
         .tt-day { display: grid; grid-template-columns: 17mm 1fr; border-bottom: 1.5px solid #9AA0A6; min-height: 0; }
@@ -3554,24 +3602,36 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
           padding-left: 3px; border-right: 1px solid #D9DBDF; }
         .tt-dl i { font-style: normal; font-size: 11px; color: #8A8F98; font-weight: 500; }
         .tt-dl.tt-sat i { color: #2E6FD0; }
-        .tt-dayoff .tt-lane { background: #FDECEF; }
+        .tt-dayoff .tt-lane { background: repeating-linear-gradient(135deg, #F6C9D3 0px, #F6C9D3 4px, #FFFFFF 4px, #FFFFFF 10px); }
         .tt-dayoff .tt-dl { color: #AE2340; }
         .tt-subs { display: flex; flex-direction: column; min-height: 0; }
-        .tt-sub { flex: 1; display: grid; grid-template-columns: 15mm 1fr; border-bottom: 1px solid #EEF0F2; min-height: 0; }
+        .tt-sub { flex: 1; display: grid; grid-template-columns: 15mm 1fr; border-bottom: 1px solid transparent; min-height: 0; }
         .tt-sub:last-child { border-bottom: none; }
         .tt-tn { font-size: 10.5px; font-weight: 700; display: flex; align-items: center; padding-left: 4px; border-right: 1px solid #E3E5E8; }
         .tt-outtag { font-size: 9px; font-weight: 700; color: #C9CED6; flex: none; }
+        .tt-day .tt-ev b { font-size: 10.5px; }
+        .tt-row .tt-ev { top: 1px; bottom: 1px; }
+        .tt-row .tt-ev b { font-size: 10.5px; line-height: 1.02; }
+        .tt-row .tt-ev small { font-size: 8.5px; line-height: 1.02; margin-top: 1px; }
+        .tt-end { opacity: .6; margin-left: -2px; }
+        .tt-ev b .tt-tag { margin-right: 3px; vertical-align: 1px; }
+        .tt-row .tt-tag { font-size: 7.5px !important; line-height: 1.2; padding: 0 3px; }
         .tt-lbl-s { font-size: 10px !important; padding: 0 7px !important; }
         .tt-lbl { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); font-size: 11px; font-weight: 700;
-          color: #fff; background: #D14B68; border-radius: 99px; padding: 1px 9px; }
+          color: #fff; background: #C8324F; border-radius: 99px; padding: 1px 9px; }
         @media print {
-          @page { size: A4 landscape; margin: 0; }
-          html, body { height: auto !important; overflow: visible !important; background: #fff !important; }
+          /* 종이 크기에 고정하지 않고, 인쇄 영역 폭에 맞춰 줄어들게 합니다.
+             브라우저·프린터마다 여백과 배율 계산이 달라도 잘리지 않습니다. */
+          @page { size: A4 landscape; margin: 7mm; }
+          html, body { height: auto !important; overflow: visible !important; background: #fff !important;
+            margin: 0 !important; padding: 0 !important; min-width: 0 !important; }
           body > *:not(.tt-root) { display: none !important; }
-          .tt-root { position: static !important; overflow: visible !important; background: #fff; }
+          .tt-root { position: static !important; overflow: visible !important; background: #fff; inset: auto; }
           .tt-bar { display: none !important; }
-          .tt-wrap { padding: 0; overflow: visible; }
-          .tt-page { margin: 0; box-shadow: none; page-break-after: always; break-after: page;
+          .tt-wrap { padding: 0 !important; overflow: visible !important; }
+          .tt-page { width: 100% !important; height: auto !important; aspect-ratio: 283 / 194;
+            max-height: 100vh; margin: 0 !important; padding: 0 !important; box-shadow: none;
+            page-break-after: always; break-after: page; page-break-inside: avoid; break-inside: avoid;
             -webkit-print-color-adjust: exact; print-color-adjust: exact; }
           .tt-page:last-child { page-break-after: auto; break-after: auto; }
         }
@@ -4737,21 +4797,20 @@ function App() {
     return say(raw, 'err')
   }
 
-  const toneOf = useCallback(
+  // 선생님 색 번호 — DB에 저장된 번호(color_idx)를 씁니다. 없으면 목록 순서.
+  const colorIdx = useCallback(
     (name) => {
       const i = staff.findIndex((s) => s.name === name)
-      return TEACHER_TONES[i < 0 ? 0 : i % TEACHER_TONES.length]
+      if (i < 0) return 0
+      const c = staff[i].color_idx
+      return (c === null || c === undefined ? i : c) % TEACHER_COLORS.length
     },
     [staff]
   )
 
-  const colorOf = useCallback(
-    (name) => {
-      const i = staff.findIndex((s) => s.name === name)
-      return TEACHER_COLORS[i < 0 ? 0 : i % TEACHER_COLORS.length]
-    },
-    [staff]
-  )
+  const toneOf = useCallback((name) => TEACHER_TONES[colorIdx(name)], [colorIdx])
+
+  const colorOf = useCallback((name) => TEACHER_COLORS[colorIdx(name)], [colorIdx])
 
   /* ---- 인증 ---- */
   useEffect(() => {
