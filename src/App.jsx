@@ -219,22 +219,6 @@ async function adminSetStatus(id, status) {
   return ok(await supabase.from('sessions').update({ status, marked_at: new Date().toISOString() }).eq('id', id))
 }
 
-// 보강 세션 생성
-async function createMakeup(absent, { d, start_time, end_time }) {
-  return ok(
-    await supabase.from('sessions').insert({
-      d,
-      start_time,
-      end_time,
-      student_id: absent.student_id,
-      staff_id: absent.staff_id,
-      program_code: absent.program_code,
-      status: '보강',
-      makeup_for: absent.id,
-    })
-  )
-}
-
 // 수업 한 회차 직접 추가 (지난 결강 기록 / 보강 등록)
 async function addSession(v) {
   return ok(
@@ -334,47 +318,8 @@ async function restorePlanBackup(id) {
   return ok(await supabase.rpc('restore_plan_backup', { p_id: id }))
 }
 
-async function changeTemplate(id, v) {
-  return ok(
-    await supabase.rpc('change_template', {
-      p_id: id,
-      p_from: v.from,
-      p_staff: v.staff_id,
-      p_program: v.program_code,
-      p_weekday: v.weekday,
-      p_start: v.start_time,
-      p_end: v.end_time,
-    })
-  )
-}
-
-async function updateTemplate(id, v) {
-  return ok(
-    await supabase.rpc('update_template', {
-      p_id: id,
-      p_staff: v.staff_id,
-      p_program: v.program_code,
-      p_weekday: v.weekday,
-      p_start: v.start_time,
-      p_end: v.end_time,
-      p_valid_from: v.valid_from,
-    })
-  )
-}
-
 async function removeStudent(id) {
   return ok(await supabase.rpc('remove_student', { p_id: id }))
-}
-
-async function saveTemplate(v) {
-  return ok(await supabase.from('schedule_templates').insert(v))
-}
-
-// 시간표 삭제
-//   출결을 한 번도 안 찍었으면 회차까지 완전히 지우고,
-//   이미 진행한 게 있으면 그 기록만 남기고 종료합니다.
-async function endTemplate(id) {
-  return ok(await supabase.rpc('remove_template', { p_id: id }))
 }
 
 // 외부 일정 (수업 아님 — 학교 자문·슈퍼비전 등)
@@ -1340,7 +1285,8 @@ function MyClosingView({ ym, summary, closing, onSubmit, onPrevYm, onNextYm, bus
 
 /* ---------------- 정산 ---------------- */
 function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onPrintAll, onSetRate, onDetail, busy, closing }) {
-  const [group, setGroup] = useState('student')
+  const [group, setGroup] = useState('staff')
+  const receiptShown = useMemo(() => new Set(), [byStaff, group])
   const [detailFor, setDetailFor] = useState(null)
   const [detail, setDetail] = useState(null)
 
@@ -1390,7 +1336,7 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
         <div style={{ fontSize: 15, fontWeight: 700 }}>{ym.replace('-', '년 ')}월 정산</div>
         <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 8 }}>
-          {[['student', '아동별'], ['staff', '선생님별'], ['payroll', '급여'], ['closing', '마감']].map(([k, label]) => (
+          {[['staff', '영수증'], ['payroll', '급여'], ['closing', '마감']].map(([k, label]) => (
             <button
               key={k}
               onClick={() => setGroup(k)}
@@ -1582,6 +1528,7 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
         </div>
       ) : group === 'staff' ? (
         <div>
+          {(() => { receiptShown.clear(); return null })()}
           {staffGroups.map((g) => (
             <Card key={g.id} style={{ marginBottom: 12, overflow: 'hidden' }}>
               <div
@@ -1605,16 +1552,31 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
               </div>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
                 <tbody>
-                  {g.rows.map((r, i) => (
+                  {g.rows.map((r, i) => {
+                    const kid = byStudent.find((x) => x.id === r.student_id)
+                    const rc = receipts.find((x) => x.student_id === r.student_id)
+                    const first = !receiptShown.has(r.student_id)
+                    if (first) receiptShown.add(r.student_id)
+                    return (
                     <tr key={i} style={{ borderBottom: `1px solid ${C.line2}` }}>
-                      <td style={{ padding: '8px 16px', fontWeight: 600, width: '22%' }}>{r.student_name}</td>
+                      <td style={{ padding: '8px 16px', fontWeight: 600, width: '20%' }}>{r.student_name}</td>
                       <td style={{ padding: '8px 8px', color: '#4B5057' }}>{r.program_label}</td>
-                      <td style={{ padding: '8px 8px', textAlign: 'right', width: '16%' }}>{r.lesson_count}회</td>
-                      <td style={{ padding: '8px 16px', textAlign: 'right', fontWeight: 600, width: '24%' }}>
+                      <td style={{ padding: '8px 8px', textAlign: 'right', width: '13%' }}>{r.lesson_count}회</td>
+                      <td style={{ padding: '8px 8px', textAlign: 'right', fontWeight: 600, width: '20%' }}>
                         {won(r.amount)}
                       </td>
+                      <td style={{ padding: '8px 16px', textAlign: 'right', width: '17%' }}>
+                        {kid && first && (
+                          <Btn
+                            onClick={() => onOpenReceipt(kid)}
+                            style={{ padding: '4px 10px', fontSize: 12 }}
+                          >
+                            {rc?.locked ? '영수증 ✓' : '영수증'}
+                          </Btn>
+                        )}
+                      </td>
                     </tr>
-                  ))}
+                  )})}
                 </tbody>
               </table>
             </Card>
@@ -1628,97 +1590,7 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
             아동이 두 선생님께 배우면 회차 단위로 나뉩니다. 선생님별 합계를 모두 더하면 아동별 총액과 같습니다.
           </div>
         </div>
-      ) : (
-      <Card style={{ overflow: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 680 }}>
-          <thead>
-            <tr style={{ background: '#FBFBFC', color: C.sub }}>
-              {['아동', '수업명', '선생님별', '횟수', '단가', '금액', '미보강', '영수증'].map((h, i) => (
-                <th
-                  key={h}
-                  style={{
-                    padding: '9px 12px',
-                    textAlign: i >= 3 && i <= 6 ? 'right' : 'left',
-                    fontWeight: 600,
-                    borderBottom: `1px solid ${C.line}`,
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {byStudent.length === 0 && (
-              <tr>
-                <td colSpan={8}>
-                  <Empty>이 달 수업 기록이 없습니다. 먼저 회차를 생성하세요.</Empty>
-                </td>
-              </tr>
-            )}
-            {byStudent.map((s) =>
-              s.lines.map((l, i) => (
-                <tr
-                  key={l.student_id + l.program_code}
-                  style={{
-                    borderBottom: i === s.lines.length - 1 ? `1px solid ${C.line}` : 'none',
-                    background: i > 0 ? '#FCFCFD' : '#fff',
-                  }}
-                >
-                  {i === 0 && (
-                    <td
-                      rowSpan={s.lines.length}
-                      style={{
-                        padding: '9px 12px',
-                        fontWeight: 700,
-                        verticalAlign: 'top',
-                        borderRight: s.lines.length > 1 ? `2px solid ${C.pkl}` : 'none',
-                      }}
-                    >
-                      <button
-                        onClick={() => onOpenReceipt(s)}
-                        style={{
-                          border: 'none',
-                          background: 'none',
-                          padding: 0,
-                          font: 'inherit',
-                          fontWeight: 700,
-                          cursor: 'pointer',
-                          borderBottom: '1px dashed #C9CCD1',
-                        }}
-                      >
-                        {s.name}
-                      </button>
-                    </td>
-                  )}
-                  <td style={{ padding: '9px 12px', color: '#4B5057', paddingLeft: i > 0 ? 22 : 12 }}>
-                    {i > 0 && <span style={{ color: C.mut, marginRight: 5 }}>↳</span>}
-                    {l.program_label}
-                  </td>
-                  <td style={{ padding: '9px 12px', color: C.mut, fontSize: 12 }}>{l.staff_summary}</td>
-                  <td style={{ padding: '9px 12px', textAlign: 'right' }}>{l.lesson_count}회</td>
-                  <td style={{ padding: '9px 12px', textAlign: 'right', color: C.sub }}>{won(l.unit_price)}</td>
-                  <td style={{ padding: '9px 12px', textAlign: 'right', fontWeight: 700 }}>{won(l.amount)}</td>
-                  <td style={{ padding: '9px 12px', textAlign: 'right' }}>
-                    {l.unmade_up > 0 ? (
-                      <span style={{ color: C.danger, fontWeight: 700 }}>{l.unmade_up}</span>
-                    ) : (
-                      <span style={{ color: '#C9CCD1' }}>—</span>
-                    )}
-                  </td>
-                  {i === 0 && (
-                    <td rowSpan={s.lines.length} style={{ padding: '9px 12px', verticalAlign: 'top' }}>
-                      {rMap[s.id]?.locked ? <Pill tone="green">발행됨</Pill> : <Pill>미발행</Pill>}
-                    </td>
-                  )}
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </Card>
-      )}
+      ) : null}
       {group === 'student' && (
         <div style={{ marginTop: 10, fontSize: 12, color: C.sub }}>
           아동 이름을 누르면 영수증이 열립니다.
@@ -2154,487 +2026,6 @@ const PUBLIC_HOLIDAYS = [
   ['2030-12-25', '크리스마스'],
 ]
 
-function OutsideCard({ outside, busy, today, onAdd, onRemove }) {
-  const [open, setOpen] = useState(false)
-  const [d, setD] = useState('')
-  const [st, setSt] = useState('14:00')
-  const [en, setEn] = useState('16:00')
-  const [label, setLabel] = useState('')
-  const [memo, setMemo] = useState('')
-
-  const upcoming = outside.filter((e) => e.d >= today).sort((a, b) => a.d.localeCompare(b.d))
-
-  const save = () => {
-    if (!d) return
-    if (!label.trim()) return
-    onAdd({ d, start_time: st, end_time: en, label: label.trim(), memo: memo.trim() })
-    setD('')
-    setLabel('')
-    setMemo('')
-    setOpen(false)
-  }
-
-  return (
-    <Card style={{ marginBottom: 14, overflow: 'hidden' }}>
-      <div style={{ padding: '12px 15px', borderBottom: upcoming.length ? `1px solid ${C.line2}` : 'none' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 9, flexWrap: 'wrap' }}>
-          <div style={{ fontSize: 14.5, fontWeight: 700 }}>외부 일정</div>
-          <div style={{ fontSize: 12, color: C.sub }}>
-            학교 자문·슈퍼비전처럼 수업이 아닌 일정입니다. 시간표에만 보이고 수강료·급여에는 안 들어갑니다.
-          </div>
-          <Btn
-            variant={open ? 'default' : 'primary'}
-            onClick={() => setOpen(!open)}
-            style={{ marginLeft: 'auto', padding: '6px 12px', fontSize: 12.5 }}
-          >
-            {open ? '접기' : '일정 추가'}
-          </Btn>
-        </div>
-
-        {open && (
-          <div style={{ marginTop: 11, display: 'flex', gap: 7, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-            <label style={{ fontSize: 12, color: C.sub }}>
-              날짜
-              <input type="date" value={d} onChange={(e) => setD(e.target.value)} style={{ ...inp, width: 150, marginTop: 4 }} />
-            </label>
-            <label style={{ fontSize: 12, color: C.sub }}>
-              시작
-              <input type="time" step={300} value={st} onChange={(e) => setSt(e.target.value)} style={{ ...inp, width: 116, marginTop: 4 }} />
-            </label>
-            <label style={{ fontSize: 12, color: C.sub }}>
-              종료
-              <input type="time" step={300} value={en} onChange={(e) => setEn(e.target.value)} style={{ ...inp, width: 116, marginTop: 4 }} />
-            </label>
-            <label style={{ fontSize: 12, color: C.sub, flex: 1, minWidth: 160 }}>
-              일정 이름
-              <input
-                value={label}
-                onChange={(e) => setLabel(e.target.value)}
-                placeholder="서희학교 PBS 자문"
-                style={{ ...inp, marginTop: 4 }}
-              />
-            </label>
-            <label style={{ fontSize: 12, color: C.sub, flex: 1, minWidth: 140 }}>
-              메모 (선택)
-              <input value={memo} onChange={(e) => setMemo(e.target.value)} style={{ ...inp, marginTop: 4 }} />
-            </label>
-            <Btn variant="primary" disabled={busy || !d || !label.trim()} onClick={save} style={{ padding: '9px 16px' }}>
-              등록
-            </Btn>
-          </div>
-        )}
-      </div>
-
-      {upcoming.map((e, i) => (
-        <div
-          key={e.id}
-          style={{
-            display: 'flex', alignItems: 'center', gap: 10, padding: '10px 15px',
-            borderBottom: i === upcoming.length - 1 ? 'none' : `1px solid ${C.line2}`, flexWrap: 'wrap',
-          }}
-        >
-          <div style={{ fontSize: 13.5, fontWeight: 700, minWidth: 108 }}>
-            {e.d} ({e.weekday})
-          </div>
-          <div style={{ fontSize: 12.5, color: C.sub, minWidth: 92 }}>
-            {hhmm(e.start_time)}~{hhmm(e.end_time)}
-          </div>
-          <div style={{ flex: 1, fontSize: 13.5, minWidth: 120 }}>
-            {e.label}
-            {e.memo && <span style={{ fontSize: 12, color: C.mut, marginLeft: 7 }}> · {e.memo}</span>}
-          </div>
-          <Btn
-            disabled={busy}
-            onClick={() => {
-              if (confirm(`${e.d} ${e.label} 일정을 삭제할까요?`)) onRemove(e.id)
-            }}
-            style={{ padding: '5px 11px', fontSize: 12, color: C.danger }}
-          >
-            삭제
-          </Btn>
-        </div>
-      ))}
-    </Card>
-  )
-}
-
-function LeaveView({ leaves, staff, outside = [], busy, onAdd, onRemove, onAddOutside, onRemoveOutside }) {
-  const [showPast, setShowPast] = useState(false)
-  const [d, setD] = useState('')
-  const [label, setLabel] = useState('')
-  const [staffId, setStaffId] = useState('')
-  const [mode, setMode] = useState('취소')
-
-  const isCenter = !staffId
-
-  const today = isoOf(new Date())
-  const past = leaves.filter((h) => h.d < today)
-  // 앞으로의 휴무일은 가까운 날부터, 지나간 것은 최근 순으로
-  const shown = showPast
-    ? [...leaves].sort((a, b) => (a.d >= today) === (b.d >= today)
-        ? (a.d >= today ? a.d.localeCompare(b.d) : b.d.localeCompare(a.d))
-        : a.d >= today ? -1 : 1)
-    : leaves.filter((h) => h.d >= today).sort((a, b) => a.d.localeCompare(b.d))
-
-  return (
-    <div style={{ maxWidth: 560 }}>
-      <Card style={{ padding: 18, marginBottom: 14 }}>
-        <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>휴무일 등록</div>
-        <div style={{ fontSize: 12, color: C.sub, marginBottom: 14, lineHeight: 1.65 }}>
-          공휴일은 자동으로 들어갑니다. 여기는 <b>센터 사정으로 쉬는 날</b>이나{' '}
-          <b>선생님 개인 휴무</b>를 넣는 곳이에요.
-        </div>
-
-        <div style={{ fontSize: 12, color: C.sub, marginBottom: 6 }}>날짜</div>
-        <input
-          type="date"
-          value={d}
-          onChange={(e) => setD(e.target.value)}
-          style={{ width: '100%', fontSize: 14, padding: '10px 11px', border: '1px solid #DEE0E3', borderRadius: 8, marginBottom: 13 }}
-        />
-
-        <div style={{ fontSize: 12, color: C.sub, marginBottom: 6 }}>대상</div>
-        <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 13 }}>
-          <Btn
-            variant={isCenter ? 'primary' : 'default'}
-            onClick={() => setStaffId('')}
-            style={{ padding: '8px 13px', fontSize: 13 }}
-          >
-            센터 전체
-          </Btn>
-          {staff.filter((x) => x.active).map((x) => (
-            <Btn
-              key={x.id}
-              variant={staffId === x.id ? 'primary' : 'default'}
-              onClick={() => setStaffId(x.id)}
-              style={{ padding: '8px 13px', fontSize: 13 }}
-            >
-              {x.name}
-            </Btn>
-          ))}
-        </div>
-
-        <div style={{ fontSize: 12, color: C.sub, marginBottom: 6 }}>그날 수업 처리</div>
-        <div style={{ display: 'flex', gap: 6, marginBottom: 7 }}>
-          {['취소', '결강', '유지'].map((m) => (
-            <Btn
-              key={m}
-              variant={mode === m ? 'primary' : 'default'}
-              onClick={() => setMode(m)}
-              style={{ flex: 1, padding: '9px 0', fontSize: 13 }}
-            >
-              {m}
-            </Btn>
-          ))}
-        </div>
-        <div style={{ fontSize: 11.5, color: C.sub, marginBottom: 14, lineHeight: 1.6 }}>
-          {mode === '취소' && '수강료에서 빠지고 보강 의무도 없습니다.'}
-          {mode === '결강' && '수강료는 받고 보강 목록에 올라갑니다.'}
-          {mode === '유지' && '수업은 그대로 두고 휴무일만 등록합니다. 나중에 하나씩 판단할 때 쓰세요.'}
-        </div>
-
-        <div style={{ fontSize: 12, color: C.sub, marginBottom: 6 }}>사유 (선택)</div>
-        <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
-          <input
-            placeholder={isCenter ? '센터 워크숍 등' : '병가, 연차 등'}
-            value={label}
-            onChange={(e) => setLabel(e.target.value)}
-            style={{ flex: 1, minWidth: 140, fontSize: 14, padding: '10px 11px', border: '1px solid #DEE0E3', borderRadius: 8 }}
-          />
-          <Btn
-            variant="primary"
-            disabled={!d || busy}
-            onClick={() => {
-              onAdd({ d, label, staffId, mode })
-              setD('')
-              setLabel('')
-            }}
-          >
-            등록
-          </Btn>
-        </div>
-      </Card>
-
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
-        <div style={{ fontSize: 13.5, fontWeight: 700 }}>
-          앞으로의 휴무일 {leaves.filter((h) => h.d >= today).length}일
-        </div>
-        {past.length > 0 && (
-          <label
-            style={{
-              marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6,
-              fontSize: 12.5, color: C.sub, cursor: 'pointer', userSelect: 'none',
-            }}
-          >
-            <input
-              type="checkbox"
-              checked={showPast}
-              onChange={(e) => setShowPast(e.target.checked)}
-              style={{ width: 15, height: 15, cursor: 'pointer' }}
-            />
-            지나간 휴무일 {past.length}일도 보기
-          </label>
-        )}
-      </div>
-
-      <OutsideCard
-        outside={outside}
-        busy={busy}
-        today={today}
-        onAdd={onAddOutside}
-        onRemove={onRemoveOutside}
-      />
-
-      <Card style={{ overflow: 'hidden' }}>
-        {shown.length === 0 ? (
-          <Empty>
-            {leaves.length === 0 ? '등록된 휴무일이 없습니다.' : '앞으로 예정된 휴무일이 없습니다.'}
-          </Empty>
-        ) : (
-          shown.map((h) => (
-            <div
-              key={h.id}
-              style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '11px 16px', borderBottom: `1px solid ${C.line2}`, flexWrap: 'wrap' }}
-            >
-              <div
-                style={{
-                  fontSize: 14, fontWeight: 700, minWidth: 108,
-                  color: h.d < today ? C.mut : C.ink,
-                }}
-              >
-                {h.d} ({h.weekday})
-              </div>
-              {h.staff_name ? (
-                <Pill tone="blue">{h.staff_name}</Pill>
-              ) : (
-                <Pill tone="gray">센터 전체</Pill>
-              )}
-              <div style={{ fontSize: 13, color: C.sub, flex: 1 }}>{h.label || '—'}</div>
-              <Btn disabled={busy} onClick={() => onRemove(h.id)} style={{ padding: '5px 11px', fontSize: 12 }}>
-                삭제
-              </Btn>
-            </div>
-          ))
-        )}
-      </Card>
-
-      <div style={{ fontSize: 12, color: C.sub, marginTop: 11, lineHeight: 1.7 }}>
-        등록하면 그날 수업이 바로 처리되고, 앞으로 회차를 만들 때도 그날은 빠집니다. 이미 정산이 마감된
-        회차는 바뀌지 않습니다.
-      </div>
-    </div>
-  )
-}
-
-/* ================= 아동 · 시간표 ================= */
-function StudentsView({
-  students,
-  templates,
-  staff,
-  programs,
-  busy,
-  onSaveStudent,
-  onSaveTemplate,
-  onUpdateTemplate,
-  onEndTemplate,
-  onRemoveStudent,
-}) {
-  const [editing, setEditing] = useState(null) // student or 'new'
-  const [adding, setAdding] = useState(null) // student for new template
-  const [byStaff, setByStaff] = useState(false)
-  const [editingTmpl, setEditingTmpl] = useState(null)
-  const [showLeft, setShowLeft] = useState(false)
-
-  const tmplOf = (sid) => templates.filter((t) => t.student_id === sid && !t.valid_to)
-
-  const visible = useMemo(
-    () => (showLeft ? students : students.filter((s) => s.status === '재원')),
-    [students, showLeft]
-  )
-
-  const groups = useMemo(() => {
-    if (!byStaff) return [{ name: null, list: visible }]
-    const m = {}
-    visible.forEach((s) => {
-      const key = s.main_staff_id || '_'
-      if (!m[key]) m[key] = []
-      m[key].push(s)
-    })
-    return staff
-      .filter((t) => t.active)
-      .map((t) => ({ name: t.name, list: m[t.id] || [] }))
-      .filter((g) => g.list.length)
-      .concat(m['_'] ? [{ name: '담당 미지정', list: m['_'] }] : [])
-  }, [visible, staff, byStaff])
-
-  return (
-    <div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
-        <div style={{ fontSize: 15, fontWeight: 700 }}>
-          아동 {students.filter((s) => s.status === '재원').length}명
-        </div>
-        <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 8 }}>
-          {[[false, '이름순'], [true, '선생님별']].map(([k, label]) => (
-            <button
-              key={label}
-              onClick={() => setByStaff(k)}
-              style={{
-                border: 'none', cursor: 'pointer', padding: '5px 12px', borderRadius: 6,
-                fontSize: 12.5, fontWeight: 600,
-                background: byStaff === k ? '#fff' : 'transparent',
-                color: byStaff === k ? C.ink : C.sub,
-                boxShadow: byStaff === k ? '0 1px 2px rgba(0,0,0,.06)' : 'none',
-              }}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-        <label
-          style={{
-            marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6,
-            fontSize: 12.5, color: C.sub, cursor: 'pointer', userSelect: 'none',
-          }}
-        >
-          <input
-            type="checkbox"
-            checked={showLeft}
-            onChange={(e) => setShowLeft(e.target.checked)}
-            style={{ width: 15, height: 15, cursor: 'pointer' }}
-          />
-          퇴소한 아동도 보기
-        </label>
-        <Btn variant="primary" onClick={() => setEditing('new')}>
-          새 아동 등록
-        </Btn>
-      </div>
-
-      <div style={{ fontSize: 12, color: C.sub, marginBottom: 12, lineHeight: 1.65 }}>
-        수업 시간표는 <b>시간표 짜기</b>에서 한 번에 고치세요. 여기서는 아동 등록·수정·삭제만 합니다.
-      </div>
-
-      {groups.map((g) => (
-      <Card key={g.name || 'all'} style={{ overflow: 'hidden', marginBottom: 12 }}>
-        {g.name && (
-          <div style={{ padding: '10px 16px', background: '#FBFBFC', borderBottom: `1px solid ${C.line}`, fontSize: 14, fontWeight: 700 }}>
-            <span>{g.name}</span>
-            <span style={{ fontSize: 12, color: C.sub, fontWeight: 400, marginLeft: 8 }}>
-              {' '}
-              {g.list.length}명
-            </span>
-          </div>
-        )}
-        {g.list.map((s) => {
-          const ts = tmplOf(s.id)
-          return (
-            <div key={s.id} style={{ padding: '13px 16px', borderBottom: `1px solid ${C.line2}` }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                <div style={{ fontSize: 15, fontWeight: 700 }}>{s.name}</div>
-                {s.status !== '재원' && <Pill tone="gray">{s.status}</Pill>}
-                <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-                  <Btn onClick={() => setEditing(s)} style={{ padding: '5px 11px', fontSize: 12 }}>
-                    수정
-                  </Btn>
-                  <Btn
-                    disabled={busy}
-                    onClick={() => {
-                      if (
-                        confirm(
-                          `${s.name} 아동을 삭제할까요?\n\n` +
-                            `· 수업 기록이 없으면 완전히 지워집니다\n` +
-                            `· 기록이 있으면 퇴소 처리되고, 지난 영수증은 남습니다`
-                        )
-                      )
-                        onRemoveStudent(s.id)
-                    }}
-                    style={{ padding: '5px 11px', fontSize: 12, color: C.danger, borderColor: '#F3AFBD' }}
-                  >
-                    삭제
-                  </Btn>
-                </div>
-              </div>
-              <div style={{ marginTop: 8, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                {ts.length === 0 && (
-                  <span style={{ fontSize: 12, color: C.mut }}>등록된 수업이 없습니다</span>
-                )}
-                {ts.map((t) => (
-                  <span
-                    key={t.id}
-                    style={{
-                      fontSize: 12,
-                      padding: '5px 9px',
-                      borderRadius: 7,
-                      background: '#F7F8F9',
-                      border: `1px solid ${C.line}`,
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: 7,
-                    }}
-                  >
-                    <span>
-                      <span style={{ fontWeight: 600 }}>
-                        {DOW[t.weekday]} {hhmm(t.start_time)}
-                      </span>
-                      <span style={{ color: C.mut, marginLeft: 7 }}>
-                        {' '}
-                        {staff.find((x) => x.id === t.staff_id)?.name} ·{' '}
-                        {programs.find((p) => p.code === t.program_code)?.label}
-                      </span>
-                    </span>
-                  </span>
-                ))}
-              </div>
-            </div>
-          )
-        })}
-      </Card>
-      ))}
-
-      {editing && (
-        <StudentModal
-          student={editing === 'new' ? null : editing}
-          staff={staff}
-          busy={busy}
-          onClose={() => setEditing(null)}
-          onSave={(v) => {
-            onSaveStudent(editing === 'new' ? null : editing.id, v)
-            setEditing(null)
-          }}
-        />
-      )}
-
-      {editingTmpl && (
-        <TemplateModal
-          student={editingTmpl.student}
-          tmpl={editingTmpl.tmpl}
-          staff={staff}
-          programs={programs}
-          busy={busy}
-          onClose={() => setEditingTmpl(null)}
-          onSave={(v) => {
-            onUpdateTemplate(editingTmpl.tmpl.id, v)
-            setEditingTmpl(null)
-          }}
-        />
-      )}
-
-      {adding && (
-        <TemplateModal
-          student={adding}
-          staff={staff}
-          programs={programs}
-          busy={busy}
-          onClose={() => setAdding(null)}
-          onSave={(v) => {
-            onSaveTemplate({ ...v, student_id: adding.id })
-            setAdding(null)
-          }}
-        />
-      )}
-    </div>
-  )
-}
-
 function StudentModal({ student, staff, onClose, onSave, busy }) {
   const [name, setName] = useState(student?.name || '')
   const [display, setDisplay] = useState(student?.display_name || '')
@@ -2678,7 +2069,29 @@ function StudentModal({ student, staff, onClose, onSave, busy }) {
             재원이 아니면 다음 달부터 회차가 생성되지 않습니다. 이미 만들어진 회차는 그대로 남습니다.
           </div>
         )}
-        <div style={{ display: 'flex', gap: 7, marginTop: 8 }}>
+        {student && onRemove && (
+          <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${C.line2}` }}>
+            <Btn
+              disabled={busy}
+              onClick={() => {
+                if (
+                  confirm(
+                    `${student.name} 아동을 완전히 삭제할까요?\n\n` +
+                      `수업 기록이 없으면 지워지고, 기록이 있으면 퇴소 처리됩니다.\n` +
+                      `그만 다니는 경우라면 위 상태를 퇴소로 바꾸는 편이 낫습니다.`
+                  )
+                )
+                  onRemove(student.id)
+              }}
+              style={{ padding: '7px 13px', fontSize: 12.5, color: C.danger, borderColor: '#F3AFBD' }}
+            >
+              아동 삭제
+            </Btn>
+            <span style={{ fontSize: 11.5, color: C.mut, marginLeft: 9 }}>잘못 등록했을 때만 쓰세요</span>
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 7, marginTop: 14 }}>
           <Btn
             variant="primary"
             disabled={!name.trim() || busy}
@@ -2694,124 +2107,6 @@ function StudentModal({ student, staff, onClose, onSave, busy }) {
       </div>
     </Modal>
   )
-}
-
-function TemplateModal({ student, tmpl, staff, programs, onClose, onSave, busy }) {
-  const edit = !!tmpl
-  const [staffId, setStaffId] = useState(tmpl?.staff_id || student.main_staff_id || staff[0]?.id || '')
-  const [pcode, setPcode] = useState(tmpl?.program_code || programs[0]?.code || '')
-  const [wd, setWd] = useState(tmpl?.weekday ?? 1)
-  const [start, setStart] = useState(tmpl ? hhmm(tmpl.start_time) : '16:00')
-  const [from, setFrom] = useState(tmpl ? nextMonthFirst() : isoOf(new Date()))
-  // 수업 길이는 프로그램이 정합니다 (ABA개별 50분 → 50분)
-  const prog = programs.find((p) => p.code === pcode)
-  const mins = prog?.minutes ?? 50
-  const end = useMemo(() => {
-    const [h, m] = start.split(':').map(Number)
-    const t = h * 60 + m + mins
-    return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`
-  }, [start, mins])
-
-  return (
-    <Modal onClose={onClose} max={370}>
-      <div style={{ padding: '16px 18px', borderBottom: `1px solid ${C.line2}` }}>
-        <div style={{ fontSize: 17, fontWeight: 700 }}>{edit ? '수업 수정' : '수업 추가'}</div>
-        <div style={{ fontSize: 12.5, color: C.sub, marginTop: 3 }}>{student.name}</div>
-      </div>
-      <div style={{ padding: 18 }}>
-        <Field label="선생님">
-          <select value={staffId} onChange={(e) => setStaffId(e.target.value)} style={inp}>
-            {staff.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field label="프로그램">
-          <select value={pcode} onChange={(e) => setPcode(e.target.value)} style={inp}>
-            {programs.map((p) => (
-              <option key={p.code} value={p.code}>
-                {p.label}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field label="요일">
-          <div style={{ display: 'flex', gap: 5 }}>
-            {[1, 2, 3, 4, 5, 6].map((n) => (
-              <Btn
-                key={n}
-                variant={wd === n ? 'primary' : 'default'}
-                onClick={() => setWd(n)}
-                style={{ flex: 1, padding: '9px 0', fontSize: 13.5 }}
-              >
-                {DOW[n]}
-              </Btn>
-            ))}
-          </div>
-        </Field>
-        <Field label={`시작 시각 (${mins}분 수업)`}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-            <input type="time" step={300} value={start} onChange={(e) => setStart(e.target.value)} style={{ ...inp, width: 'auto' }} />
-            <span style={{ fontSize: 13, color: C.sub }}>~ {end}</span>
-          </div>
-        </Field>
-        <Field label={edit ? '언제부터 바꿀까요' : '시작일 (이 날짜부터 적용)'}>
-          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} style={inp} />
-          {edit && (
-            <div style={{ display: 'flex', gap: 5, marginTop: 6, flexWrap: 'wrap' }}>
-              {[
-                ['다음 달 1일', nextMonthFirst()],
-                ['이번 달 1일', thisMonthFirst()],
-                ['오늘', isoOf(new Date())],
-              ].map(([l, v]) => (
-                <Btn
-                  key={l}
-                  variant={from === v ? 'primary' : 'default'}
-                  onClick={() => setFrom(v)}
-                  style={{ padding: '6px 11px', fontSize: 12.5 }}
-                >
-                  {l}
-                </Btn>
-              ))}
-            </div>
-          )}
-        </Field>
-
-        <div style={{ fontSize: 12, color: C.sub, marginBottom: 12, lineHeight: 1.6 }}>
-          {edit
-            ? '고른 날짜부터 바뀝니다. 그 전 기록은 원래 요일·시간 그대로 남아요. 저장한 뒤 정산 탭에서 회차 생성을 눌러주세요.'
-            : '저장한 뒤 정산 탭에서 회차 생성을 눌러야 실제 수업이 만들어집니다.'}
-        </div>
-
-        <div style={{ display: 'flex', gap: 7 }}>
-          <Btn
-            variant="primary"
-            disabled={busy}
-            onClick={() =>
-              onSave({ staff_id: staffId, program_code: pcode, weekday: wd, start_time: start, end_time: end, valid_from: from, from })
-            }
-            style={{ flex: 1, padding: '11px 0' }}
-          >
-            저장
-          </Btn>
-          <Btn onClick={onClose} style={{ flex: 1, padding: '11px 0' }}>
-            취소
-          </Btn>
-        </div>
-      </div>
-    </Modal>
-  )
-}
-
-const inp = {
-  width: '100%',
-  fontSize: 14,
-  padding: '10px 11px',
-  border: '1px solid #DEE0E3',
-  borderRadius: 8,
-  background: '#fff',
 }
 
 function Field({ label, children }) {
@@ -3007,6 +2302,7 @@ function PlanView({
   ym, students, staff, programs, busy, onLoadPlan, onLoadLocked, onApply,
   onLoadBackups, onRestore, onCheck, say,
   leaves = [], outside = [], onAddLeave, onRemoveLeave, onAddOutside, onRemoveOutside,
+  toneOf, onEditStudent, onNewStudent,
 }) {
   const [rows, setRows] = useState(null)
   const [base, setBase] = useState(null)
@@ -3069,18 +2365,33 @@ function PlanView({
     [outside, ym]
   )
 
-  const byStudent = useMemo(() => {
+  // 선생님별로 묶어서 보여줍니다 (담당 선생님 기준)
+  const byStaff = useMemo(() => {
     if (!rows) return []
     const m = {}
     rows.forEach((r) => {
       if (!m[r.student_id]) m[r.student_id] = []
       m[r.student_id].push(r)
     })
-    return students
+    const kids = students
       .filter((s) => s.status !== '퇴소')
       .map((s) => ({ ...s, items: m[s.id] || [] }))
-      .sort((a, b) => a.name.localeCompare(b.name, 'ko'))
-  }, [rows, students])
+
+    const groups = staff
+      .filter((x) => x.active)
+      .map((x) => ({
+        id: x.id,
+        name: x.name,
+        kids: kids
+          .filter((k) => (k.items[0] ? k.items[0].staff_id === x.id : k.main_staff_id === x.id))
+          .sort((a, b) => a.name.localeCompare(b.name, 'ko')),
+      }))
+
+    const used = new Set(groups.flatMap((g) => g.kids.map((k) => k.id)))
+    const rest = kids.filter((k) => !used.has(k.id)).sort((a, b) => a.name.localeCompare(b.name, 'ko'))
+    if (rest.length) groups.push({ id: 'etc', name: '담당 미지정', kids: rest })
+    return groups.filter((g) => g.kids.length)
+  }, [rows, students, staff])
 
   const stat = useMemo(() => {
     if (!rows || !base) return { changed: 0, live: 0 }
@@ -3145,6 +2456,11 @@ function PlanView({
             )}
           </div>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 7 }}>
+            {onNewStudent && (
+              <Btn onClick={onNewStudent} style={{ padding: '6px 13px', fontSize: 12.5 }}>
+                + 새 아동
+              </Btn>
+            )}
             <Btn
               disabled={busy}
               onClick={async () => {
@@ -3311,18 +2627,46 @@ function PlanView({
       </div>
 
       <Card style={{ overflow: 'hidden' }}>
-        {byStudent.map((s, si) => (
+        {byStaff.map((g) => (
+          <div key={g.id}>
+            <div
+              style={{
+                padding: '8px 14px',
+                background: g.id === 'etc' ? '#FBFBFC' : toneOf(g.name).bg,
+                color: g.id === 'etc' ? C.sub : toneOf(g.name).fg,
+                fontSize: 13, fontWeight: 700,
+                borderTop: `1px solid ${C.line2}`,
+                borderBottom: `1px solid ${C.line2}`,
+              }}
+            >
+              {g.name}
+              <span style={{ fontWeight: 400, marginLeft: 7, opacity: 0.8 }}>{g.kids.length}명</span>
+            </div>
+            {g.kids.map((s, si) => (
           <div
             key={s.id}
             style={{
               padding: '10px 14px',
-              borderBottom: si === byStudent.length - 1 ? 'none' : `1px solid ${C.line2}`,
+              borderBottom: si === g.kids.length - 1 ? 'none' : `1px solid ${C.line2}`,
               display: 'flex',
               gap: 10,
               alignItems: 'flex-start',
             }}
           >
-            <div style={{ width: 68, paddingTop: 7, fontSize: 14, fontWeight: 700 }}>{s.name}</div>
+            <div style={{ width: 92, paddingTop: 6, display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <div style={{ fontSize: 14, fontWeight: 700 }}>{s.name}</div>
+              {onEditStudent && (
+                <button
+                  onClick={() => onEditStudent(s)}
+                  style={{
+                    border: 'none', background: 'none', padding: 0, cursor: 'pointer',
+                    fontSize: 11.5, color: C.sub, textAlign: 'left', textDecoration: 'underline',
+                  }}
+                >
+                  수정
+                </button>
+              )}
+            </div>
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
               {s.items.map((r) => {
                 const isNew = !base.has(key(r)) && !r.removed
@@ -3436,6 +2780,8 @@ function PlanView({
                 + 수업 추가
               </Btn>
             </div>
+          </div>
+            ))}
           </div>
         ))}
       </Card>
@@ -4780,9 +4126,8 @@ function App() {
 
   const [tab, setTab] = useState('today')
   const [weekStart, setWeekStart] = useState(() => mondayOf(new Date()))
-  const [ym, setYm] = useState(defaultBillingYm)
+  const [ym, setYm] = useState(() => ymOf(new Date()))
   const [closeYm, setCloseYm] = useState(defaultClosingYm)
-  const [monthYm, setMonthYm] = useState(() => ymOf(new Date()))
   const [monthSessions, setMonthSessions] = useState([])
   const [autoGen, setAutoGen] = useState(false)
 
@@ -4809,8 +4154,8 @@ function App() {
   const [addOpen, setAddOpen] = useState(false)
   const [printAll, setPrintAll] = useState(null)
   const [needRegen, setNeedRegen] = useState(false)
-  const [planYm, setPlanYm] = useState(() => shiftYm(ymOf(new Date()), 1))
   const [schedView, setSchedView] = useState('month')
+  const [editStudent, setEditStudent] = useState(null)
   const [students, setStudents] = useState([])
   const [templates, setTemplates] = useState([])
   const [programs, setPrograms] = useState([])
@@ -4888,16 +4233,16 @@ function App() {
   }, [])
 
   const reloadMonthSessions = useCallback(async () => {
-    const [y, m] = monthYm.split('-').map(Number)
+    const [y, m] = ym.split('-').map(Number)
     const last = new Date(y, m, 0).getDate()
-    setMonthSessions(await loadSessions(`${monthYm}-01`, `${monthYm}-${String(last).padStart(2, '0')}`))
-  }, [monthYm])
+    setMonthSessions(await loadSessions(`${ym}-01`, `${ym}-${String(last).padStart(2, '0')}`))
+  }, [ym])
 
   const reloadMonth = useCallback(async () => {
     const [b, bs, cl, r, pay, rev, pr, mc] = await Promise.all([
       isAdmin ? loadBilling(ym) : Promise.resolve([]),
       isAdmin ? loadBillingByStaff(ym) : Promise.resolve([]),
-      loadClosings(closeYm),
+      loadClosings(ym),
       isAdmin ? loadReceipts(ym) : Promise.resolve([]),
       isAdmin ? loadPayments(ym) : Promise.resolve([]),
       isAdmin ? loadRevenue() : Promise.resolve([]),
@@ -4943,7 +4288,7 @@ function App() {
 
   useEffect(() => {
     if (session && staff.length) reloadAll()
-  }, [session, staff.length, weekStart, ym, closeYm, monthYm])
+  }, [session, staff.length, weekStart, ym, closeYm, ym])
 
   // 공휴일은 앱이 알아서 채워 둡니다 (2026~2030, 대체공휴일·일요일 제외)
   useEffect(() => {
@@ -5060,10 +4405,7 @@ function App() {
         {
           key: 'setup',
           label: '설정',
-          items: [
-            ['plan', '시간표 짜기'],
-            ['students', '아동'],
-          ],
+          items: [['plan', '시간표 짜기']],
         },
       ]
     : [
@@ -5222,7 +4564,6 @@ function App() {
             onLoad={loadHome}
             onGo={(where) => {
               if (where === 'plan') {
-                setPlanYm(shiftYm(ym, 1))
                 setTab('plan')
               } else if (where === 'billing-next') {
                 setYm(shiftYm(ym, 1))
@@ -5235,6 +4576,8 @@ function App() {
                 setSchedView('week')
               } else if (where === 'mark') {
                 setTab('mark')
+              } else if (where === 'students') {
+                setTab('plan')
               } else if (where === 'closing' || where === 'payroll') {
                 setTab('billing')
               } else {
@@ -5289,7 +4632,7 @@ function App() {
 
         {!loading && tab === 'month' && schedView === 'month' && (
           <MonthView
-            ym={monthYm}
+            ym={ym}
             staff={isAdmin ? staff : null}
             filter={filter}
             onFilter={setFilter}
@@ -5297,8 +4640,8 @@ function App() {
             sessions={isAdmin && filter ? monthSessions.filter((x) => x.staff_name === filter) : monthSessions}
             busy={busy}
             isAdmin={isAdmin}
-            onPrevYm={() => setMonthYm(shiftYm(monthYm, -1))}
-            onNextYm={() => setMonthYm(shiftYm(monthYm, 1))}
+            onPrevYm={() => setYm(shiftYm(ym, -1))}
+            onNextYm={() => setYm(shiftYm(ym, 1))}
             onMark={doMark}
           />
         )}
@@ -5616,86 +4959,19 @@ function App() {
           </>
         )}
 
-        {!loading && tab === 'students' && isAdmin && (
-          <StudentsView
-            students={students}
-            templates={templates}
-            staff={staff}
-            programs={programs}
-            busy={busy}
-            onSaveStudent={async (id, v) => {
-              setBusy(true)
-              try {
-                await saveStudent(id, v)
-                say('저장했습니다')
-                await reloadManage()
-              } catch (e) {
-                fail(e)
-              }
-              setBusy(false)
-            }}
-            onSaveTemplate={async (v) => {
-              setBusy(true)
-              try {
-                await saveTemplate(v)
-                setNeedRegen(true)
-                say('수업을 추가했습니다')
-                await reloadManage()
-              } catch (e) {
-                fail(e)
-              }
-              setBusy(false)
-            }}
-            onRemoveStudent={async (id) => {
-              setBusy(true)
-              try {
-                const msg = await removeStudent(id)
-                say(msg || '삭제했습니다')
-                await reloadAll()
-              } catch (e) {
-                fail(e)
-              }
-              setBusy(false)
-            }}
-            onUpdateTemplate={async (id, v) => {
-              setBusy(true)
-              try {
-                const msg = await changeTemplate(id, v)
-                setNeedRegen(true)
-                say(msg || '수정했습니다')
-                await reloadAll()
-              } catch (e) {
-                fail(e)
-              }
-              setBusy(false)
-            }}
-            onEndTemplate={async (id) => {
-              setBusy(true)
-              try {
-                const msg = await endTemplate(id)
-                setNeedRegen(true)
-                say(msg || '수업을 삭제했습니다')
-                await reloadAll()
-              } catch (e) {
-                fail(e)
-              }
-              setBusy(false)
-            }}
-          />
-        )}
 
         {!loading && tab === 'plan' && isAdmin && (
           <>
             <div className="no-print" style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 12 }}>
-              <Btn onClick={() => setPlanYm(shiftYm(planYm, -1))} style={{ padding: '6px 11px' }}>←</Btn>
+              <Btn onClick={() => setYm(shiftYm(ym, -1))} style={{ padding: '6px 11px' }}>←</Btn>
               <div style={{ fontSize: 15, fontWeight: 700, minWidth: 96, textAlign: 'center' }}>
-                {planYm.replace('-', '년 ')}월
+                {shiftYm(ym, 1).replace('-', '년 ')}월
               </div>
-              <Btn onClick={() => setPlanYm(shiftYm(planYm, 1))} style={{ padding: '6px 11px' }}>→</Btn>
+              <Btn onClick={() => setYm(shiftYm(ym, 1))} style={{ padding: '6px 11px' }}>→</Btn>
             </div>
             <PlanView
-              key={planYm}
-              ym={planYm}
+              key={shiftYm(ym, 1)}
+              ym={shiftYm(ym, 1)}
               students={students}
               staff={staff}
               programs={programs}
@@ -5705,6 +4981,9 @@ function App() {
               onLoadLocked={loadPlanLocked}
               onLoadBackups={loadPlanBackups}
               onCheck={checkMonthPlan}
+              toneOf={toneOf}
+              onEditStudent={(s) => setEditStudent(s)}
+              onNewStudent={() => setEditStudent('new')}
               leaves={leaves}
               outside={outside}
               onAddLeave={async (v) => {
@@ -5770,7 +5049,7 @@ function App() {
               onApply={async (rows) => {
                 setBusy(true)
                 try {
-                  const msg = await applyMonthPlan(planYm, rows)
+                  const msg = await applyMonthPlan(shiftYm(ym, 1), rows)
                   say(msg || '적용했습니다')
                   setNeedRegen(false)
                   await reloadAll()
@@ -5867,6 +5146,40 @@ function App() {
             </Btn>
           </div>
         </Modal>
+      )}
+
+      {editStudent && isAdmin && (
+        <StudentModal
+          student={editStudent === 'new' ? null : editStudent}
+          staff={staff}
+          busy={busy}
+          onClose={() => setEditStudent(null)}
+          onRemove={async (id) => {
+            setEditStudent(null)
+            setBusy(true)
+            try {
+              const msg = await removeStudent(id)
+              say(msg || '삭제했습니다')
+              await reloadAll()
+            } catch (e) {
+              fail(e)
+            }
+            setBusy(false)
+          }}
+          onSave={async (v) => {
+            const id = editStudent === 'new' ? null : editStudent.id
+            setEditStudent(null)
+            setBusy(true)
+            try {
+              await saveStudent(id, v)
+              say(id ? '수정했습니다' : '등록했습니다')
+              await reloadAll()
+            } catch (e) {
+              fail(e)
+            }
+            setBusy(false)
+          }}
+        />
       )}
 
       {receiptFor && (
