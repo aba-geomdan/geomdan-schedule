@@ -195,6 +195,32 @@ async function loadMyClosing(ym) {
   return rows?.[0] || null
 }
 
+// 영수증 취소 차감 · 선입금 (발행된 건 적어 둔 값, 아니면 지금 기준 계산)
+async function loadReceiptExtras(ym) {
+  return ok(await supabase.rpc('receipt_extras', { p_ym: ym }))
+}
+
+// 영수증 발행 뒤 취소 → 다음 영수증에서 차감
+async function cancelWithCarry(sessionId, reason) {
+  return ok(await supabase.rpc('cancel_with_carry', { p_session: sessionId, p_reason: reason ?? null }))
+}
+async function undoCancelCarry(sessionId) {
+  return ok(await supabase.rpc('undo_cancel_carry', { p_session: sessionId }))
+}
+
+// 영수증 금액 계산 (화면용) — 조정 금액을 바꿔 보는 중에도 같은 규칙으로
+function receiptShow(subtotal, adjustment, x) {
+  const carry = x?.carry_amount || 0
+  const net = subtotal + (adjustment || 0) + carry
+  const credit = (x?.prepaid_used || 0) + (x?.prepaid_left || 0)   // 쓸 수 있는 선입금
+  const used = Math.min(credit, Math.max(net, 0))
+  const left = credit - used
+  const due = net - used
+  const full = used > 0 && used === net                             // 선입금으로 전부 결제
+  const months = full && net > 0 ? Math.floor(left / net) : 0
+  return { carry, note: x?.carry_note || '', net, used, left, due, full, months }
+}
+
 async function loadReceipts(ym) {
   return ok(await supabase.from('receipts').select('*').eq('ym', ym))
 }
@@ -215,10 +241,6 @@ async function markAttendance(id, status, note) {
 }
 
 // 원장님: 상태 직접 변경 (보강 포함)
-async function adminSetStatus(id, status) {
-  return ok(await supabase.from('sessions').update({ status, marked_at: new Date().toISOString() }).eq('id', id))
-}
-
 // 수업 한 회차 직접 추가 (지난 결강 기록 / 보강 등록)
 async function addSession(v) {
   return ok(
@@ -943,8 +965,23 @@ function MonthView({
           if (byWeek[i]) byWeek[i].push(s)
         })
         const days = [...new Set(list.map((s) => s.weekday))]
+        // 이 달에 가르친 선생님 전부 (요일과 함께)
+        const DOW = '일월화수목금토'
+        const byTeacher = {}
+        list
+          .filter((x) => x.status !== '취소')
+          .forEach((x) => {
+            const w = DOW[new Date(x.d + 'T00:00:00').getDay()]
+            if (!byTeacher[x.staff_name]) byTeacher[x.staff_name] = new Set()
+            byTeacher[x.staff_name].add(w)
+          })
+        const order = '월화수목금토일'
+        const teachers = Object.entries(byTeacher)
+          .map(([n, ws]) => ({ name: n, days: [...ws].sort((a, b) => order.indexOf(a) - order.indexOf(b)).join('') }))
+          .sort((a, b) => order.indexOf(a.days[0]) - order.indexOf(b.days[0]))
         return {
           ...g,
+          teachers,
           list,
           byWeek,
           days: days.join('·'),
@@ -1063,7 +1100,9 @@ function MonthView({
                     {g.name}
                     {isAdmin && (
                       <span style={{ color: C.mut, fontWeight: 400, fontSize: 11, marginLeft: 5 }}>
-                        {g.staffName}
+                        {g.teachers.length > 1
+                          ? g.teachers.map((t) => `${t.days} ${t.name}`).join(' · ')
+                          : g.teachers[0]?.name || g.staffName}
                       </span>
                     )}
                   </span>
@@ -1207,14 +1246,20 @@ function TodayView({ today, weekMinutes, onMark, busy }) {
                   )}
                 </div>
                 <div style={{ marginTop: 10 }}>
-                  <Btn
-                    disabled={busy}
-                    variant={s.status === '결강' ? 'primary' : 'default'}
-                    onClick={() => onMark(s.id, s.status === '결강' ? '진행' : '결강')}
-                    style={{ width: '100%', padding: '10px 0' }}
-                  >
-                    {s.status === '결강' ? '결강 취소하기' : '결강'}
-                  </Btn>
+                  {s.status === '진행' || s.status === '결강' ? (
+                    <Btn
+                      disabled={busy}
+                      variant={s.status === '결강' ? 'default' : 'danger'}
+                      onClick={() => onMark(s.id, s.status === '결강' ? '진행' : '결강')}
+                      style={{ width: '100%', padding: '10px 0' }}
+                    >
+                      {s.status === '결강' ? '되돌리기' : '결강'}
+                    </Btn>
+                  ) : (
+                    <div style={{ fontSize: 12, color: C.sub, textAlign: 'center' }}>
+                      {s.status === '취소' ? '원장님이 취소한 수업입니다' : '보강 수업입니다'}
+                    </div>
+                  )}
                 </div>
               </div>
             )
@@ -1338,7 +1383,14 @@ function MyClosingView({ ym, summary, closing, onSubmit, onPrevYm, onNextYm, bus
 /* ═════════════════ AdminViews.jsx ═════════════════ */
 
 /* ---------------- 정산 ---------------- */
-function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onPrintAll, onSetRate, onDetail, busy, closing }) {
+function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onPrintAll, onSetRate, onDetail, busy, closing, staffOrder = [], ownerName }) {
+  // 정산 화면 선생님 순서: 원장님은 맨 위 고정, 나머지는 등록 순서 (금액과 상관없이 늘 같은 자리)
+  const moneyOrder = (an, _aAmt, bn, _bAmt) => {
+    if (an === ownerName && bn !== ownerName) return -1
+    if (bn === ownerName && an !== ownerName) return 1
+    const ia = staffOrder.indexOf(an), ib = staffOrder.indexOf(bn)
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || an.localeCompare(bn, 'ko')
+  }
   const [group, setGroup] = useState('staff')
   const receiptShown = useMemo(() => new Set(), [byStaff, group])
   const [detailFor, setDetailFor] = useState(null)
@@ -1379,8 +1431,8 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
     })
     return Object.values(m)
       .map((g) => ({ ...g, rows: g.rows.sort((a, b) => a.student_name.localeCompare(b.student_name, 'ko')) }))
-      .sort((a, b) => b.amount - a.amount)
-  }, [byStaff])
+      .sort((a, b) => moneyOrder(a.name, a.amount, b.name, b.amount))
+  }, [byStaff, staffOrder, ownerName])
 
   const rMap = useMemo(() => Object.fromEntries(receipts.map((r) => [r.student_id, r])), [receipts])
   const total = byStudent.reduce((a, b) => a + b.subtotal + (rMap[b.id]?.adjustment || 0), 0)
@@ -1454,7 +1506,7 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
                     </td>
                   </tr>
                 )}
-                {(payroll || []).map((r) => (
+                {[...(payroll || [])].sort((a, b) => moneyOrder(a.staff_name, a.pay ?? a.tuition, b.staff_name, b.pay ?? b.tuition)).map((r) => (
                   <tr key={r.staff_id} style={{ borderBottom: `1px solid ${C.line2}` }}>
                     <td style={{ padding: '9px 12px', fontWeight: 700 }}>{r.staff_name}</td>
                     <td style={{ padding: '9px 12px' }}>
@@ -1655,11 +1707,14 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
 }
 
 /* ---------------- 영수증 ---------------- */
-function ReceiptModal({ ym, student, receipt, onClose, onIssue, onUnlock, onSaveAdjust, busy }) {
+function ReceiptModal({ ym, student, receipt, extra, onClose, onIssue, onUnlock, onSaveAdjust, busy }) {
   const [amount, setAmount] = useState(receipt?.adjustment || 0)
   const [reason, setReason] = useState(receipt?.adjust_reason || '')
   const locked = !!receipt?.locked
-  const total = student.subtotal + (Number(amount) || 0)
+  const R = receiptShow(student.subtotal, Number(amount) || 0, extra)
+  const partial = R.used > 0 && !R.full
+  const showDue = R.carry < 0 || partial
+  const total = showDue ? R.due : R.net
   const hasAbsent = student.lines.some((l) => (l.absent_dates || []).length > 0)
 
   return (
@@ -1728,6 +1783,18 @@ function ReceiptModal({ ym, student, receipt, onClose, onIssue, onUnlock, onSave
                 </td>
               </tr>
             )}
+            {R.carry < 0 && (
+              <tr style={{ borderTop: `1px solid ${C.line2}` }}>
+                <td colSpan={3} style={{ padding: '9px 0', color: C.danger }}>{R.note || '지난 취소분'}</td>
+                <td style={{ padding: '9px 0', textAlign: 'right', fontWeight: 600, color: C.danger }}>{won(R.carry)}</td>
+              </tr>
+            )}
+            {partial && (
+              <tr style={{ borderTop: `1px solid ${C.line2}` }}>
+                <td colSpan={3} style={{ padding: '9px 0', color: '#1F5B3A' }}>선입금 사용</td>
+                <td style={{ padding: '9px 0', textAlign: 'right', fontWeight: 600, color: '#1F5B3A' }}>{won(-R.used)}</td>
+              </tr>
+            )}
           </tbody>
         </table>
 
@@ -1741,9 +1808,16 @@ function ReceiptModal({ ym, student, receipt, onClose, onIssue, onUnlock, onSave
             borderTop: `1.5px solid ${C.ink}`,
           }}
         >
-          <div style={{ fontSize: 14, fontWeight: 700 }}>합계</div>
+          <div style={{ fontSize: 14, fontWeight: 700 }}>{showDue ? '이번에 내실 금액' : '합계'}</div>
           <div style={{ fontSize: 21, fontWeight: 800, color: C.pkd }}>{won(total)}원</div>
         </div>
+        {R.full && (
+          <div style={{ marginTop: 8, textAlign: 'center' }}>
+            <span style={{ fontSize: 12, color: '#1F5B3A', background: '#EDF7F1', borderRadius: 5, padding: '3px 9px' }}>
+              선입금에서 결제됨{R.left > 0 && ` · 남은 선입금 ${won(R.left)}원`}{R.months > 0 && ` (${R.months}개월분)`}
+            </span>
+          </div>
+        )}
 
         {hasAbsent && (
           <div style={{ marginTop: 8, fontSize: 11, color: C.sub, lineHeight: 1.6 }}>
@@ -2419,30 +2493,34 @@ function PlanView({
     [outside, ym]
   )
 
-  // 선생님별로 묶어서 보여줍니다 (담당 선생님 기준)
+  // 선생님별로 묶어서 보여줍니다.
+  //   수업 단위로 나눠서, 두 선생님께 배우는 아이는 양쪽 묶음에 모두 나오고
+  //   각 묶음에는 그 선생님 수업만 보입니다.
+  //   수업이 하나도 없는 아이(새로 등록 등)는 담당 선생님 묶음에 나옵니다.
   const byStaff = useMemo(() => {
     if (!rows) return []
-    const m = {}
-    rows.forEach((r) => {
-      if (!m[r.student_id]) m[r.student_id] = []
-      m[r.student_id].push(r)
-    })
-    const kids = students
-      .filter((s) => s.status !== '퇴소')
-      .map((s) => ({ ...s, items: m[s.id] || [] }))
-
+    const kids = students.filter((s) => s.status !== '퇴소')
     const groups = staff
       .filter((x) => x.active)
       .map((x) => ({
         id: x.id,
         name: x.name,
         kids: kids
-          .filter((k) => (k.items[0] ? k.items[0].staff_id === x.id : k.main_staff_id === x.id))
+          .map((k) => {
+            const mine = rows.filter((r) => r.student_id === k.id && r.staff_id === x.id)
+            const hasAny = rows.some((r) => r.student_id === k.id)
+            if (mine.length) return { ...k, items: mine, shared: rows.some((r) => r.student_id === k.id && r.staff_id !== x.id && !r.removed) }
+            if (!hasAny && k.main_staff_id === x.id) return { ...k, items: [], shared: false }
+            return null
+          })
+          .filter(Boolean)
           .sort((a, b) => a.name.localeCompare(b.name, 'ko')),
       }))
-
-    const used = new Set(groups.flatMap((g) => g.kids.map((k) => k.id)))
-    const rest = kids.filter((k) => !used.has(k.id)).sort((a, b) => a.name.localeCompare(b.name, 'ko'))
+    const shown = new Set(groups.flatMap((g) => g.kids.map((k) => k.id)))
+    const rest = kids
+      .filter((k) => !shown.has(k.id))
+      .map((k) => ({ ...k, items: rows.filter((r) => r.student_id === k.id), shared: false }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'ko'))
     if (rest.length) groups.push({ id: 'etc', name: '담당 미지정', kids: rest })
     return groups.filter((g) => g.kids.length)
   }, [rows, students, staff])
@@ -2458,13 +2536,13 @@ function PlanView({
   const set = (uid, patch) =>
     setRows((rs) => rs.map((r) => (r.uid === uid ? { ...r, ...patch } : r)))
 
-  const addRow = (sid) =>
+  const addRow = (sid, staffId) =>
     setRows((rs) => [
       ...rs,
       {
         uid: 'n' + Date.now() + Math.random(),
         student_id: sid,
-        staff_id: students.find((s) => s.id === sid)?.main_staff_id || staff[0]?.id,
+        staff_id: staffId || students.find((s) => s.id === sid)?.main_staff_id || staff[0]?.id,
         program_code: programs[0]?.code,
         weekday: 1,
         start_time: '16:00',
@@ -2709,6 +2787,11 @@ function PlanView({
           >
             <div style={{ width: 92, paddingTop: 6, display: 'flex', flexDirection: 'column', gap: 3 }}>
               <div style={{ fontSize: 14, fontWeight: 700 }}>{s.name}</div>
+              {s.shared && (
+                <div style={{ fontSize: 10.5, color: C.sub }} title="다른 선생님 수업도 있는 아동입니다">
+                  다른 선생님도
+                </div>
+              )}
               {onEditStudent && (
                 <button
                   onClick={() => onEditStudent(s)}
@@ -2828,7 +2911,7 @@ function PlanView({
                 )
               })}
               <Btn
-                onClick={() => addRow(s.id)}
+                onClick={() => addRow(s.id, g.id === 'etc' ? null : g.id)}
                 style={{ alignSelf: 'flex-start', padding: '4px 10px', fontSize: 12 }}
               >
                 + 수업 추가
@@ -3141,8 +3224,8 @@ function MarkView({ onLoad, onMark, busy, say }) {
                   </div>
                 )}
                 <div style={{ marginLeft: 'auto' }}>
-                  {r.billing_locked ? (
-                    <span style={{ fontSize: 12, color: C.mut }}>정산 끝</span>
+                  {r.status === '취소' ? (
+                    <span style={{ fontSize: 12, color: C.mut }}>취소됨</span>
                   ) : (
                     <Btn
                       disabled={busy}
@@ -3491,9 +3574,13 @@ function WeekSheet({ ym, days, weekNo, teachers, sessions, outside, holidays, le
   )
 }
 
-function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHolidays, toneOf, colorOf, onClose }) {
+function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHolidays, toneOf, colorOf, onClose, onlyTeacher }) {
   const teachers = useMemo(() => staff.filter((x) => x.active), [staff])
-  const [picked, setPicked] = useState(() => new Set(teachers.map((t) => t.id)))
+  // 시간표 화면에서 선생님을 골라둔 채 인쇄를 누르면 그 선생님만 골라진 상태로 엽니다
+  const [picked, setPicked] = useState(() => {
+    const one = onlyTeacher && teachers.find((t) => t.name === onlyTeacher)
+    return new Set(one ? [one.id] : teachers.map((t) => t.id))
+  })
   const [hols, setHols] = useState([])
   const [mode, setMode] = useState('teacher')
 
@@ -4037,6 +4124,16 @@ function PaymentView({
                     }}
                   >
                     {r.credit_left > 0 ? won(r.credit_left) : '—'}
+                    {r.credit_left > 0 && r.billed > 0 && Math.floor(r.credit_left / r.billed) >= 1 && (
+                      <span
+                        style={{
+                          marginLeft: 6, fontSize: 11, fontWeight: 700, color: '#1F5B3A',
+                          background: '#EDF7F1', borderRadius: 99, padding: '1px 7px', whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {Math.floor(r.credit_left / r.billed)}개월분
+                      </span>
+                    )}
                   </td>
                   <td style={{ padding: '9px 12px', textAlign: 'right', whiteSpace: 'nowrap' }}>
                     <Btn
@@ -4417,8 +4514,11 @@ function Stamp({ size = 40 }) {
 }
 
 /* 영수증 한 장 — compact=true 면 3등분용 납작한 형태 */
-function Sheet({ ym, s, adjustment, reason, compact, stamp }) {
-  const total = s.subtotal + (adjustment || 0)
+function Sheet({ ym, s, adjustment, reason, compact, stamp, x }) {
+  const R = receiptShow(s.subtotal, adjustment, x)
+  const partial = R.used > 0 && !R.full
+  const showDue = R.carry < 0 || partial
+  const total = showDue ? R.due : R.net
   const F = compact
     ? { title: 15, sub: 10, name: 17, th: 9.5, td: 11.5, note: 9.5, sum: 18, foot: 10, pad: '5mm 8mm' }
     : { title: 19, sub: 12.5, name: 18, th: 11, td: 12.5, note: 10.5, sum: 19, foot: 11, pad: '14mm 13mm' }
@@ -4500,13 +4600,40 @@ function Sheet({ ym, s, adjustment, reason, compact, stamp }) {
                 </td>
               </tr>
             )}
+            {R.carry < 0 && (
+              <tr style={{ borderTop: `1px solid ${C.line2}` }}>
+                <td colSpan={3} style={{ padding: compact ? '2px 0' : '8px 0', color: C.danger }}>
+                  {R.note || '지난 취소분'}
+                </td>
+                <td style={{ padding: compact ? '2px 0' : '8px 0', textAlign: 'right', fontWeight: 600, color: C.danger }}>
+                  {won(R.carry)}
+                </td>
+              </tr>
+            )}
+            {partial && (
+              <tr style={{ borderTop: `1px solid ${C.line2}` }}>
+                <td colSpan={3} style={{ padding: compact ? '2px 0' : '8px 0', color: '#1F5B3A' }}>선입금 사용</td>
+                <td style={{ padding: compact ? '2px 0' : '8px 0', textAlign: 'right', fontWeight: 600, color: '#1F5B3A' }}>
+                  {won(-R.used)}
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
 
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: compact ? 6 : 10, paddingTop: compact ? 6 : 10, borderTop: `1.5px solid ${C.ink}` }}>
-          <div style={{ fontSize: compact ? 10 : 13, fontWeight: 700 }}>합계</div>
+          <div style={{ fontSize: compact ? 10 : 13, fontWeight: 700 }}>{showDue ? '이번에 내실 금액' : '합계'}</div>
           <div style={{ fontSize: F.sum, fontWeight: 800, color: C.pkd }}>{won(total)}원</div>
         </div>
+        {R.full && (
+          <div style={{ marginTop: compact ? 3 : 8, textAlign: compact ? 'left' : 'center' }}>
+            <span style={{ fontSize: compact ? 9.5 : 11.5, color: '#1F5B3A', background: '#EDF7F1', borderRadius: 4, padding: '2px 7px', display: 'inline-block' }}>
+              선입금에서 결제됨
+              {R.left > 0 && ` · 남은 선입금 ${won(R.left)}원`}
+              {R.months > 0 && ` (${R.months}개월분)`}
+            </span>
+          </div>
+        )}
 
         {compact ? (
           <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'flex-end', gap: 6, marginTop: 4 }}>
@@ -4532,7 +4659,8 @@ function Sheet({ ym, s, adjustment, reason, compact, stamp }) {
   )
 }
 
-function PrintAll({ ym, students, receipts, onClose, say }) {
+function PrintAll({ ym, students, receipts, extras = [], onClose, say }) {
+  const xMap = useMemo(() => Object.fromEntries(extras.map((x) => [x.student_id, x])), [extras])
   const [mode, setMode] = useState('three')
   const [saving, setSaving] = useState(false)
   const [progress, setProgress] = useState(0)
@@ -4696,7 +4824,7 @@ function PrintAll({ ym, students, receipts, onClose, say }) {
           pages.map((group, i) => (
             <div key={i} className="a4">
               {group.map((s) => (
-                <Sheet key={s.id} ym={ym} s={s} compact stamp adjustment={rMap[s.id]?.adjustment || 0} reason={rMap[s.id]?.adjust_reason} />
+                <Sheet key={s.id} ym={ym} s={s} compact stamp adjustment={rMap[s.id]?.adjustment || 0} reason={rMap[s.id]?.adjust_reason} x={xMap[s.id]} />
               ))}
               {group.length < 3 &&
                 Array.from({ length: 3 - group.length }, (_, k) => (
@@ -4707,13 +4835,13 @@ function PrintAll({ ym, students, receipts, onClose, say }) {
 
         {mode === 'one' &&
           students.map((s) => (
-            <Sheet key={s.id} ym={ym} s={s} stamp adjustment={rMap[s.id]?.adjustment || 0} reason={rMap[s.id]?.adjust_reason} />
+            <Sheet key={s.id} ym={ym} s={s} stamp adjustment={rMap[s.id]?.adjustment || 0} reason={rMap[s.id]?.adjust_reason} x={xMap[s.id]} />
           ))}
 
         {mode === 'image' &&
           students.map((s) => (
             <div key={s.id} className="shot-wrap" data-shot={s.name}>
-              <Sheet ym={ym} s={s} adjustment={rMap[s.id]?.adjustment || 0} reason={rMap[s.id]?.adjust_reason} />
+              <Sheet ym={ym} s={s} adjustment={rMap[s.id]?.adjustment || 0} reason={rMap[s.id]?.adjust_reason} x={xMap[s.id]} />
             </div>
           ))}
       </div>
@@ -4731,6 +4859,23 @@ const mondayOf = (d) => {
   x.setDate(x.getDate() - (day === 0 ? 6 : day - 1))
   x.setHours(0, 0, 0, 0)
   return x
+}
+
+// 한 주가 두 달에 걸치면 목요일이 속한 달을 그 주의 달로 봅니다 (주의 절반 이상)
+const weekYm = (monday) => {
+  const t = new Date(monday)
+  t.setDate(t.getDate() + 3)
+  return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}`
+}
+// 그 달을 대표하는 주 — 오늘이 그 달이면 이번 주, 아니면 그 달 첫 목요일이 있는 주
+const weekOfYm = (ym) => {
+  const today = new Date()
+  const tYm = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`
+  if (tYm === ym) return mondayOf(today)
+  const [y, m] = ym.split('-').map(Number)
+  const d = new Date(y, m - 1, 1)
+  while (d.getDay() !== 4) d.setDate(d.getDate() + 1)
+  return mondayOf(d)
 }
 
 function App() {
@@ -4772,6 +4917,7 @@ function App() {
   const [schedView, setSchedView] = useState('month')
   const [editStudent, setEditStudent] = useState(null)
   const [ttPrint, setTtPrint] = useState(false)
+  const [receiptExtras, setReceiptExtras] = useState([])
   const [students, setStudents] = useState([])
   const [templates, setTemplates] = useState([])
   const [programs, setPrograms] = useState([])
@@ -4798,6 +4944,23 @@ function App() {
   }
 
   // 선생님 색 번호 — DB에 저장된 번호(color_idx)를 씁니다. 없으면 목록 순서.
+  // 주간 화면의 주와 앱이 보고 있는 달을 항상 맞춥니다
+  const goWeek = (monday) => {
+    setWeekStart(monday)
+    const m = weekYm(monday)
+    if (m !== ym) setYm(m)
+  }
+  useEffect(() => {
+    // 지금 보는 주에 그 달 날짜가 하루도 없을 때만 그 달로 옮깁니다
+    const touches = [0, 1, 2, 3, 4, 5].some((i) => {
+      const x = new Date(weekStart)
+      x.setDate(x.getDate() + i)
+      return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}` === ym
+    })
+    if (!touches) setWeekStart(weekOfYm(ym))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ym])
+
   const colorIdx = useCallback(
     (name) => {
       const i = staff.findIndex((s) => s.name === name)
@@ -4854,7 +5017,7 @@ function App() {
   }, [ym])
 
   const reloadMonth = useCallback(async () => {
-    const [b, bs, cl, r, pay, rev, pr, mc] = await Promise.all([
+    const [b, bs, cl, r, pay, rev, pr, mc, rx] = await Promise.all([
       isAdmin ? loadBilling(ym) : Promise.resolve([]),
       isAdmin ? loadBillingByStaff(ym) : Promise.resolve([]),
       loadClosings(ym),
@@ -4863,8 +5026,10 @@ function App() {
       isAdmin ? loadRevenue() : Promise.resolve([]),
       isAdmin ? loadPayroll(ym) : Promise.resolve([]),
       isAdmin ? Promise.resolve(null) : loadMyClosing(closeYm),
+      isAdmin ? loadReceiptExtras(ym).catch(() => []) : Promise.resolve([]),
     ])
     setBilling(b)
+    setReceiptExtras(rx || [])
     setByStaff(bs)
     setClosings(cl)
     setReceipts(r)
@@ -4954,8 +5119,41 @@ function App() {
   const doMark = async (id, status) => {
     setBusy(true)
     try {
-      if (isAdmin) await adminSetStatus(id, status)
-      else await markAttendance(id, status)
+      // 원장님도 선생님과 같은 규칙(정산 잠금·보강 연결 확인)을 거칩니다
+      await markAttendance(id, status)
+      await Promise.all([reloadWeek(), reloadCommon(), reloadMonth(), reloadMonthSessions()])
+      setPick(null)
+    } catch (e) {
+      fail(e)
+    }
+    setBusy(false)
+  }
+
+  // 영수증 발행 뒤 취소: 이 달 영수증은 그대로, 다음 영수증에서 차감
+  const doCancelCarry = async (p) => {
+    const ok = confirm(
+      `${p.student_name} ${p.d.slice(5).replace('-', '/')} 수업을 취소합니다.\n\n` +
+        `이 달 영수증은 이미 발행돼서 그대로 두고,\n그 수업 수강료를 다음에 발행하는 영수증에서 차감합니다.\n\n` +
+        `※ 돈을 바로 돌려드릴 거면 이 방법 대신\n   영수증 잠금을 풀고 → 취소 → 영수증 다시 발행 → 환불 로 해주세요.`
+    )
+    if (!ok) return
+    const reason = prompt('취소 사유 (기록용, 비워도 됩니다)', '센터 사정') ?? ''
+    setBusy(true)
+    try {
+      const msg = await cancelWithCarry(p.id, reason)
+      say(msg || '취소했습니다')
+      await Promise.all([reloadWeek(), reloadCommon(), reloadMonth(), reloadMonthSessions()])
+      setPick(null)
+    } catch (e) {
+      fail(e)
+    }
+    setBusy(false)
+  }
+  const doUndoCarry = async (id) => {
+    setBusy(true)
+    try {
+      const msg = await undoCancelCarry(id)
+      say(msg || '되돌렸습니다')
       await Promise.all([reloadWeek(), reloadCommon(), reloadMonth(), reloadMonthSessions()])
       setPick(null)
     } catch (e) {
@@ -5297,7 +5495,7 @@ function App() {
                 onClick={() => {
                   const d = new Date(weekStart)
                   d.setDate(d.getDate() - 7)
-                  setWeekStart(d)
+                  goWeek(d)
                 }}
                 style={{ padding: '6px 11px' }}
               >
@@ -5310,13 +5508,13 @@ function App() {
                 onClick={() => {
                   const d = new Date(weekStart)
                   d.setDate(d.getDate() + 7)
-                  setWeekStart(d)
+                  goWeek(d)
                 }}
                 style={{ padding: '6px 11px' }}
               >
                 →
               </Btn>
-              <Btn onClick={() => setWeekStart(mondayOf(new Date()))} style={{ padding: '6px 11px' }}>
+              <Btn onClick={() => goWeek(mondayOf(new Date()))} style={{ padding: '6px 11px' }}>
                 오늘
               </Btn>
 
@@ -5475,6 +5673,8 @@ function App() {
             </div>
             <BillingView
               ym={ym}
+              staffOrder={staff.map((x) => x.name)}
+              ownerName={staff.find((x) => x.role === 'admin')?.name}
               lines={billing}
               byStaff={byStaff}
               payroll={payroll}
@@ -5726,20 +5926,59 @@ function App() {
             <div style={{ fontSize: 12.5, color: C.sub }}>{pick.program_label}</div>
           </div>
           <div style={{ padding: 18 }}>
-            <div style={{ fontSize: 12, color: C.sub, marginBottom: 8 }}>출결</div>
-            <div style={{ display: 'flex', gap: 6 }}>
-              {(isAdmin ? ['진행', '결강', '취소', '보강'] : ['진행', '결강', '취소']).map((st) => (
-                <Btn
-                  key={st}
-                  variant={pick.status === st ? 'primary' : 'default'}
-                  disabled={busy}
-                  onClick={() => doMark(pick.id, st)}
-                  style={{ flex: 1, padding: '11px 0', fontSize: 14 }}
-                >
-                  {st}
-                </Btn>
-              ))}
+            <div style={{ fontSize: 12, color: C.sub, marginBottom: 8 }}>
+              출결 · 지금 <b style={{ color: C.ink }}>{pick.status === '진행' ? '수업함' : pick.status}</b>
             </div>
+            {(() => {
+              const cur = pick.status
+              // 선생님: 결강 / 되돌리기만. 원장님: 결강 · 취소 / 되돌리기
+              if (cur === '보강')
+                return (
+                  <div style={{ fontSize: 12.5, color: C.sub, lineHeight: 1.6 }}>
+                    보강 수업입니다.{isAdmin ? ' 바꾸려면 보강 화면에서 지워주세요.' : ' 바꾸려면 원장님께 말씀해주세요.'}
+                  </div>
+                )
+              if (!isAdmin && cur === '취소')
+                return (
+                  <div style={{ fontSize: 12.5, color: C.sub, lineHeight: 1.6 }}>
+                    원장님이 취소한 수업이라 바꿀 수 없어요.
+                  </div>
+                )
+              const locked = !!pick.billing_locked
+              // 영수증 발행 뒤 '다음 달 차감'으로 취소한 수업
+              if (locked && cur === '취소')
+                return isAdmin ? (
+                  <div>
+                    <div style={{ fontSize: 12.5, color: C.sub, lineHeight: 1.6, marginBottom: 8 }}>
+                      영수증 발행 뒤 취소한 수업입니다. 수강료는 다음 영수증에서 차감돼요.
+                    </div>
+                    <Btn disabled={busy} onClick={() => doUndoCarry(pick.id)} style={{ width: '100%', padding: '11px 0', fontSize: 14 }}>
+                      취소 되돌리기
+                    </Btn>
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12.5, color: C.sub, lineHeight: 1.6 }}>원장님이 취소한 수업이라 바꿀 수 없어요.</div>
+                )
+              const btns = []
+              if (cur !== '진행') btns.push(['진행', '되돌리기'])
+              if (cur !== '결강') btns.push(['결강', '결강'])
+              if (isAdmin && cur !== '취소') btns.push(locked ? ['carry', '취소 (다음 달 차감)'] : ['취소', '취소'])
+              return (
+                <div style={{ display: 'flex', gap: 6 }}>
+                  {btns.map(([st, label]) => (
+                    <Btn
+                      key={st}
+                      variant={st === '진행' ? 'default' : st === '결강' ? 'danger' : 'default'}
+                      disabled={busy}
+                      onClick={() => (st === 'carry' ? doCancelCarry(pick) : doMark(pick.id, st))}
+                      style={{ flex: 1, padding: '11px 0', fontSize: st === 'carry' ? 13 : 14 }}
+                    >
+                      {label}
+                    </Btn>
+                  ))}
+                </div>
+              )
+            })()}
             {pick.status === '결강' && (
               <div style={{ marginTop: 14, padding: 12, background: C.pkl, borderRadius: 9, fontSize: 12.5, lineHeight: 1.6 }}>
                 {pick.needs_makeup ? (
@@ -5781,6 +6020,7 @@ function App() {
           loadHolidays={loadHolidays}
           toneOf={toneOf}
           colorOf={colorOf}
+          onlyTeacher={filter}
           onClose={() => setTtPrint(false)}
         />
       )}
@@ -5824,6 +6064,7 @@ function App() {
           ym={ym}
           student={receiptFor}
           receipt={receipts.find((r) => r.student_id === receiptFor.id)}
+          extra={receiptExtras.find((x) => x.student_id === receiptFor.id)}
           busy={busy}
           onClose={() => setReceiptFor(null)}
           onIssue={async (sid, amount, reason) => {
@@ -5854,7 +6095,7 @@ function App() {
       )}
 
       {printAll && (
-        <PrintAll ym={ym} students={printAll} receipts={receipts} say={say} onClose={() => setPrintAll(null)} />
+        <PrintAll ym={ym} students={printAll} receipts={receipts} extras={receiptExtras} say={say} onClose={() => setPrintAll(null)} />
       )}
 
       <Toast msg={toast?.msg} tone={toast?.tone} />
