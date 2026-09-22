@@ -2442,6 +2442,12 @@ function PlanView({
   const prev = shiftYm(ym, -1)
   const [from, setFrom] = useState(ym)
 
+  // 이 달 마지막 날 (날짜 칸을 이 달 안에서만 고르게)
+  const monthEnd = useMemo(() => {
+    const [yy, mm] = ym.split('-').map(Number)
+    return `${ym}-${String(new Date(yy, mm, 0).getDate()).padStart(2, '0')}`
+  }, [ym])
+
   useEffect(() => {
     let alive = true
     setLoading(true)
@@ -2459,15 +2465,24 @@ function PlanView({
       })
       .then(([plan, lk]) => {
         if (!alive) return
-        const mapped = plan.map((p, i) => ({
-          uid: 'r' + i,
-          student_id: p.student_id,
-          staff_id: p.staff_id,
-          program_code: p.program_code,
-          weekday: p.weekday,
-          start_time: hhmm(p.start_time),
-          removed: false,
-        }))
+        const mStart = ym + '-01'
+        const [yy, mm] = ym.split('-').map(Number)
+        const mEnd = `${ym}-${String(new Date(yy, mm, 0).getDate()).padStart(2, '0')}`
+        const mapped = plan
+          // 지난달 시간표를 가져올 때, 지난달 안에 이미 끝난 수업은 빼고
+          .filter((p) => !p.valid_to || p.valid_to >= mStart)
+          .map((p, i) => ({
+            uid: 'r' + i,
+            student_id: p.student_id,
+            staff_id: p.staff_id,
+            program_code: p.program_code,
+            weekday: p.weekday,
+            start_time: hhmm(p.start_time),
+            // 이 달 중간에 시작/끝나는 수업이면 그 날짜를 그대로 둡니다
+            from: p.valid_from && p.valid_from > mStart && p.valid_from <= mEnd ? p.valid_from : '',
+            to: p.valid_to && p.valid_to < mEnd && p.valid_to >= mStart ? p.valid_to : '',
+            removed: false,
+          }))
         setRows(mapped)
         setBase(new Set(mapped.map(key)))
         setLocked(lk || 0)
@@ -2630,6 +2645,7 @@ function PlanView({
                   weekday: r.weekday,
                   start_time: r.start_time,
                   ...(r.from ? { from: r.from } : {}),
+                  ...(r.to ? { to: r.to } : {}),
                 }))
                 // 적용 전에 겹치는 곳을 미리 찾아 화면에 표시합니다
                 let bad = []
@@ -2871,7 +2887,7 @@ function PlanView({
                           </option>
                         ))}
                     </select>
-                    {r.isNewRow && !r.removed && (
+                    {(r.isNewRow || r.from) && !r.removed && (
                       <label
                         style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11.5, color: C.sub }}
                         title="비우면 이 달 1일부터 시작합니다"
@@ -2881,7 +2897,24 @@ function PlanView({
                           type="date"
                           value={r.from || ''}
                           min={ym + '-01'}
+                          max={monthEnd}
                           onChange={(e) => set(r.uid, { from: e.target.value })}
+                          style={{ ...planSel, width: 132, padding: '5px 7px' }}
+                        />
+                      </label>
+                    )}
+                    {r.to && !r.removed && (
+                      <label
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11.5, color: C.sub }}
+                        title="이 날까지만 수업합니다"
+                      >
+                        <span>까지</span>
+                        <input
+                          type="date"
+                          value={r.to || ''}
+                          min={r.from || ym + '-01'}
+                          max={monthEnd}
+                          onChange={(e) => set(r.uid, { to: e.target.value })}
                           style={{ ...planSel, width: 132, padding: '5px 7px' }}
                         />
                       </label>
