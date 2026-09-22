@@ -2887,7 +2887,16 @@ function PlanView({
                           </option>
                         ))}
                     </select>
-                    {(r.isNewRow || r.from) && !r.removed && (
+                    {!r.isNewRow && !r.from && !r.to && !r.showDates && !r.removed && (
+                      <button
+                        onClick={() => set(r.uid, { showDates: true })}
+                        title="달 중간에 시작하거나 끝나는 수업이면 날짜를 넣으세요"
+                        style={{ border: 'none', background: 'none', color: C.sub, fontSize: 11.5, cursor: 'pointer', textDecoration: 'underline', padding: '0 2px' }}
+                      >
+                        날짜
+                      </button>
+                    )}
+                    {(r.isNewRow || r.from || r.showDates) && !r.removed && (
                       <label
                         style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11.5, color: C.sub }}
                         title="비우면 이 달 1일부터 시작합니다"
@@ -2903,7 +2912,7 @@ function PlanView({
                         />
                       </label>
                     )}
-                    {r.to && !r.removed && (
+                    {(r.to || r.showDates) && !r.removed && (
                       <label
                         style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11.5, color: C.sub }}
                         title="이 날까지만 수업합니다"
@@ -4231,7 +4240,7 @@ function PaymentView({
         선입금은 받은 순서대로 매달 청구에서 자동으로 빠집니다. 3개월치를 한 번에 받으셔도 달마다 알아서
         차감돼요. <b>선입금 잔액</b>은 앞으로 쓸 수 있는 돈입니다.
         <br />
-        누적 청구는 <b>발행한 영수증</b> 기준이라, 정산 탭에서 발행해야 잔액이 정확해집니다.
+        지난 달 청구는 영수증을 뽑았으면 <b>영수증 금액</b>, 안 뽑았으면 <b>그 달 수업으로 계산한 금액</b>으로 셉니다. 받은 돈은 오래된 달부터 채워져요.
       </div>
 
       {revenue && revenue.length > 0 && (
