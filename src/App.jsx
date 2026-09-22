@@ -2154,7 +2154,17 @@ const PUBLIC_HOLIDAYS = [
   ['2030-12-25', '크리스마스'],
 ]
 
-function StudentModal({ student, staff, onClose, onSave, busy }) {
+// 아동 등록·수정 창 입력칸 모양
+const inp = {
+  width: '100%',
+  fontSize: 14,
+  padding: '10px 11px',
+  border: '1px solid #DEE0E3',
+  borderRadius: 8,
+  background: '#fff',
+}
+
+function StudentModal({ student, staff, onClose, onSave, onRemove, busy }) {
   const [name, setName] = useState(student?.name || '')
   const [display, setDisplay] = useState(student?.display_name || '')
   const [main, setMain] = useState(student?.main_staff_id || staff[0]?.id || '')
