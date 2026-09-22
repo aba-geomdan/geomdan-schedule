@@ -4050,6 +4050,7 @@ function AddField({ label, children }) {
 
 function PaymentView({
   ym, rows, revenue, busy, onDeposit, onRefund, onRemoveDeposit, loadHistory, say,
+  byStaff = [], staffOrder = [], ownerName, toneOf,
 }) {
   const [filter, setFilter] = useState('unpaid')
   const [depositFor, setDepositFor] = useState(null)
@@ -4070,9 +4071,40 @@ function PaymentView({
     return rows
   }, [rows, filter])
 
+  // 선생님별로 묶기 — 청구 화면과 같은 순서(원장님 → 등록 순서)
+  //   두 선생님께 배우는 아이는 순서상 먼저 나오는 선생님 묶음에 (청구 화면에서 영수증 버튼이 있는 곳)
+  const rank = (n) => (n === ownerName ? -1 : staffOrder.indexOf(n) < 0 ? 99 : staffOrder.indexOf(n))
+  const teachersOf = useMemo(() => {
+    const m = {}
+    byStaff.forEach((b) => {
+      if (!m[b.student_id]) m[b.student_id] = new Set()
+      m[b.student_id].add(b.staff_name)
+    })
+    return Object.fromEntries(Object.entries(m).map(([k, v]) => [k, [...v].sort((a, b) => rank(a) - rank(b))]))
+  }, [byStaff, staffOrder, ownerName])
+  const groups = useMemo(() => {
+    const g = {}
+    shown.forEach((r) => {
+      const home = teachersOf[r.student_id]?.[0] || r.staff_name || '담당 미지정'
+      if (!g[home]) g[home] = []
+      g[home].push(r)
+    })
+    return Object.entries(g)
+      .sort((a, b) => rank(a[0]) - rank(b[0]))
+      .map(([name, list]) => ({
+        name,
+        list: list.sort((a, b) => a.student_name.localeCompare(b.student_name, 'ko')),
+        billed: list.reduce((a, b) => a + b.billed, 0),
+        balance: list.reduce((a, b) => a + Math.max(b.balance, 0), 0),
+      }))
+  }, [shown, teachersOf])
+
   const copyUnpaid = () => {
     if (!t.unpaid.length) return say('미납이 없습니다')
-    const lines = t.unpaid.map((r) => `· ${r.student_name}  ${won(r.balance)}원`)
+    const order = groups.flatMap((g) => g.list.map((r) => r.student_id))
+    const lines = [...t.unpaid]
+      .sort((a, b) => (order.indexOf(a.student_id) + 1 || 999) - (order.indexOf(b.student_id) + 1 || 999))
+      .map((r) => `· ${r.student_name}  ${won(r.balance)}원`)
     const msg =
       `[검단ABA] ${ym.replace('-', '년 ')}월 수강료 안내\n\n` +
       `아직 입금이 확인되지 않았습니다.\n확인 후 납부 부탁드립니다.\n\n${lines.join('\n')}\n\n` +
@@ -4162,7 +4194,26 @@ function PaymentView({
                 </td>
               </tr>
             )}
-            {shown.map((r) => {
+            {groups.map((g) => [
+              <tr key={'h-' + g.name}>
+                <td
+                  colSpan={7}
+                  style={{
+                    padding: '8px 12px', fontWeight: 700, fontSize: 13,
+                    background: toneOf ? toneOf(g.name).bg : '#F7F8F9',
+                    color: toneOf ? toneOf(g.name).fg : C.ink,
+                    borderBottom: `1px solid ${C.line}`,
+                  }}
+                >
+                  {g.name}
+                  <span style={{ fontWeight: 400, marginLeft: 7, opacity: 0.85 }}>{g.list.length}명</span>
+                  <span style={{ float: 'right', fontWeight: 400, opacity: 0.9 }}>
+                    청구 {won(g.billed)}
+                    {g.balance > 0 && <span style={{ marginLeft: 10, fontWeight: 700 }}>미수 {won(g.balance)}</span>}
+                  </span>
+                </td>
+              </tr>,
+              ...g.list.map((r) => {
               const done = r.balance <= 0
               const partial = r.allocated > 0 && r.balance > 0
               return (
@@ -4180,7 +4231,9 @@ function PaymentView({
                       </span>
                     )}
                   </td>
-                  <td style={{ padding: '9px 12px', color: C.sub }}>{r.staff_name}</td>
+                  <td style={{ padding: '9px 12px', color: C.sub, whiteSpace: 'nowrap' }}>
+                    {(teachersOf[r.student_id] || [r.staff_name]).join(' · ')}
+                  </td>
                   <td style={{ padding: '9px 12px', textAlign: 'right' }}>{won(r.billed)}</td>
                   <td
                     style={{
@@ -4241,7 +4294,8 @@ function PaymentView({
                   </td>
                 </tr>
               )
-            })}
+              }),
+            ])}
           </tbody>
         </table>
       </Card>
@@ -5831,6 +5885,10 @@ function App() {
             <PaymentView
               ym={ym}
               rows={payments}
+              byStaff={byStaff}
+              staffOrder={staff.map((x) => x.name)}
+              ownerName={staff.find((x) => x.role === 'admin')?.name}
+              toneOf={toneOf}
               revenue={revenue}
               busy={busy}
               say={say}
