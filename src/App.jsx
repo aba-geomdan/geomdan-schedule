@@ -3297,13 +3297,13 @@ function ttMin(t) {
   return h * 60 + m
 }
 
-function TeacherSheet({ ym, teacher, sessions, holidays, tone }) {
+function TeacherSheet({ ym, teacher, sessions, holidays, tone, outside = [] }) {
   const [y, m] = ym.split('-').map(Number)
   const lastDay = new Date(y, m, 0).getDate()
 
-  // 이 선생님 수업에 맞춰 시간 범위를 잡습니다
-  const mins = sessions.map((s) => ttMin(s.start_time))
-  const maxs = sessions.map((s) => ttMin(s.end_time))
+  // 이 선생님 수업(원장님은 외부 일정까지)에 맞춰 시간 범위를 잡습니다
+  const mins = [...sessions, ...outside].map((s) => ttMin(s.start_time))
+  const maxs = [...sessions, ...outside].map((s) => ttMin(s.end_time))
   let st = mins.length ? Math.floor(Math.min(...mins) / 60) * 60 : 13 * 60
   let en = maxs.length ? Math.ceil(Math.max(...maxs) / 60) * 60 : 19 * 60
   if (en - st < 240) en = st + 240
@@ -3314,6 +3314,11 @@ function TeacherSheet({ ym, teacher, sessions, holidays, tone }) {
   sessions.forEach((s) => {
     if (!byDay[s.d]) byDay[s.d] = []
     byDay[s.d].push(s)
+  })
+  // 원장님 외부 일정도 같은 줄에 (진한 회색)
+  outside.forEach((e) => {
+    if (!byDay[e.d]) byDay[e.d] = []
+    byDay[e.d].push({ ...e, id: 'out-' + e.id, out: true })
   })
 
   const rows = []
@@ -3349,6 +3354,12 @@ function TeacherSheet({ ym, teacher, sessions, holidays, tone }) {
             <i style={{ background: '#fff', border: '1.5px dashed #E07B00', borderLeft: `3px solid ${tone.line}` }} />
             보강
           </span>
+          {outside.length > 0 && (
+            <span>
+              <i style={{ background: OUT_TONE.bg }} />
+              외부 일정
+            </span>
+          )}
         </span>
       </div>
 
@@ -3402,6 +3413,26 @@ function TeacherSheet({ ym, teacher, sessions, holidays, tone }) {
                     {list.map((s) => {
                       const mk = s.status === '보강'
                       const ab = s.status === '결강'
+                      if (s.out)
+                        return (
+                          <div
+                            key={s.id}
+                            className="tt-ev"
+                            title={s.memo || ''}
+                            style={{
+                              left: pct(s.s0),
+                              width: `calc(${(((s.s1 - s.s0) / span) * 100).toFixed(3)}% - 1px)`,
+                              background: OUT_TONE.bg, borderColor: OUT_TONE.bd, borderLeftColor: OUT_TONE.bd, color: OUT_TONE.fg,
+                            }}
+                          >
+                            <b>{s.label}</b>
+                            <small>
+                              <span className="tt-outtag">외부</span>
+                              {hhmm(s.start_time)}
+                              <span className="tt-end">~{hhmm(s.end_time)}</span>
+                            </small>
+                          </div>
+                        )
                       return (
                         <div
                           key={s.id}
@@ -3836,6 +3867,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
             tone={{ ...toneOf(t.name), line: colorOf(t.name) }}
             holidays={holFor(t)}
             sessions={sessions.filter((s) => s.staff_name === t.name && s.status !== '취소')}
+            outside={t.name === ownerName ? outside.filter((e) => e.d.slice(0, 7) === ym) : []}
           />
         ))}
         {mode === 'teacher' && !shown.length && (
@@ -4552,9 +4584,15 @@ function Sheet({ ym, s, adjustment, reason, compact, stamp, x }) {
   const partial = R.used > 0 && !R.full
   const showDue = R.carry < 0 || partial
   const total = showDue ? R.due : R.net
+  const rowsN = s.lines.length + (adjustment ? 1 : 0) + (R.carry < 0 ? 1 : 0) + (partial ? 1 : 0)
   const F = compact
-    ? { title: 15, sub: 10, name: 17, th: 9.5, td: 11.5, note: 9.5, sum: 18, foot: 10, pad: '5mm 8mm' }
-    : { title: 19, sub: 12.5, name: 18, th: 11, td: 12.5, note: 10.5, sum: 19, foot: 11, pad: '14mm 13mm' }
+    ? (rowsN >= 5
+        // 줄 수에 맞춰 글자 크기를 정합니다 — 칸(A4 1/3)을 넘치지 않으면서 비어 보이지 않게
+        ? { title: 17, sub: 11.5, name: 19, th: 10.5, td: 13, note: 10.5, sum: 21, foot: 11, pad: '5mm 10mm', row: '3px 0', logo: 20, stamp: 40, lbl: 12 }
+        : rowsN >= 3
+        ? { title: 20, sub: 13, name: 23, th: 12, td: 15.5, note: 12, sum: 26, foot: 12.5, pad: '6mm 11mm', row: '6px 0', logo: 24, stamp: 48, lbl: 14 }
+        : { title: 23, sub: 14.5, name: 27, th: 13, td: 17.5, note: 13, sum: 31, foot: 13.5, pad: '7mm 12mm', row: '10px 0', logo: 28, stamp: 58, lbl: 16 })
+    : { title: 19, sub: 12.5, name: 18, th: 11, td: 12.5, note: 10.5, sum: 19, foot: 11, pad: '14mm 13mm', row: '8px 0', logo: 34, stamp: 42, lbl: 13 }
 
   return (
     <div className={compact ? 'receipt-slot' : 'receipt-page'}>
@@ -4562,7 +4600,7 @@ function Sheet({ ym, s, adjustment, reason, compact, stamp, x }) {
         {compact ? (
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 7, borderBottom: `1px solid ${C.pk}`, paddingBottom: 3, marginBottom: 5 }}>
             {LOGO_URL && (
-              <img src={LOGO_URL} alt="" style={{ height: 17, objectFit: 'contain', alignSelf: 'center' }} />
+              <img src={LOGO_URL} alt="" style={{ height: F.logo, objectFit: 'contain', alignSelf: 'center' }} />
             )}
             <span style={{ fontSize: F.title, fontWeight: 800, color: C.pkd, letterSpacing: '0.04em' }}>수강료 영수증</span>
             <span style={{ fontSize: F.sub, color: C.sub }}>{ym.replace('-', '년 ')}월</span>
@@ -4603,7 +4641,7 @@ function Sheet({ ym, s, adjustment, reason, compact, stamp, x }) {
               })
               return (
                 <tr key={i} style={{ borderTop: `1px solid ${C.line2}` }}>
-                  <td style={{ padding: compact ? '2px 0' : '8px 0' }}>
+                  <td style={{ padding: F.row }}>
                     {l.program_label}
                     <div style={{ fontSize: F.note, color: C.mut, lineHeight: 1.35 }}>
                       {l.staff_summary}
@@ -4616,37 +4654,37 @@ function Sheet({ ym, s, adjustment, reason, compact, stamp, x }) {
                       ))}
                     </div>
                   </td>
-                  <td style={{ padding: compact ? '4px 0' : '8px 0', textAlign: 'right', verticalAlign: 'top' }}>{l.lesson_count}</td>
-                  <td style={{ padding: compact ? '4px 0' : '8px 0', textAlign: 'right', color: C.sub, verticalAlign: 'top' }}>{won(l.unit_price)}</td>
-                  <td style={{ padding: compact ? '4px 0' : '8px 0', textAlign: 'right', fontWeight: 600, verticalAlign: 'top' }}>{won(l.amount)}</td>
+                  <td style={{ padding: F.row, textAlign: 'right', verticalAlign: 'top' }}>{l.lesson_count}</td>
+                  <td style={{ padding: F.row, textAlign: 'right', color: C.sub, verticalAlign: 'top' }}>{won(l.unit_price)}</td>
+                  <td style={{ padding: F.row, textAlign: 'right', fontWeight: 600, verticalAlign: 'top' }}>{won(l.amount)}</td>
                 </tr>
               )
             })}
             {!!adjustment && (
               <tr style={{ borderTop: `1px solid ${C.line2}` }}>
-                <td colSpan={3} style={{ padding: compact ? '2px 0' : '8px 0', color: C.danger }}>
+                <td colSpan={3} style={{ padding: F.row, color: C.danger }}>
                   조정
                   <span style={{ fontSize: F.note, color: C.mut, marginLeft: 5 }}>{reason || '사유 없음'}</span>
                 </td>
-                <td style={{ padding: compact ? '2px 0' : '8px 0', textAlign: 'right', fontWeight: 600, color: C.danger }}>
+                <td style={{ padding: F.row, textAlign: 'right', fontWeight: 600, color: C.danger }}>
                   {won(adjustment)}
                 </td>
               </tr>
             )}
             {R.carry < 0 && (
               <tr style={{ borderTop: `1px solid ${C.line2}` }}>
-                <td colSpan={3} style={{ padding: compact ? '2px 0' : '8px 0', color: C.danger }}>
+                <td colSpan={3} style={{ padding: F.row, color: C.danger }}>
                   {R.note || '지난 취소분'}
                 </td>
-                <td style={{ padding: compact ? '2px 0' : '8px 0', textAlign: 'right', fontWeight: 600, color: C.danger }}>
+                <td style={{ padding: F.row, textAlign: 'right', fontWeight: 600, color: C.danger }}>
                   {won(R.carry)}
                 </td>
               </tr>
             )}
             {partial && (
               <tr style={{ borderTop: `1px solid ${C.line2}` }}>
-                <td colSpan={3} style={{ padding: compact ? '2px 0' : '8px 0', color: '#1F5B3A' }}>선입금 사용</td>
-                <td style={{ padding: compact ? '2px 0' : '8px 0', textAlign: 'right', fontWeight: 600, color: '#1F5B3A' }}>
+                <td colSpan={3} style={{ padding: F.row, color: '#1F5B3A' }}>선입금 사용</td>
+                <td style={{ padding: F.row, textAlign: 'right', fontWeight: 600, color: '#1F5B3A' }}>
                   {won(-R.used)}
                 </td>
               </tr>
@@ -4654,13 +4692,13 @@ function Sheet({ ym, s, adjustment, reason, compact, stamp, x }) {
           </tbody>
         </table>
 
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: compact ? 6 : 10, paddingTop: compact ? 6 : 10, borderTop: `1.5px solid ${C.ink}` }}>
-          <div style={{ fontSize: compact ? 10 : 13, fontWeight: 700 }}>{showDue ? '이번에 내실 금액' : '합계'}</div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: compact ? 8 : 10, paddingTop: compact ? 8 : 10, borderTop: `1.5px solid ${C.ink}` }}>
+          <div style={{ fontSize: F.lbl, fontWeight: 700 }}>{showDue ? '이번에 내실 금액' : '합계'}</div>
           <div style={{ fontSize: F.sum, fontWeight: 800, color: C.pkd }}>{won(total)}원</div>
         </div>
         {R.full && (
           <div style={{ marginTop: compact ? 3 : 8, textAlign: compact ? 'left' : 'center' }}>
-            <span style={{ fontSize: compact ? 9.5 : 11.5, color: '#1F5B3A', background: '#EDF7F1', borderRadius: 4, padding: '2px 7px', display: 'inline-block' }}>
+            <span style={{ fontSize: compact ? F.note : 11.5, color: '#1F5B3A', background: '#EDF7F1', borderRadius: 4, padding: '2px 7px', display: 'inline-block' }}>
               선입금에서 결제됨
               {R.left > 0 && ` · 남은 선입금 ${won(R.left)}원`}
               {R.months > 0 && ` (${R.months}개월분)`}
@@ -4674,7 +4712,7 @@ function Sheet({ ym, s, adjustment, reason, compact, stamp, x }) {
               검단ABA언어행동연구소
               <div style={{ color: C.mut }}>대표 민 다 혜{stamp ? '' : ' (인)'}</div>
             </div>
-            {stamp && <Stamp size={34} />}
+            {stamp && <Stamp size={F.stamp} />}
           </div>
         ) : (
           <div style={{ marginTop: 18, textAlign: 'center', fontSize: F.foot, color: '#4B5057', lineHeight: 1.9 }}>
