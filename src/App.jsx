@@ -309,6 +309,14 @@ async function loadTemplates() {
   )
 }
 
+// 급여 기록 (마감 승인할 때 저장된 것)
+async function loadPayrollHistory(from, to) {
+  return ok(await supabase.rpc('payroll_history', { p_from: from || null, p_to: to || null }))
+}
+async function markPayrollPaid(ym, staffId, on, memo) {
+  return ok(await supabase.rpc('mark_payroll_paid', { p_ym: ym, p_staff: staffId, p_on: on ?? null, p_memo: memo ?? null }))
+}
+
 // 아동 상태 바꾸기 (퇴소·휴원은 '언제부터'를 같이 보냅니다)
 async function setStudentStatus(id, status, from) {
   return ok(await supabase.rpc('set_student_status', { p_student: id, p_status: status, p_from: from || null }))
@@ -1388,7 +1396,138 @@ function MyClosingView({ ym, summary, closing, onSubmit, onPrevYm, onNextYm, bus
 /* ═════════════════ AdminViews.jsx ═════════════════ */
 
 /* ---------------- 정산 ---------------- */
-function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onPrintAll, onSetRate, onDetail, busy, closing, staffOrder = [], ownerName }) {
+/* ================= 급여 기록 (마감 승인할 때 저장된 것) ================= */
+function PayrollHistory({ rows, staffOrder = [], ownerName, toneOf, busy, onPaid }) {
+  const rank = (n) => (n === ownerName ? -1 : staffOrder.indexOf(n) < 0 ? 99 : staffOrder.indexOf(n))
+  const [openYm, setOpenYm] = useState(null)
+
+  const months = useMemo(() => {
+    const m = {}
+    rows.forEach((r) => {
+      if (!m[r.ym]) m[r.ym] = { ym: r.ym, list: [], total: 0, unpaid: 0 }
+      m[r.ym].list.push(r)
+      m[r.ym].total += r.pay || 0
+      if (!r.paid_on) m[r.ym].unpaid += r.pay || 0
+    })
+    return Object.values(m)
+      .map((g) => ({ ...g, list: g.list.sort((a, b) => rank(a.staff_name) - rank(b.staff_name)) }))
+      .sort((a, b) => b.ym.localeCompare(a.ym))
+  }, [rows, staffOrder, ownerName])
+
+  const byStaffTotal = useMemo(() => {
+    const m = {}
+    rows.forEach((r) => {
+      if (!m[r.staff_name]) m[r.staff_name] = 0
+      m[r.staff_name] += r.pay || 0
+    })
+    return Object.entries(m).sort((a, b) => rank(a[0]) - rank(b[0]))
+  }, [rows, staffOrder, ownerName])
+
+  const grand = rows.reduce((a, b) => a + (b.pay || 0), 0)
+  const unpaid = rows.filter((r) => !r.paid_on).reduce((a, b) => a + (b.pay || 0), 0)
+
+  if (!rows.length)
+    return (
+      <Empty>
+        아직 급여 기록이 없습니다. 마감을 <b>승인</b>하면 그 달 급여가 금액까지 여기에 저장됩니다.
+      </Empty>
+    )
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+        <Stat label={`기록된 급여 (${months.length}개월)`} value={`${won(grand)}원`} />
+        <Stat label="아직 이체 안 함" value={`${won(unpaid)}원`} tone={unpaid > 0 ? C.danger : C.mut} />
+      </div>
+
+      <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.75, marginBottom: 12 }}>
+        마감을 <b>승인</b>할 때 그 달 급여가 그대로 저장됩니다. 나중에 단가나 출결을 고쳐도 이 금액은 바뀌지 않아요.
+        이체하신 뒤 <b>이체함</b>을 누르면 날짜가 남습니다.
+      </div>
+
+      {months.map((g) => (
+        <Card key={g.ym} style={{ marginBottom: 12, overflow: 'hidden' }}>
+          <div
+            style={{
+              padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10,
+              background: '#FBFBFC', borderBottom: `1px solid ${C.line2}`, flexWrap: 'wrap',
+            }}
+          >
+            <div style={{ fontSize: 14, fontWeight: 700 }}>{g.ym.replace('-', '년 ')}월분</div>
+            <span style={{ fontSize: 12, color: C.sub }}>{g.list.length}명</span>
+            {g.unpaid > 0 ? (
+              <Pill tone="pink">이체 전 {won(g.unpaid)}원</Pill>
+            ) : (
+              <Pill tone="green">이체 완료</Pill>
+            )}
+            <div style={{ marginLeft: 'auto', fontSize: 16, fontWeight: 700 }}>{won(g.total)}원</div>
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <tbody>
+              {g.list.map((r) => (
+                <tr key={r.staff_id} style={{ borderBottom: `1px solid ${C.line2}` }}>
+                  <td style={{ padding: '9px 14px', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                    <span style={{ color: toneOf ? toneOf(r.staff_name).fg : C.ink }}>{r.staff_name}</span>
+                  </td>
+                  <td style={{ padding: '9px 8px', color: C.sub, whiteSpace: 'nowrap' }}>
+                    회차 {r.lesson_count}
+                    {r.makeup_count > 0 && ` (보강 ${r.makeup_count})`}
+                  </td>
+                  <td style={{ padding: '9px 8px', color: C.sub, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    수강료 {won(r.tuition)}
+                  </td>
+                  <td style={{ padding: '9px 8px', textAlign: 'right', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                    {won(r.pay)}원
+                  </td>
+                  <td style={{ padding: '9px 8px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    {r.paid_on ? (
+                      <span style={{ fontSize: 12, color: '#1F5B3A' }}>{r.paid_on.slice(5).replace('-', '/')} 이체</span>
+                    ) : (
+                      <span style={{ fontSize: 12, color: C.mut }}>—</span>
+                    )}
+                  </td>
+                  <td style={{ padding: '9px 14px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    {r.pay_now != null && r.pay_now !== r.pay && (
+                      <span
+                        title={`지금 다시 계산하면 ${won(r.pay_now)}원 (기록은 승인 당시 금액)`}
+                        style={{
+                          fontSize: 11, color: '#8A5A00', background: '#FEF6E7',
+                          borderRadius: 99, padding: '2px 8px', marginRight: 7, whiteSpace: 'nowrap',
+                        }}
+                      >
+                        지금 {won(r.pay_now)}
+                      </span>
+                    )}
+                    <Btn
+                      variant={r.paid_on ? 'default' : 'ok'}
+                      disabled={busy}
+                      onClick={() => onPaid(r.ym, r.staff_id, r.paid_on ? null : undefined)}
+                      style={{ padding: '5px 11px', fontSize: 12 }}
+                    >
+                      {r.paid_on ? '이체 취소' : '이체함'}
+                    </Btn>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      ))}
+
+      <Card style={{ padding: 14 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>선생님별 합계</div>
+        {byStaffTotal.map(([n, v]) => (
+          <div key={n} style={{ display: 'flex', fontSize: 13, padding: '4px 0' }}>
+            <span style={{ color: toneOf ? toneOf(n).fg : C.ink, fontWeight: 600 }}>{n}</span>
+            <span style={{ marginLeft: 'auto', fontWeight: 700 }}>{won(v)}원</span>
+          </div>
+        ))}
+      </Card>
+    </div>
+  )
+}
+
+function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onPrintAll, onSetRate, onDetail, busy, closing, staffOrder = [], ownerName, payHistory = [], onPayrollPaid, toneOf }) {
   // 정산 화면 선생님 순서: 원장님은 맨 위 고정, 나머지는 등록 순서 (금액과 상관없이 늘 같은 자리)
   const moneyOrder = (an, _aAmt, bn, _bAmt) => {
     if (an === ownerName && bn !== ownerName) return -1
@@ -1397,6 +1536,7 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
     return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || an.localeCompare(bn, 'ko')
   }
   const [group, setGroup] = useState('staff')
+  const [payTab, setPayTab] = useState('now')
   const receiptShown = useMemo(() => new Set(), [byStaff, group])
   const [detailFor, setDetailFor] = useState(null)
   const [detail, setDetail] = useState(null)
@@ -1495,6 +1635,34 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
       {group === 'closing' ? (
         closing
       ) : group === 'payroll' ? (
+        <div>
+          <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 8, width: 'fit-content', marginBottom: 12 }}>
+            {[['now', '이 달'], ['hist', '기록']].map(([k, label]) => (
+              <button
+                key={k}
+                onClick={() => setPayTab(k)}
+                style={{
+                  border: 'none', cursor: 'pointer', padding: '5px 14px', borderRadius: 6,
+                  fontSize: 12.5, fontWeight: 600,
+                  background: payTab === k ? '#fff' : 'transparent',
+                  color: payTab === k ? C.ink : C.sub,
+                  boxShadow: payTab === k ? '0 1px 2px rgba(0,0,0,.06)' : 'none',
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {payTab === 'hist' ? (
+            <PayrollHistory
+              rows={payHistory}
+              staffOrder={staffOrder}
+              ownerName={ownerName}
+              toneOf={toneOf}
+              busy={busy}
+              onPaid={onPayrollPaid}
+            />
+          ) : (
         <div>
           <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.75, marginBottom: 12 }}>
             급여 = <b>(진행 + 보강)</b> 회차의 수강료 합계 × 선생님 비율. 결강은 보강해야 집계됩니다.
@@ -1654,6 +1822,8 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
                 </Btn>
               </div>
             </Modal>
+          )}
+        </div>
           )}
         </div>
       ) : group === 'staff' ? (
@@ -5146,6 +5316,7 @@ function App() {
   const [editStudent, setEditStudent] = useState(null)
   const [ttPrint, setTtPrint] = useState(false)
   const [receiptExtras, setReceiptExtras] = useState([])
+  const [payHistory, setPayHistory] = useState([])
   const [students, setStudents] = useState([])
   const [templates, setTemplates] = useState([])
   const [programs, setPrograms] = useState([])
@@ -5245,7 +5416,7 @@ function App() {
   }, [ym])
 
   const reloadMonth = useCallback(async () => {
-    const [b, bs, cl, r, pay, rev, pr, mc, rx] = await Promise.all([
+    const [b, bs, cl, r, pay, rev, pr, mc, rx, ph] = await Promise.all([
       isAdmin ? loadBilling(ym) : Promise.resolve([]),
       isAdmin ? loadBillingByStaff(ym) : Promise.resolve([]),
       loadClosings(ym),
@@ -5255,9 +5426,11 @@ function App() {
       isAdmin ? loadPayroll(ym) : Promise.resolve([]),
       isAdmin ? Promise.resolve(null) : loadMyClosing(closeYm),
       isAdmin ? loadReceiptExtras(ym).catch(() => []) : Promise.resolve([]),
+      loadPayrollHistory().catch(() => []),
     ])
     setBilling(b)
     setReceiptExtras(rx || [])
+    setPayHistory(ph || [])
     setByStaff(bs)
     setClosings(cl)
     setReceipts(r)
@@ -5902,6 +6075,19 @@ function App() {
             <BillingView
               ym={ym}
               staffOrder={staff.map((x) => x.name)}
+              toneOf={toneOf}
+              payHistory={payHistory}
+              onPayrollPaid={async (m, sid, clear) => {
+                setBusy(true)
+                try {
+                  const msg = await markPayrollPaid(m, sid, clear === null ? null : isoOf(new Date()))
+                  say(msg || '표시했습니다')
+                  await reloadMonth()
+                } catch (e) {
+                  fail(e)
+                }
+                setBusy(false)
+              }}
               ownerName={staff.find((x) => x.role === 'admin')?.name}
               lines={billing}
               byStaff={byStaff}
