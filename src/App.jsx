@@ -254,6 +254,7 @@ async function addSession(v) {
       p_status: v.status,
       p_makeup_for: v.makeup_for ?? null,
       p_note: v.note ?? null,
+      p_no_charge: !!v.no_charge,
     })
   )
 }
@@ -315,6 +316,11 @@ async function loadMakeupLog(ym) {
 }
 
 // 직접 추가한 수업 · 보강 지우기
+// 직접 추가한 회차를 청구에 넣을지 말지
+async function setSessionCharge(id, charge) {
+  return ok(await supabase.rpc('set_session_charge', { p_session: id, p_charge: charge }))
+}
+
 async function removeSession(id) {
   return ok(await supabase.rpc('remove_session', { p_session: id }))
 }
@@ -4367,6 +4373,8 @@ function AddSessionModal({ students, staff, programs, absent, pairs = [], onClos
     return programs.find((p) => p.code === pcode)?.minutes ?? 50
   }, [absent, pcode, programs])
   const [note, setNote] = useState(absent ? `${absent.d.slice(5).replace('-', '/')} 결강분` : '')
+  // 앱 쓰기 전 기록이 대부분이라 직접 추가는 기본이 '청구 안 함'
+  const [noCharge, setNoCharge] = useState(!absent)
 
   const end = useMemo(() => {
     const [h, m] = start.split(':').map(Number)
@@ -4445,6 +4453,32 @@ function AddSessionModal({ students, staff, programs, absent, pairs = [], onClos
           </div>
         </AddField>
 
+        {!linked && (
+          <AddField label="수강료 청구">
+            <div style={{ display: 'flex', gap: 6 }}>
+              {[
+                [true, '청구 안 함', '앱 쓰기 전 기록'],
+                [false, '청구함', '이번 달 수업'],
+              ].map(([v, label, hint]) => (
+                <button
+                  key={String(v)}
+                  onClick={() => setNoCharge(v)}
+                  style={{
+                    flex: 1, cursor: 'pointer', borderRadius: 8, padding: '9px 6px',
+                    border: `1px solid ${noCharge === v ? C.ink : '#DEE0E3'}`,
+                    background: noCharge === v ? C.ink : '#fff',
+                    color: noCharge === v ? '#fff' : C.ink,
+                    fontSize: 13, fontWeight: 600, lineHeight: 1.35,
+                  }}
+                >
+                  {label}
+                  <div style={{ fontSize: 10.5, fontWeight: 400, opacity: 0.8 }}>{hint}</div>
+                </button>
+              ))}
+            </div>
+          </AddField>
+        )}
+
         <AddField label="메모 (선택)">
           <input value={note} onChange={(e) => setNote(e.target.value)} style={addInp} placeholder="8/12 결강분 등" />
         </AddField>
@@ -4464,6 +4498,7 @@ function AddSessionModal({ students, staff, programs, absent, pairs = [], onClos
                 status: linked ? '보강' : status,
                 makeup_for: linked ? absent.id : null,
                 note: note.trim() || null,
+                no_charge: !linked && noCharge,
               })
             }
             style={{ flex: 1, padding: '11px 0' }}
@@ -5798,6 +5833,20 @@ function App() {
     setBusy(false)
   }
 
+  // 직접 추가한 회차를 청구에 넣기 / 빼기
+  const doSessionCharge = async (p, charge) => {
+    setBusy(true)
+    try {
+      const msg = await setSessionCharge(p.id, charge)
+      say(msg || '바꿨습니다')
+      await Promise.all([reloadWeek(), reloadCommon(), reloadMonth(), reloadMonthSessions()])
+      setPick(null)
+    } catch (e) {
+      fail(e)
+    }
+    setBusy(false)
+  }
+
   // 직접 추가한 수업·보강 지우기
   const doRemoveSession = async (p) => {
     if (!confirm(`${p.student_name} ${p.d.slice(5).replace('-', '/')} ${p.start_time.slice(0, 5)} 수업을 지웁니다.\n되돌릴 수 없어요.`)) return
@@ -6644,13 +6693,25 @@ function App() {
                   ))}
                 </div>
                 {isAdmin && pick.from_template === false && (
-                  <Btn
-                    disabled={busy}
-                    onClick={() => doRemoveSession(pick)}
-                    style={{ width: '100%', padding: '9px 0', fontSize: 12.5, marginTop: 8, color: C.danger }}
-                  >
-                    이 수업 지우기 (직접 추가한 수업)
-                  </Btn>
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10, fontSize: 12.5, color: C.sub }}>
+                      <span>수강료</span>
+                      <Btn
+                        disabled={busy}
+                        onClick={() => doSessionCharge(pick, !!pick.no_charge)}
+                        style={{ padding: '5px 11px', fontSize: 12 }}
+                      >
+                        {pick.no_charge ? '청구 안 함 → 청구에 넣기' : '청구함 → 청구에서 빼기'}
+                      </Btn>
+                    </div>
+                    <Btn
+                      disabled={busy}
+                      onClick={() => doRemoveSession(pick)}
+                      style={{ width: '100%', padding: '9px 0', fontSize: 12.5, marginTop: 8, color: C.danger }}
+                    >
+                      이 수업 지우기 (직접 추가한 수업)
+                    </Btn>
+                  </>
                 )}
                 </div>
               )
