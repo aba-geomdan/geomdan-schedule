@@ -309,6 +309,11 @@ async function loadTemplates() {
   )
 }
 
+// 보강 기록 (어느 결강을 언제 보강했는지)
+async function loadMakeupLog(ym) {
+  return ok(await supabase.rpc('makeup_log', { p_ym: ym ?? null }))
+}
+
 // 직접 추가한 수업 · 보강 지우기
 async function removeSession(id) {
   return ok(await supabase.rpc('remove_session', { p_session: id }))
@@ -4171,6 +4176,131 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
 
 const ADD_DOW = ['일', '월', '화', '수', '목', '금', '토']
 
+/* ================= 보강 기록 (전체 · 달별 → 선생님별) ================= */
+function MakeupLog({ rows, staffOrder = [], ownerName, toneOf }) {
+  const rank = (n) => (n === ownerName ? -1 : staffOrder.indexOf(n) < 0 ? 99 : staffOrder.indexOf(n))
+  const md = (d) => (d ? d.slice(5).replace('-', '/') : '')
+  const hm2 = (t) => (t ? t.slice(0, 5) : '')
+
+  const months = useMemo(() => {
+    const m = {}
+    rows.forEach((r) => {
+      if (!m[r.ym]) m[r.ym] = {}
+      if (!m[r.ym][r.staff_name]) m[r.ym][r.staff_name] = []
+      m[r.ym][r.staff_name].push(r)
+    })
+    return Object.entries(m)
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .map(([ym, byStaff]) => {
+        const list = Object.values(byStaff).flat()
+        return {
+          ym,
+          total: list.length,
+          todo: list.filter((r) => !r.makeup_d).length,
+          groups: Object.entries(byStaff)
+            .sort((a, b) => rank(a[0]) - rank(b[0]))
+            .map(([name, items]) => ({
+              name,
+              // 아직 보강 안 한 것부터 위로, 보강 끝난 건 아래로
+              items: items.sort((a, b) => {
+                const at = a.makeup_d ? 1 : 0
+                const bt = b.makeup_d ? 1 : 0
+                if (at !== bt) return at - bt
+                return a.absent_d.localeCompare(b.absent_d)
+              }),
+              todo: items.filter((r) => !r.makeup_d).length,
+            })),
+        }
+      })
+  }, [rows, staffOrder, ownerName])
+
+  const done = rows.filter((r) => r.makeup_d).length
+  const todo = rows.length - done
+
+  if (!rows.length) return <Empty>아직 결강 기록이 없습니다.</Empty>
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 14, marginBottom: 12, flexWrap: 'wrap' }}>
+        <div style={{ fontSize: 15, fontWeight: 700 }}>보강 기록</div>
+        <span style={{ fontSize: 12.5, color: C.sub }}>결강한 수업을 언제 보강했는지 모아 둔 곳이에요</span>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 16, whiteSpace: 'nowrap' }}>
+          <span style={{ fontSize: 13, color: C.sub }}>
+            결강 <b style={{ fontSize: 15, color: C.ink }}>{rows.length}</b>건
+          </span>
+          <span style={{ fontSize: 13, color: C.sub }}>
+            보강함 <b style={{ fontSize: 15, color: '#1F5B3A' }}>{done}</b>건
+          </span>
+          <span style={{ fontSize: 13, color: C.sub }}>
+            아직 <b style={{ fontSize: 15, color: todo ? C.danger : C.mut }}>{todo}</b>건
+          </span>
+        </div>
+      </div>
+
+      {months.map((mth) => (
+        <Card key={mth.ym} style={{ marginBottom: 12, overflow: 'hidden' }}>
+          <div
+            style={{
+              padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10,
+              background: '#FBFBFC', borderBottom: `1px solid ${C.line2}`,
+            }}
+          >
+            <div style={{ fontSize: 14, fontWeight: 700 }}>{mth.ym.replace('-', '년 ')}월</div>
+            <span style={{ fontSize: 12, color: C.sub }}>결강 {mth.total}건</span>
+            {mth.todo > 0 ? <Pill tone="pink">아직 {mth.todo}건</Pill> : <Pill tone="green">모두 보강함</Pill>}
+          </div>
+
+          {mth.groups.map((g) => (
+            <div key={g.name}>
+              <div
+                style={{
+                  padding: '6px 14px', fontSize: 12.5, fontWeight: 700,
+                  background: toneOf ? toneOf(g.name).bg : '#F7F8F9',
+                  color: toneOf ? toneOf(g.name).fg : C.ink,
+                  borderBottom: `1px solid ${C.line2}`,
+                }}
+              >
+                {g.name} 선생님
+                <span style={{ fontWeight: 400, marginLeft: 7, opacity: 0.85 }}>{g.items.length}건</span>
+                {g.todo > 0 && <span style={{ fontWeight: 400, marginLeft: 7, opacity: 0.85 }}>· 아직 {g.todo}건</span>}
+              </div>
+              {g.items.map((r) => (
+                <div
+                  key={r.absent_id}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+                    padding: '9px 14px', borderBottom: `1px solid ${C.line2}`, fontSize: 13,
+                  }}
+                >
+                  <div style={{ fontWeight: 700, minWidth: 64 }}>{r.student_name}</div>
+                  <div style={{ color: C.sub, minWidth: 110, fontSize: 12 }}>{r.program_label}</div>
+                  <div style={{ color: C.danger, whiteSpace: 'nowrap' }}>
+                    {md(r.absent_d)} {hm2(r.absent_start)} 결강
+                  </div>
+                  <div style={{ color: C.mut }}>→</div>
+                  {r.makeup_d ? (
+                    <div style={{ fontWeight: 700, color: '#1F5B3A', whiteSpace: 'nowrap' }}>
+                      {md(r.makeup_d)} {hm2(r.makeup_start)} 보강
+                    </div>
+                  ) : (
+                    <Pill tone="pink">아직</Pill>
+                  )}
+                  {r.by_other && (
+                    <span style={{ fontSize: 11.5, color: C.sub, background: '#F2F3F5', borderRadius: 99, padding: '2px 8px' }}>
+                      {r.makeup_staff} 선생님이 함
+                    </span>
+                  )}
+                  {r.note && <span style={{ fontSize: 11.5, color: C.mut, marginLeft: 'auto' }}>{r.note}</span>}
+                </div>
+              ))}
+            </div>
+          ))}
+        </Card>
+      ))}
+    </div>
+  )
+}
+
 function AddSessionModal({ students, staff, programs, absent, pairs = [], onClose, onSave, busy }) {
   const linked = !!absent
   const [staffId, setStaffId] = useState(absent?.staff_id || staff[0]?.id || '')
@@ -5377,6 +5507,8 @@ function App() {
   const [ttPrint, setTtPrint] = useState(false)
   const [receiptExtras, setReceiptExtras] = useState([])
   const [payHistory, setPayHistory] = useState([])
+  const [makeupTab, setMakeupTab] = useState('todo')
+  const [makeupLog, setMakeupLog] = useState([])
 
   // 어느 선생님이 어느 아이를 가르치는지 (수업 추가 창에서 아이 목록을 고르는 데 씁니다)
   const teacherKidPairs = useMemo(() => {
@@ -5492,7 +5624,7 @@ function App() {
   }, [ym])
 
   const reloadMonth = useCallback(async () => {
-    const [b, bs, cl, r, pay, rev, pr, mc, rx, ph] = await Promise.all([
+    const [b, bs, cl, r, pay, rev, pr, mc, rx, ph, ml] = await Promise.all([
       isAdmin ? loadBilling(ym) : Promise.resolve([]),
       isAdmin ? loadBillingByStaff(ym) : Promise.resolve([]),
       loadClosings(ym),
@@ -5503,10 +5635,12 @@ function App() {
       isAdmin ? Promise.resolve(null) : loadMyClosing(closeYm),
       isAdmin ? loadReceiptExtras(ym).catch(() => []) : Promise.resolve([]),
       loadPayrollHistory().catch(() => []),
+      loadMakeupLog(null).catch(() => []),
     ])
     setBilling(b)
     setReceiptExtras(rx || [])
     setPayHistory(ph || [])
+    setMakeupLog(ml || [])
     setByStaff(bs)
     setClosings(cl)
     setReceipts(r)
@@ -6087,6 +6221,35 @@ function App() {
         )}
 
         {!loading && tab === 'month' && schedView === 'makeup' && (
+          <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 8, width: 'fit-content', marginBottom: 12 }}>
+            {[['todo', `아직 안 함 ${unmadeUp.length}`], ['log', '보강 기록']].map(([k, label]) => (
+              <button
+                key={k}
+                onClick={() => setMakeupTab(k)}
+                style={{
+                  border: 'none', cursor: 'pointer', padding: '5px 14px', borderRadius: 6,
+                  fontSize: 12.5, fontWeight: 600,
+                  background: makeupTab === k ? '#fff' : 'transparent',
+                  color: makeupTab === k ? C.ink : C.sub,
+                  boxShadow: makeupTab === k ? '0 1px 2px rgba(0,0,0,.06)' : 'none',
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {!loading && tab === 'month' && schedView === 'makeup' && makeupTab === 'log' && (
+          <MakeupLog
+            rows={makeupLog}
+            staffOrder={staff.map((x) => x.name)}
+            ownerName={staff.find((x) => x.role === 'admin')?.name}
+            toneOf={toneOf}
+          />
+        )}
+
+        {!loading && tab === 'month' && schedView === 'makeup' && makeupTab === 'todo' && (
           <Card style={{ overflow: 'hidden' }}>
             <div style={{ padding: '14px 18px', borderBottom: `1px solid ${C.line2}` }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
