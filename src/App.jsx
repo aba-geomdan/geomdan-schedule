@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
+import React, { useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef } from 'react'
 import ReactDOM from 'react-dom/client'
 import { createPortal } from 'react-dom'
 import { createClient } from '@supabase/supabase-js'
@@ -68,7 +68,17 @@ const ymOf = (d) =>
 const isoOf = (d) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 
-const hhmm = (t) => (t || '').slice(0, 5)
+const hhmm = (t) => (t || '').slice(0, 5)   // 입력칸 · 내부 비교용 (24시간 그대로)
+
+// 화면 · 인쇄용 12시간 표기 (새벽 수업이 없어 오전/오후는 안 붙입니다)
+//   13 → 1시,  14:30 → 2:30
+const h12 = (h) => ((Math.floor(Number(h)) + 11) % 12) + 1
+const hourLabel = (h) => `${h12(h)}시`
+const clock = (t) => {
+  if (!t) return ''
+  const [H, M] = String(t).slice(0, 5).split(':')
+  return `${h12(H)}:${M}`
+}
 
 const minutesBetween = (a, b) => {
   const [h1, m1] = a.split(':').map(Number)
@@ -336,6 +346,17 @@ async function loadPayrollHistory(from, to) {
 }
 async function markPayrollPaid(ym, staffId, on, memo) {
   return ok(await supabase.rpc('mark_payroll_paid', { p_ym: ym, p_staff: staffId, p_on: on ?? null, p_memo: memo ?? null }))
+}
+// 급여 추가지급 · 공제 (그 달 그 선생님)
+async function setPayrollExtras(ym, staffId, items) {
+  return ok(await supabase.rpc('set_payroll_extras', { p_ym: ym, p_staff: staffId, p_items: items }))
+}
+// 급여 직접 입력 · 지우기 (수업 없는 분 · 앱 쓰기 전 달)
+async function savePayrollManual(ym, staffId, pay, items, memo) {
+  return ok(await supabase.rpc('save_payroll_manual', { p_ym: ym, p_staff: staffId, p_pay: pay, p_items: items, p_memo: memo || null }))
+}
+async function deletePayrollManual(ym, staffId) {
+  return ok(await supabase.rpc('delete_payroll_manual', { p_ym: ym, p_staff: staffId }))
 }
 
 // 아동 상태 바꾸기 (퇴소·휴원은 '언제부터'를 같이 보냅니다)
@@ -753,7 +774,7 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                 color: '#B4B8BD',
               }}
             >
-              {String(Math.floor(m / 60)).padStart(2, '0')}:00
+              {hourLabel(Math.floor(m / 60))}
             </div>
           ))}
         </div>
@@ -840,7 +861,7 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                     </div>
                     {eh > 44 && n < 3 && (
                       <div style={{ fontSize: 9.5, color: OUTSIDE.tag, marginTop: 1 }}>
-                        {hhmm(e.start_time)}~{hhmm(e.end_time)}
+                        {clock(e.start_time)}~{clock(e.end_time)}
                       </div>
                     )}
                   </div>
@@ -860,7 +881,7 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                   <button
                     key={s.id}
                     onClick={() => onPick(s)}
-                    title={`${s.student_name} · ${s.staff_name} · ${hhmm(s.start_time)}-${hhmm(s.end_time)}`}
+                    title={`${s.student_name} · ${s.staff_name} · ${clock(s.start_time)}-${clock(s.end_time)}`}
                     style={{
                       position: 'absolute',
                       top: (toMin(s.start_time) - DAY_START) * PX,
@@ -909,7 +930,7 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                     </div>
                     {h > 44 && !narrow && (
                       <div style={{ fontSize: 10, color: tone.fg, opacity: 0.75 }}>
-                        {hhmm(s.start_time)}
+                        {clock(s.start_time)}
                       </div>
                     )}
                     {h > 40 && narrow && cols <= 2 && (
@@ -1181,7 +1202,7 @@ function MonthView({
                           <button
                             key={s.id}
                             disabled={busy}
-                            title={`${s.d.slice(5)} (${s.weekday}) ${hhmm(s.start_time)} · ${s.status}`}
+                            title={`${s.d.slice(5)} (${s.weekday}) ${clock(s.start_time)} · ${s.status}`}
                             onClick={() => onMark(s.id, s.status === '결강' ? '진행' : '결강')}
                             style={{
                               width: 34, height: 34, borderRadius: 8,
@@ -1255,7 +1276,7 @@ function TodayView({ today, weekMinutes, onMark, busy }) {
               <div key={s.id} style={{ padding: '13px 15px', borderBottom: `1px solid ${C.line2}` }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                   <div style={{ fontSize: 12.5, color: C.sub, minWidth: 44, fontWeight: 600 }}>
-                    {hhmm(s.start_time)}
+                    {clock(s.start_time)}
                   </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 16, fontWeight: 700 }}>{s.student_name}</div>
@@ -1417,56 +1438,517 @@ function MyClosingView({ ym, summary, closing, onSubmit, onPrevYm, onNextYm, bus
 /* ═════════════════ AdminViews.jsx ═════════════════ */
 
 /* ---------------- 정산 ---------------- */
-/* ================= 급여 기록 (마감 승인할 때 저장된 것) ================= */
-function PayrollHistory({ rows, staffOrder = [], ownerName, toneOf, busy, onPaid }) {
-  const rank = (n) => (n === ownerName ? -1 : staffOrder.indexOf(n) < 0 ? 99 : staffOrder.indexOf(n))
-  const [openYm, setOpenYm] = useState(null)
+/* ================= 급여 세금 계산 (DB의 pay_tax 와 같은 규칙) =================
+   소득세 = 과세금액 × 3%  (10원 미만 버림)
+   지방세 = 소득세 × 10%   (10원 미만 버림)
+   실지급 = 수업분 + 추가지급 − 소득세 − 지방세 − 공제
+   추가지급은 항목마다 '세금 포함' 여부, 공제(주차료 등)는 세금과 무관 */
+function payTax(pay, items = []) {
+  const list = Array.isArray(items) ? items : []
+  const amt = (x) => Math.max(0, Math.round(Number(x.amount) || 0))
+  const adds = list.filter((x) => x.kind === 'add').reduce((a, x) => a + amt(x), 0)
+  const addsTaxed = list.filter((x) => x.kind === 'add' && x.taxed !== false).reduce((a, x) => a + amt(x), 0)
+  const deducts = list.filter((x) => x.kind === 'deduct').reduce((a, x) => a + amt(x), 0)
+  const p = Math.round(Number(pay) || 0)
+  const gross = p + adds
+  const base = p + addsTaxed
+  const incomeTax = Math.floor((base * 3) / 1000) * 10
+  const localTax = Math.floor(incomeTax / 100) * 10
+  return { gross, base, incomeTax, localTax, deducts, net: gross - incomeTax - localTax - deducts }
+}
 
+// 항목 한 줄 요약: "주차료 −60,000 · 추가지급 +100,000(세금 없이)"
+const itemsText = (items) =>
+  (Array.isArray(items) ? items : [])
+    .map((x) =>
+      x.kind === 'deduct'
+        ? `${x.label} −${won(x.amount)}`
+        : `${x.label} +${won(x.amount)}${x.taxed === false ? '(세금 없이)' : ''}`
+    )
+    .join(' · ')
+
+/* 추가지급 · 공제 입력칸 (이 달 화면 · 직접 입력 둘 다 씀) */
+function ExtrasEditor({ items, setItems }) {
+  const inp = { fontSize: 13, padding: '7px 9px', border: '1px solid #DEE0E3', borderRadius: 7, minWidth: 0 }
+  const upd = (i, patch) => setItems(items.map((x, j) => (j === i ? { ...x, ...patch } : x)))
+  return (
+    <div>
+      {items.length === 0 && (
+        <div style={{ fontSize: 12.5, color: C.mut, padding: '4px 0 8px' }}>추가지급 · 공제가 없습니다.</div>
+      )}
+      {items.map((x, i) => (
+        <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 7, flexWrap: 'wrap' }}>
+          <span
+            style={{
+              fontSize: 11.5, fontWeight: 700, borderRadius: 99, padding: '3px 8px', whiteSpace: 'nowrap',
+              background: x.kind === 'deduct' ? '#F2F3F5' : '#EEF3FD',
+              color: x.kind === 'deduct' ? C.sub : '#254B8C',
+            }}
+          >
+            {x.kind === 'deduct' ? '− 공제' : '+ 추가'}
+          </span>
+          <input
+            value={x.label}
+            onChange={(e) => upd(i, { label: e.target.value })}
+            placeholder={x.kind === 'deduct' ? '주차료' : '추가지급'}
+            style={{ ...inp, flex: '1 1 90px' }}
+          />
+          <input
+            type="number"
+            inputMode="numeric"
+            min="0"
+            step="1"
+            value={x.amount}
+            onChange={(e) => upd(i, { amount: e.target.value })}
+            placeholder="금액"
+            style={{ ...inp, width: 110, textAlign: 'right' }}
+          />
+          {x.kind === 'add' ? (
+            <label style={{ fontSize: 12, color: C.sub, display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
+              <input type="checkbox" checked={x.taxed !== false} onChange={(e) => upd(i, { taxed: e.target.checked })} />
+              세금 포함
+            </label>
+          ) : (
+            <span style={{ fontSize: 12, color: C.mut, whiteSpace: 'nowrap' }}>세금 무관</span>
+          )}
+          <Btn variant="ghost" onClick={() => setItems(items.filter((_, j) => j !== i))} style={{ padding: '4px 8px', fontSize: 12 }}>
+            빼기
+          </Btn>
+        </div>
+      ))}
+      <div style={{ display: 'flex', gap: 6 }}>
+        <Btn onClick={() => setItems([...items, { kind: 'add', label: '추가지급', amount: '', taxed: true }])} style={{ padding: '5px 11px', fontSize: 12 }}>
+          + 추가지급
+        </Btn>
+        <Btn onClick={() => setItems([...items, { kind: 'deduct', label: '주차료', amount: '' }])} style={{ padding: '5px 11px', fontSize: 12 }}>
+          − 공제
+        </Btn>
+      </div>
+    </div>
+  )
+}
+
+// 저장 전에 항목 정리 · 확인 (문제 있으면 문구를 돌려줌)
+function cleanItems(items) {
+  const out = []
+  for (const x of items) {
+    const label = String(x.label || '').trim()
+    const amount = Math.round(Number(x.amount))
+    if (!label && !x.amount) continue
+    if (!label) return { error: '항목 이름을 적어주세요.' }
+    if (!(amount > 0)) return { error: `${label} — 금액을 넣어주세요.` }
+    out.push(x.kind === 'deduct' ? { kind: 'deduct', label, amount } : { kind: 'add', label, amount, taxed: x.taxed !== false })
+  }
+  return { items: out }
+}
+
+// 금액 · 소득세 · 지방세 · 실지급 네 칸
+function TaxLine({ gross, incomeTax, localTax, taxTotal, net, method, deducts }) {
+  const cell = (label, v, strong) => (label === '' ? <div /> :
+    <div style={{ textAlign: 'right', minWidth: 0 }}>
+      <div style={{ fontSize: 11, color: C.sub }}>{label}</div>
+      <div style={{ fontSize: strong ? 14.5 : 13, fontWeight: strong ? 700 : 500, color: strong ? C.pkd : C.ink }}>{won(v)}</div>
+    </div>
+  )
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 8 }}>
+      {cell('금액', gross)}
+      {method === '3.3%' ? (
+        <>
+          {cell('세금 3.3% (일괄)', taxTotal)}
+          {cell(deducts ? '공제' : '', deducts ? -deducts : '')}
+        </>
+      ) : (
+        <>
+          {cell('소득세 3%', incomeTax)}
+          {cell('지방세 10%', localTax)}
+        </>
+      )}
+      {cell('실지급액', net, true)}
+    </div>
+  )
+}
+
+/* 이 달 추가지급 · 공제 넣기 */
+function ExtrasModal({ ym, row, busy, onClose, onSave }) {
+  const [items, setItems] = useState(() => (row.extra_items || []).map((x) => ({ ...x })))
+  const [err, setErr] = useState('')
+  const t = payTax(row.pay || 0, items)
+  return (
+    <Modal onClose={onClose} max={520}>
+      <div style={{ padding: '16px 18px', borderBottom: `1px solid ${C.line2}` }}>
+        <div style={{ fontSize: 17, fontWeight: 700 }}>{row.staff_name} 추가지급 · 공제</div>
+        <div style={{ fontSize: 12.5, color: C.sub, marginTop: 3 }}>
+          {ym.replace('-', '년 ')}월 · 수업분 {won(row.pay || 0)}원
+        </div>
+      </div>
+      <div style={{ padding: 18 }}>
+        <ExtrasEditor items={items} setItems={(v) => { setItems(v); setErr('') }} />
+        <div style={{ marginTop: 16, padding: 12, background: '#FAFAFB', borderRadius: 10 }}>
+          <TaxLine gross={t.gross} incomeTax={t.incomeTax} localTax={t.localTax} net={t.net} />
+          {t.deducts > 0 && (
+            <div style={{ fontSize: 11.5, color: C.sub, marginTop: 6, textAlign: 'right' }}>공제 {won(t.deducts)}원 뺀 금액</div>
+          )}
+        </div>
+        {err && <div style={{ color: C.danger, fontSize: 12.5, marginTop: 10 }}>{err}</div>}
+        <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+          <Btn onClick={onClose} style={{ flex: 1 }}>닫기</Btn>
+          <Btn
+            variant="primary"
+            disabled={busy}
+            style={{ flex: 2 }}
+            onClick={async () => {
+              const c = cleanItems(items)
+              if (c.error) return setErr(c.error)
+              if (await onSave(c.items)) onClose()
+            }}
+          >
+            저장
+          </Btn>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+/* 급여 직접 입력 (수업이 없는 분 · 앱 쓰기 전 달) */
+function ManualPayModal({ staff, rec, busy, onClose, onSave, onDelete }) {
+  const inp = { width: '100%', fontSize: 14, padding: '9px 11px', border: '1px solid #DEE0E3', borderRadius: 8, boxSizing: 'border-box' }
+  const [staffId, setStaffId] = useState(rec?.staff_id || staff[0]?.id || '')
+  const [ym, setYm] = useState(rec?.ym || ymOf(new Date()))
+  const [pay, setPay] = useState(rec ? String(rec.pay) : '')
+  const [items, setItems] = useState(() => (rec?.extra_items || []).map((x) => ({ ...x })))
+  const [memo, setMemo] = useState(rec?.memo || '')
+  const [err, setErr] = useState('')
+  const t = payTax(Number(pay) || 0, items)
+  return (
+    <Modal onClose={onClose} max={520}>
+      <div style={{ padding: '16px 18px', borderBottom: `1px solid ${C.line2}` }}>
+        <div style={{ fontSize: 17, fontWeight: 700 }}>{rec ? '급여 기록 고치기' : '급여 직접 입력'}</div>
+        <div style={{ fontSize: 12.5, color: C.sub, marginTop: 3, lineHeight: 1.6 }}>
+          수업 기록이 없는 달이나 실장님처럼 수업이 없는 분 급여를 넣습니다. 세금은 3% + 지방세 10%로 자동 계산돼요.
+        </div>
+      </div>
+      <div style={{ padding: 18, display: 'grid', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <label style={{ fontSize: 12, color: C.sub }}>
+            이름
+            <select value={staffId} disabled={!!rec} onChange={(e) => setStaffId(e.target.value)} style={{ ...inp, marginTop: 4 }}>
+              {staff.map((s) => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+          </label>
+          <label style={{ fontSize: 12, color: C.sub }}>
+            몇 월분
+            <input type="month" value={ym} disabled={!!rec} onChange={(e) => setYm(e.target.value)} style={{ ...inp, marginTop: 4 }} />
+          </label>
+        </div>
+        <label style={{ fontSize: 12, color: C.sub }}>
+          금액 (세금 떼기 전)
+          <input
+            type="number" inputMode="numeric" min="0" step="1" value={pay}
+            onChange={(e) => { setPay(e.target.value); setErr('') }}
+            placeholder="3000000" style={{ ...inp, marginTop: 4, textAlign: 'right' }}
+          />
+        </label>
+        <div>
+          <div style={{ fontSize: 12, color: C.sub, marginBottom: 6 }}>추가지급 · 공제</div>
+          <ExtrasEditor items={items} setItems={(v) => { setItems(v); setErr('') }} />
+        </div>
+        <label style={{ fontSize: 12, color: C.sub }}>
+          메모
+          <input value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="실장님" style={{ ...inp, marginTop: 4 }} />
+        </label>
+        <div style={{ padding: 12, background: '#FAFAFB', borderRadius: 10 }}>
+          <TaxLine gross={t.gross} incomeTax={t.incomeTax} localTax={t.localTax} net={t.net} />
+        </div>
+        {err && <div style={{ color: C.danger, fontSize: 12.5 }}>{err}</div>}
+        <div style={{ display: 'flex', gap: 8 }}>
+          {rec && (
+            <Btn variant="danger" disabled={busy} onClick={async () => { if (await onDelete(rec)) onClose() }}>
+              지우기
+            </Btn>
+          )}
+          <Btn onClick={onClose} style={{ flex: 1 }}>닫기</Btn>
+          <Btn
+            variant="primary"
+            disabled={busy}
+            style={{ flex: 2 }}
+            onClick={async () => {
+              if (!staffId) return setErr('이름을 골라주세요.')
+              if (!/^\d{4}-\d{2}$/.test(ym)) return setErr('몇 월분인지 골라주세요.')
+              const p = Math.round(Number(pay))
+              if (pay === '' || !(p >= 0)) return setErr('금액을 넣어주세요.')
+              const c = cleanItems(items)
+              if (c.error) return setErr(c.error)
+              if (await onSave({ ym, staffId, pay: p, items: c.items, memo })) onClose()
+            }}
+          >
+            저장
+          </Btn>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+/* 연도별 합계 인쇄 */
+function YearPrint({ year, rows, onClose }) {
+  return createPortal(
+    <div className="yp-root">
+      <style>{`
+        .yp-root { position: fixed; inset: 0; z-index: 90; background: #fff; overflow: auto; }
+        .yp-sheet { max-width: 760px; margin: 0 auto; padding: 24px 20px; font-family: inherit; color: #1D2023; }
+        .yp-sheet table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        .yp-sheet th, .yp-sheet td { border: 1px solid #C9CCD1; padding: 7px 9px; }
+        .yp-sheet th { background: #F4F5F7; font-weight: 700; }
+        .yp-sheet td.n { text-align: right; white-space: nowrap; }
+        @media print {
+          @page { size: A4 portrait; margin: 14mm; }
+          html, body { height: auto !important; overflow: visible !important; background: #fff !important; }
+          body > *:not(.yp-root) { display: none !important; }
+          .yp-root { position: static !important; overflow: visible !important; }
+          .yp-bar { display: none !important; }
+          .yp-sheet { padding: 0; max-width: none; }
+        }
+      `}</style>
+      <div className="yp-bar" style={{ position: 'sticky', top: 0, background: '#fff', borderBottom: `1px solid ${C.line}`, padding: '12px 16px', display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div style={{ fontSize: 15, fontWeight: 700 }}>{year}년 급여 합계 인쇄</div>
+        <Btn onClick={onClose} style={{ marginLeft: 'auto' }}>닫기</Btn>
+        <Btn variant="primary" onClick={() => window.print()}>인쇄</Btn>
+      </div>
+      <div className="yp-sheet">
+        <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>검단ABA언어행동연구소 {year}년 급여 합계</div>
+        <div style={{ fontSize: 12, color: '#6B7079', marginBottom: 14 }}>
+          근무월 기준 (12월분은 그해에 포함) · 세금 = 소득세 + 지방세 (3.3% 일괄 달은 기록된 3.3%)
+        </div>
+        <YearTable rows={rows} print />
+      </div>
+    </div>,
+    document.body
+  )
+}
+
+function YearTable({ rows, print }) {
+  const tot = rows.reduce(
+    (a, r) => ({ months: a.months + r.months, gross: a.gross + r.gross, it: a.it + r.it, lt: a.lt + r.lt, flat: a.flat + r.flat, tax: a.tax + r.tax, net: a.net + r.net }),
+    { months: 0, gross: 0, it: 0, lt: 0, flat: 0, tax: 0, net: 0 }
+  )
+  const taxSub = (r) =>
+    [r.flat ? `3.3% ${won(r.flat)}` : '', r.it ? `소득세 ${won(r.it)}` : '', r.lt ? `지방세 ${won(r.lt)}` : '']
+      .filter(Boolean)
+      .join(' · ')
+  const td = print ? {} : { padding: '8px 10px', textAlign: 'right', whiteSpace: 'nowrap' }
+  return (
+    <table style={print ? undefined : { width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 520 }}>
+      <thead>
+        <tr style={print ? undefined : { background: '#FBFBFC', color: C.sub }}>
+          {['이름', '개월', '금액', '세금', '실지급액'].map((h, i) => (
+            <th key={h} style={print ? { textAlign: i ? 'right' : 'left' } : { padding: '8px 10px', textAlign: i ? 'right' : 'left', fontWeight: 600, borderBottom: `1px solid ${C.line}` }}>
+              {h}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r) => (
+          <tr key={r.name} style={print ? undefined : { borderBottom: `1px solid ${C.line2}` }}>
+            <td style={print ? undefined : { padding: '8px 10px', fontWeight: 700 }}>{r.name}</td>
+            <td className="n" style={td}>{r.months}</td>
+            <td className="n" style={td}>{won(r.gross)}</td>
+            <td className="n" style={td}>
+              {won(r.tax)}
+              <div style={{ fontSize: 10.5, color: '#8A8F97', fontWeight: 400 }}>{taxSub(r)}</div>
+            </td>
+            <td className="n" style={{ ...td, fontWeight: 700 }}>{won(r.net)}</td>
+          </tr>
+        ))}
+      </tbody>
+      <tfoot>
+        <tr style={print ? { fontWeight: 700 } : { background: C.pkl, fontWeight: 700 }}>
+          <td style={print ? undefined : { padding: '9px 10px' }}>합계</td>
+          <td className="n" style={td}>{tot.months}</td>
+          <td className="n" style={td}>{won(tot.gross)}</td>
+          <td className="n" style={td}>
+            {won(tot.tax)}
+            <div style={{ fontSize: 10.5, color: '#8A8F97', fontWeight: 400 }}>{taxSub(tot)}</div>
+          </td>
+          <td className="n" style={{ ...td, color: print ? undefined : C.pkd }}>{won(tot.net)}</td>
+        </tr>
+      </tfoot>
+    </table>
+  )
+}
+
+// 기록 한 줄의 숫자 (예전 기록에 세금 칸이 비어 있으면 그 자리에서 계산)
+function recNums(r) {
+  if (r.net_pay != null) {
+    const ded = (r.extra_items || []).filter((x) => x.kind === 'deduct').reduce((a, x) => a + (Number(x.amount) || 0), 0)
+    return {
+      gross: r.gross ?? r.pay ?? 0,
+      it: r.income_tax || 0,
+      lt: r.local_tax || 0,
+      tax: r.tax_total ?? (r.income_tax || 0) + (r.local_tax || 0),
+      net: r.net_pay,
+      ded,
+    }
+  }
+  const t = payTax(r.pay || 0, r.extra_items || [])
+  return { gross: t.gross, it: t.incomeTax, lt: t.localTax, tax: t.incomeTax + t.localTax, net: t.net, ded: t.deducts }
+}
+
+/* ================= 급여 기록 (마감 · 직접 입력 · 엑셀에서 옮긴 것) ================= */
+function PayrollHistory({ rows, staffOrder = [], ownerName, toneOf, busy, onPaid, allStaff = [], onSaveManual, onDeleteManual }) {
+  const rank = (n) => (n === ownerName ? -1 : staffOrder.indexOf(n) < 0 ? 99 : staffOrder.indexOf(n))
+  const [view, setView] = useState('month')
+  const [manual, setManual] = useState(null) // null | 'new' | 기록
+  const [printYear, setPrintYear] = useState(null)
+  const [showAll, setShowAll] = useState(false)
+
+  const isLegacy = (r) => r.source === '엑셀'
   const months = useMemo(() => {
     const m = {}
     rows.forEach((r) => {
-      if (!m[r.ym]) m[r.ym] = { ym: r.ym, list: [], total: 0, unpaid: 0 }
+      if (!m[r.ym]) m[r.ym] = { ym: r.ym, list: [], total: 0, unpaid: 0, legacy: true }
+      const n = recNums(r)
       m[r.ym].list.push(r)
-      m[r.ym].total += r.pay || 0
-      if (!r.paid_on) m[r.ym].unpaid += r.pay || 0
+      m[r.ym].total += n.net
+      if (!isLegacy(r)) m[r.ym].legacy = false
+      if (!r.paid_on && !isLegacy(r)) m[r.ym].unpaid += n.net
     })
     return Object.values(m)
-      .map((g) => ({ ...g, list: g.list.sort((a, b) => rank(a.staff_name) - rank(b.staff_name)) }))
+      .map((g) => ({ ...g, list: g.list.sort((a, b) => rank(a.staff_name) - rank(b.staff_name) || a.staff_name.localeCompare(b.staff_name, 'ko')) }))
       .sort((a, b) => b.ym.localeCompare(a.ym))
   }, [rows, staffOrder, ownerName])
 
-  const byStaffTotal = useMemo(() => {
-    const m = {}
+  // 연도별 · 사람별 합계 (근무월 기준)
+  const years = useMemo(() => {
+    const y = {}
     rows.forEach((r) => {
-      if (!m[r.staff_name]) m[r.staff_name] = 0
-      m[r.staff_name] += r.pay || 0
+      const yr = r.ym.slice(0, 4)
+      if (!y[yr]) y[yr] = {}
+      if (!y[yr][r.staff_name]) y[yr][r.staff_name] = { name: r.staff_name, months: 0, gross: 0, it: 0, lt: 0, flat: 0, tax: 0, net: 0 }
+      const a = y[yr][r.staff_name]
+      const n = recNums(r)
+      a.months += 1
+      a.gross += n.gross
+      a.net += n.net
+      a.tax += n.tax
+      if (r.tax_method === '3.3%') a.flat += n.tax
+      else {
+        a.it += n.it
+        a.lt += n.lt
+      }
     })
-    return Object.entries(m).sort((a, b) => rank(a[0]) - rank(b[0]))
+    return Object.keys(y)
+      .sort((a, b) => b.localeCompare(a))
+      .map((yr) => ({
+        year: yr,
+        rows: Object.values(y[yr]).sort((a, b) => rank(a.name) - rank(b.name) || a.name.localeCompare(b.name, 'ko')),
+      }))
   }, [rows, staffOrder, ownerName])
+  const [year, setYear] = useState(null)
+  const curYear = years.find((x) => x.year === year) || years[0]
 
-  const grand = rows.reduce((a, b) => a + (b.pay || 0), 0)
-  const unpaid = rows.filter((r) => !r.paid_on).reduce((a, b) => a + (b.pay || 0), 0)
+  const unpaid = months.reduce((a, g) => a + g.unpaid, 0)
+  const shownMonths = showAll ? months : months.slice(0, 6)
+
+  const header = (
+    <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 8 }}>
+        {[['month', '달별'], ['year', '연도별 합계']].map(([k, label]) => (
+          <button
+            key={k}
+            onClick={() => setView(k)}
+            style={{
+              border: 'none', cursor: 'pointer', padding: '5px 12px', borderRadius: 6, fontSize: 12.5, fontWeight: 600,
+              background: view === k ? '#fff' : 'transparent', color: view === k ? C.ink : C.sub,
+              boxShadow: view === k ? '0 1px 2px rgba(0,0,0,.06)' : 'none',
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <Btn onClick={() => setManual('new')} disabled={busy} style={{ marginLeft: 'auto', padding: '6px 12px', fontSize: 12.5 }}>
+        + 직접 입력
+      </Btn>
+    </div>
+  )
+
+  const modal = manual && (
+    <ManualPayModal
+      staff={allStaff}
+      rec={manual === 'new' ? null : manual}
+      busy={busy}
+      onClose={() => setManual(null)}
+      onSave={onSaveManual}
+      onDelete={onDeleteManual}
+    />
+  )
 
   if (!rows.length)
     return (
-      <Empty>
-        아직 급여 기록이 없습니다. 마감을 <b>승인</b>하면 그 달 급여가 금액까지 여기에 저장됩니다.
-      </Empty>
+      <div>
+        {header}
+        <Empty>
+          아직 급여 기록이 없습니다. 마감을 <b>승인</b>하면 그 달 급여가 금액까지 여기에 저장됩니다.
+        </Empty>
+        {modal}
+      </div>
+    )
+
+  if (view === 'year')
+    return (
+      <div>
+        {header}
+        <div style={{ display: 'flex', gap: 6, marginBottom: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+          {years.map((y) => (
+            <button
+              key={y.year}
+              onClick={() => setYear(y.year)}
+              style={{
+                border: `1px solid ${curYear?.year === y.year ? C.pkd : '#DEE0E3'}`, borderRadius: 99, cursor: 'pointer',
+                padding: '4px 12px', fontSize: 12.5, fontWeight: 700,
+                background: curYear?.year === y.year ? C.pkl : '#fff', color: curYear?.year === y.year ? C.pkd : C.sub,
+              }}
+            >
+              {y.year}
+            </button>
+          ))}
+          <Btn onClick={() => setPrintYear(curYear?.year)} style={{ marginLeft: 'auto', padding: '6px 12px', fontSize: 12.5 }}>
+            인쇄
+          </Btn>
+        </div>
+        {curYear && (
+          <Card style={{ overflow: 'auto' }}>
+            <YearTable rows={curYear.rows} />
+          </Card>
+        )}
+        <div style={{ fontSize: 12, color: C.sub, marginTop: 8, lineHeight: 1.7 }}>
+          근무월 기준이에요 (12월분은 그해에 들어갑니다). 금액은 세금 떼기 전, 실지급액은 세금·공제를 뺀 금액입니다.
+          그만둔 선생님 기록도 함께 나옵니다.
+        </div>
+        {printYear && curYear && <YearPrint year={curYear.year} rows={curYear.rows} onClose={() => setPrintYear(null)} />}
+        {modal}
+      </div>
     )
 
   return (
     <div>
+      {header}
       <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
-        <Stat label={`기록된 급여 (${months.length}개월)`} value={`${won(grand)}원`} />
-        <Stat label="아직 이체 안 함" value={`${won(unpaid)}원`} tone={unpaid > 0 ? C.danger : C.mut} />
+        <Stat label={`기록된 달 ${months.length}개월`} value={`${won(months.reduce((a, g) => a + g.total, 0))}원`} />
+        <Stat label="아직 이체 안 함 (실지급)" value={`${won(unpaid)}원`} tone={unpaid > 0 ? C.danger : C.mut} />
       </div>
 
       <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.75, marginBottom: 12 }}>
-        마감을 <b>승인</b>할 때 그 달 급여가 그대로 저장됩니다. 나중에 단가나 출결을 고쳐도 이 금액은 바뀌지 않아요.
-        이체하신 뒤 <b>이체함</b>을 누르면 날짜가 남습니다.
+        마감하면 그 달 급여가 세금까지 계산돼 저장됩니다. 이체하신 뒤 <b>이체함</b>을 누르면 날짜가 남아요.
+        <b> 엑셀</b> 표시는 예전 엑셀에서 옮긴 기록입니다.
       </div>
 
-      {months.map((g) => (
+      {shownMonths.map((g) => (
         <Card key={g.ym} style={{ marginBottom: 12, overflow: 'hidden' }}>
           <div
             style={{
@@ -1476,79 +1958,91 @@ function PayrollHistory({ rows, staffOrder = [], ownerName, toneOf, busy, onPaid
           >
             <div style={{ fontSize: 14, fontWeight: 700 }}>{g.ym.replace('-', '년 ')}월분</div>
             <span style={{ fontSize: 12, color: C.sub }}>{g.list.length}명</span>
-            {g.unpaid > 0 ? (
+            {g.legacy ? (
+              <Pill tone="gray">엑셀 기록</Pill>
+            ) : g.unpaid > 0 ? (
               <Pill tone="pink">이체 전 {won(g.unpaid)}원</Pill>
             ) : (
               <Pill tone="green">이체 완료</Pill>
             )}
-            <div style={{ marginLeft: 'auto', fontSize: 16, fontWeight: 700 }}>{won(g.total)}원</div>
+            <div style={{ marginLeft: 'auto', fontSize: 16, fontWeight: 700 }}>
+              {won(g.total)}원
+              <span style={{ fontSize: 11, color: C.sub, fontWeight: 500, marginLeft: 4 }}>실지급</span>
+            </div>
           </div>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <tbody>
-              {g.list.map((r) => (
-                <tr key={r.staff_id} style={{ borderBottom: `1px solid ${C.line2}` }}>
-                  <td style={{ padding: '9px 14px', fontWeight: 700, whiteSpace: 'nowrap' }}>
-                    <span style={{ color: toneOf ? toneOf(r.staff_name).fg : C.ink }}>{r.staff_name}</span>
-                  </td>
-                  <td style={{ padding: '9px 8px', color: C.sub, whiteSpace: 'nowrap' }}>
-                    회차 {r.lesson_count}
-                    {r.makeup_count > 0 && ` (보강 ${r.makeup_count})`}
-                  </td>
-                  <td style={{ padding: '9px 8px', color: C.sub, textAlign: 'right', whiteSpace: 'nowrap' }}>
-                    수강료 {won(r.tuition)}
-                  </td>
-                  <td style={{ padding: '9px 8px', textAlign: 'right', fontWeight: 700, whiteSpace: 'nowrap' }}>
-                    {won(r.pay)}원
-                  </td>
-                  <td style={{ padding: '9px 8px', textAlign: 'right', whiteSpace: 'nowrap' }}>
-                    {r.paid_on ? (
-                      <span style={{ fontSize: 12, color: '#1F5B3A' }}>{r.paid_on.slice(5).replace('-', '/')} 이체</span>
-                    ) : (
-                      <span style={{ fontSize: 12, color: C.mut }}>—</span>
-                    )}
-                  </td>
-                  <td style={{ padding: '9px 14px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+          {g.list.map((r) => {
+            const n = recNums(r)
+            const extra = itemsText(r.extra_items)
+            const sessions = r.source === '앱' ? `회차 ${r.lesson_count}${r.makeup_count > 0 ? ` (보강 ${r.makeup_count})` : ''}` : r.sessions_text ? `회기 ${r.sessions_text}` : ''
+            return (
+              <div key={r.staff_id} style={{ padding: '10px 14px', borderBottom: `1px solid ${C.line2}` }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 7 }}>
+                  <span style={{ fontWeight: 700, fontSize: 13.5, color: toneOf ? toneOf(r.staff_name).fg : C.ink }}>{r.staff_name}</span>
+                  {sessions && <span style={{ fontSize: 12, color: C.sub }}>{sessions}</span>}
+                  {r.source === '엑셀' && <Pill tone="gray">엑셀</Pill>}
+                  {r.source === '직접' && <Pill tone="blue">직접 입력</Pill>}
+                  <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                     {r.pay_now != null && r.pay_now !== r.pay && (
                       <span
-                        title={`지금 다시 계산하면 ${won(r.pay_now)}원 (기록은 승인 당시 금액)`}
-                        style={{
-                          fontSize: 11, color: '#8A5A00', background: '#FEF6E7',
-                          borderRadius: 99, padding: '2px 8px', marginRight: 7, whiteSpace: 'nowrap',
-                        }}
+                        title={`지금 다시 계산하면 수업분 ${won(r.pay_now)}원 (기록은 마감 당시 금액)`}
+                        style={{ fontSize: 11, color: '#8A5A00', background: '#FEF6E7', borderRadius: 99, padding: '2px 8px', whiteSpace: 'nowrap' }}
                       >
                         지금 {won(r.pay_now)}
                       </span>
                     )}
-                    <Btn
-                      variant={r.paid_on ? 'default' : 'ok'}
-                      disabled={busy}
-                      onClick={() => onPaid(r.ym, r.staff_id, r.paid_on ? null : undefined)}
-                      style={{ padding: '5px 11px', fontSize: 12 }}
-                    >
-                      {r.paid_on ? '이체 취소' : '이체함'}
-                    </Btn>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                    {r.source === '직접' && !r.paid_on && (
+                      <Btn disabled={busy} onClick={() => setManual(r)} style={{ padding: '4px 10px', fontSize: 12 }}>
+                        고치기
+                      </Btn>
+                    )}
+                    {r.source !== '엑셀' &&
+                      (r.paid_on ? (
+                        <>
+                          <span style={{ fontSize: 12, color: '#1F5B3A' }}>{r.paid_on.slice(5).replace('-', '/')} 이체</span>
+                          <Btn disabled={busy} onClick={() => onPaid(r.ym, r.staff_id, null)} style={{ padding: '4px 10px', fontSize: 12 }}>
+                            이체 취소
+                          </Btn>
+                        </>
+                      ) : (
+                        <Btn variant="ok" disabled={busy} onClick={() => onPaid(r.ym, r.staff_id, undefined)} style={{ padding: '4px 10px', fontSize: 12 }}>
+                          이체함
+                        </Btn>
+                      ))}
+                  </span>
+                </div>
+                <TaxLine
+                  gross={n.gross}
+                  incomeTax={n.it}
+                  localTax={n.lt}
+                  taxTotal={n.tax}
+                  net={n.net}
+                  method={r.tax_method}
+                  deducts={n.ded}
+                />
+                {(extra || r.memo) && (
+                  <div style={{ fontSize: 11.5, color: C.sub, marginTop: 6, lineHeight: 1.6 }}>
+                    {extra}
+                    {extra && r.memo ? ' · ' : ''}
+                    {r.memo}
+                  </div>
+                )}
+              </div>
+            )
+          })}
         </Card>
       ))}
 
-      <Card style={{ padding: 14 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>선생님별 합계</div>
-        {byStaffTotal.map(([n, v]) => (
-          <div key={n} style={{ display: 'flex', fontSize: 13, padding: '4px 0' }}>
-            <span style={{ color: toneOf ? toneOf(n).fg : C.ink, fontWeight: 600 }}>{n}</span>
-            <span style={{ marginLeft: 'auto', fontWeight: 700 }}>{won(v)}원</span>
-          </div>
-        ))}
-      </Card>
+      {months.length > 6 && (
+        <Btn onClick={() => setShowAll(!showAll)} style={{ width: '100%', marginBottom: 12 }}>
+          {showAll ? '최근 6개월만 보기' : `지난 기록 ${months.length - 6}개월 더 보기`}
+        </Btn>
+      )}
+      {modal}
     </div>
   )
 }
 
-function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onPrintAll, onSetRate, onDetail, busy, closing, closings = [], onClose, staffOrder = [], ownerName, payHistory = [], onPayrollPaid, toneOf }) {
+function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onPrintAll, onSetRate, onDetail, busy, closing, closings = [], onClose, staffOrder = [], ownerName, payHistory = [], onPayrollPaid, toneOf, allStaff = [], onSaveExtras, onSaveManual, onDeleteManual }) {
   // 이 달 마감한 선생님
   const closedSet = useMemo(() => new Set((closings || []).filter((c) => c.status === '승인').map((c) => c.staff_name)), [closings])
   // 정산 화면 선생님 순서: 원장님은 맨 위 고정, 나머지는 등록 순서 (금액과 상관없이 늘 같은 자리)
@@ -1563,6 +2057,12 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
   const receiptShown = useMemo(() => new Set(), [byStaff, group])
   const [detailFor, setDetailFor] = useState(null)
   const [detail, setDetail] = useState(null)
+  const [extrasFor, setExtrasFor] = useState(null)
+  // 이 달 급여가 이미 이체 표시된 선생님 (추가지급 · 공제를 못 고침)
+  const paidSet = useMemo(
+    () => new Set((payHistory || []).filter((r) => r.ym === ym && r.paid_on).map((r) => r.staff_id)),
+    [payHistory, ym]
+  )
 
   const openDetail = async (r) => {
     setDetailFor(r)
@@ -1682,6 +2182,9 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
               toneOf={toneOf}
               busy={busy}
               onPaid={onPayrollPaid}
+              allStaff={allStaff}
+              onSaveManual={onSaveManual}
+              onDeleteManual={onDeleteManual}
             />
           ) : (
         <div>
@@ -1695,7 +2198,7 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 660 }}>
               <thead>
                 <tr style={{ background: '#FBFBFC', color: C.sub }}>
-                  {['선생님', '비율', '회차', '보강', '시수', '수강료', '급여', '미보강', ''].map((h, i) => (
+                  {['선생님', '비율', '회차', '보강', '시수', '수강료', '수업분', '미보강', '', ''].map((h, i) => (
                     <th
                       key={i}
                       style={{
@@ -1714,13 +2217,14 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
               <tbody>
                 {(payroll || []).length === 0 && (
                   <tr>
-                    <td colSpan={9}>
+                    <td colSpan={10}>
                       <Empty>이 달 수업 기록이 없습니다.</Empty>
                     </td>
                   </tr>
                 )}
                 {[...(payroll || [])].sort((a, b) => moneyOrder(a.staff_name, a.pay ?? a.tuition, b.staff_name, b.pay ?? b.tuition)).map((r) => (
-                  <tr key={r.staff_id} style={{ borderBottom: `1px solid ${C.line2}` }}>
+                  <React.Fragment key={r.staff_id}>
+                  <tr>
                     <td style={{ padding: '9px 12px', fontWeight: 700 }}>{r.staff_name}</td>
                     <td style={{ padding: '9px 12px' }}>
                       <input
@@ -1782,6 +2286,34 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
                       </Btn>
                     </td>
                   </tr>
+                  <tr style={{ borderBottom: `1px solid ${C.line2}` }}>
+                    <td colSpan={10} style={{ padding: '0 12px 10px' }}>
+                      <div style={{ background: '#FAFAFB', borderRadius: 9, padding: '9px 12px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 7 }}>
+                          <span style={{ fontSize: 12, color: C.sub }}>
+                            {(r.extra_items || []).length ? itemsText(r.extra_items) : '추가지급 · 공제 없음'}
+                          </span>
+                          {paidSet.has(r.staff_id) ? (
+                            <span style={{ marginLeft: 'auto', fontSize: 11.5, color: C.mut }}>이체 표시한 달 — 고치려면 이체 취소</span>
+                          ) : (
+                            <Btn
+                              disabled={busy}
+                              onClick={() => setExtrasFor(r)}
+                              style={{ marginLeft: 'auto', padding: '4px 10px', fontSize: 12 }}
+                            >
+                              추가지급 · 공제
+                            </Btn>
+                          )}
+                        </div>
+                        {r.pay == null ? (
+                          <div style={{ fontSize: 12, color: C.mut }}>비율을 넣으면 세금이 계산됩니다.</div>
+                        ) : (
+                          <TaxLine gross={r.gross} incomeTax={r.income_tax} localTax={r.local_tax} net={r.net_pay} />
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                  </React.Fragment>
                 ))}
               </tbody>
               {(payroll || []).length > 0 && (
@@ -1804,15 +2336,38 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
                     <td style={{ padding: '10px 12px', textAlign: 'right', color: C.pkd }}>
                       {won(payroll.reduce((a, b) => a + (b.pay || 0), 0))}원
                     </td>
-                    <td colSpan={2} />
+                    <td colSpan={3} />
+                  </tr>
+                  <tr style={{ background: C.pkl }}>
+                    <td colSpan={10} style={{ padding: '4px 12px 12px' }}>
+                      {(() => {
+                        const ok = payroll.filter((b) => b.pay != null)
+                        const sum = (k) => ok.reduce((a, b) => a + (b[k] || 0), 0)
+                        return (
+                          <TaxLine gross={sum('gross')} incomeTax={sum('income_tax')} localTax={sum('local_tax')} net={sum('net_pay')} />
+                        )
+                      })()}
+                    </td>
                   </tr>
                 </tfoot>
               )}
             </table>
           </Card>
-          <div style={{ fontSize: 12, color: C.sub }}>
+          <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.7 }}>
             비율 칸에 숫자를 넣고 다른 곳을 누르면 저장됩니다. 60이면 60%예요.
+            <br />
+            세금: 소득세 = 금액 × 3%, 지방세 = 소득세 × 10% (둘 다 10원 미만 버림). 공제(주차료 등)는 세금과 상관없이 실지급에서만 빠집니다.
           </div>
+
+          {extrasFor && (
+            <ExtrasModal
+              ym={ym}
+              row={extrasFor}
+              busy={busy}
+              onClose={() => setExtrasFor(null)}
+              onSave={(items) => onSaveExtras(extrasFor.staff_id, items)}
+            />
+          )}
 
           {detailFor && (
             <Modal onClose={() => setDetailFor(null)} max={420}>
@@ -2433,7 +2988,7 @@ function StudentModal({ student, staff, onClose, onSave, onRemove, busy }) {
         </Field>
         <Field label="담당 선생님">
           <select value={main} onChange={(e) => setMain(e.target.value)} style={inp}>
-            {staff.map((s) => (
+            {staff.filter((s) => s.active || s.id === main).map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name}
               </option>
@@ -2664,7 +3219,7 @@ function MonthOnlyCard({ ym, leaves, outside, staff, busy, onAddLeave, onRemoveL
           </div>
           {r.kind === 'out' && (
             <div style={{ fontSize: 12.5, color: C.sub, minWidth: 92 }}>
-              {hhmm(r.start_time)}~{hhmm(r.end_time)}
+              {clock(r.start_time)}~{clock(r.end_time)}
             </div>
           )}
           <div style={{ flex: 1, fontSize: 13.5, minWidth: 110 }}>
@@ -2982,11 +3537,11 @@ function PlanView({
             <div key={i} style={{ fontSize: 12.5, color: '#8A3550', lineHeight: 1.75 }}>
               {c.staff_name} {PLAN_DOW[c.weekday]}요일 —{' '}
               <b>
-                {c.a_student} {c.a_start.slice(0, 5)}~{c.a_end.slice(0, 5)}
+                {c.a_student} {clock(c.a_start)}~{clock(c.a_end)}
               </b>{' '}
               와{' '}
               <b>
-                {c.b_student} {c.b_start.slice(0, 5)}~{c.b_end.slice(0, 5)}
+                {c.b_student} {clock(c.b_start)}~{clock(c.b_end)}
               </b>
             </div>
           ))}
@@ -3147,7 +3702,7 @@ function PlanView({
                       onChange={(e) => set(r.uid, { start_time: e.target.value })}
                       style={{ ...planSel, width: 132 }}
                     />
-                    <span style={{ fontSize: 11.5, color: C.mut, minWidth: 38 }}>~{endOf(r)}</span>
+                    <span style={{ fontSize: 11.5, color: C.mut, minWidth: 38 }}>~{clock(endOf(r))}</span>
                     <select
                       value={r.program_code}
                       disabled={r.removed}
@@ -3547,7 +4102,7 @@ function MarkView({ onLoad, onMark, busy, say }) {
               >
                 <div style={{ fontSize: 14, fontWeight: 700, minWidth: 62 }}>{r.student_name}</div>
                 <div style={{ fontSize: 12.5, color: C.sub }}>
-                  {hhmm(r.start_time)} · {r.staff_name}
+                  {clock(r.start_time)} · {r.staff_name}
                 </div>
                 {off && (
                   <div style={{ fontSize: 12, fontWeight: 700, color: C.danger }}>
@@ -3639,6 +4194,25 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
   const iso = (x) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`
   const days = teacher ? [...new Set(sessions.map((s) => DOW[(new Date(s.d + 'T00:00:00').getDay() + 6) % 7]))] : []
 
+  // 종이 한 장에 딱 맞게 크기 자동 조절
+  //   시간 줄이 많거나 한 칸에 아이가 여럿이면 넘치고, 수업이 적으면 너무 작게 나와서
+  //   화면에서 실제 높이를 재고 남는 공간에 맞춰 키우거나 줄입니다 (최대 1.5배).
+  //   인쇄 영역(283×194mm)과 화면 종이 안쪽 크기가 같아서 인쇄에도 그대로 맞습니다.
+  const pageRef = useRef(null)
+  const wrapRef = useRef(null)
+  useLayoutEffect(() => {
+    const pg = pageRef.current
+    const wr = wrapRef.current
+    if (!pg || !wr) return
+    wr.style.zoom = '1'
+    const cs = getComputedStyle(pg)
+    const head = pg.querySelector('.tt-gh')
+    const availH =
+      pg.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom) - (head ? head.offsetHeight : 0) - 6
+    const h = wr.scrollHeight
+    if (h > 0 && availH > 0) wr.style.zoom = String(Math.min(1.5, availH / h))
+  }, [sessions, outside, holidays, ym])
+
   const cellOf = (dIso, hour) => {
     const list = sessions.filter((s) => s.d === dIso && Number(s.start_time.slice(0, 2)) === hour)
     const outs = outside.filter((e) => e.d === dIso && Number(e.start_time.slice(0, 2)) === hour)
@@ -3646,23 +4220,16 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
   }
 
   return (
-    <div className="tt-page tt-grid-page">
+    <div className="tt-page tt-grid-page" ref={pageRef}>
       <div className="tt-gh">
         <b>{teacher.name} 선생님</b>
         <span>
           {y}년 {m}월 시간표
         </span>
         {days.length > 0 && <span className="tt-gd">({days.join('·')})</span>}
-        <span className="tt-glg">
-          {Object.entries(kidColor).map(([n, c]) => (
-            <span key={n} style={{ background: c[0], color: c[1] }}>
-              {n}
-            </span>
-          ))}
-        </span>
       </div>
 
-      <div className="tt-gwrap">
+      <div className="tt-gwrap" ref={wrapRef}>
         {weeks.map((wk, wi) => (
           <table key={wi} className="tt-gtbl">
             <thead>
@@ -3683,7 +4250,7 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
               {hours.map((h) => (
                 <tr key={h}>
                   <td className="tt-gt">
-                    {h}시-{h + 1}시
+                    {hourLabel(h)}
                   </td>
                   {DOW.map((dw, di) => {
                     const day = wk.find((x) => (x.getDay() + 6) % 7 === di)
@@ -3703,7 +4270,7 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
                           <div key={e.id} className="tt-gout">
                             <b>{e.label}</b>
                             <small>
-                              {hhmm(e.start_time)}~{hhmm(e.end_time)}
+                              {clock(e.start_time)}~{clock(e.end_time)}
                             </small>
                           </div>
                         ))}
@@ -3722,7 +4289,7 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
                                 {s.student_name}
                               </b>
                               <small>
-                                {hhmm(s.start_time)}~{hhmm(s.end_time)}
+                                {clock(s.start_time)}~{clock(s.end_time)}
                               </small>
                             </div>
                           )
@@ -3814,7 +4381,7 @@ function TeacherSheet({ ym, teacher, sessions, holidays, tone, outside = [] }) {
               .filter((t) => t % 60 === 0)
               .map((t) => (
                 <span key={t} className="tt-tk" style={{ left: pct(t) }}>
-                  {t / 60}시
+                  {hourLabel(t / 60)}
                 </span>
               ))}
           </div>
@@ -3871,8 +4438,8 @@ function TeacherSheet({ ym, teacher, sessions, holidays, tone, outside = [] }) {
                             <b>{s.label}</b>
                             <small>
                               <span className="tt-outtag">외부</span>
-                              {hhmm(s.start_time)}
-                              <span className="tt-end">~{hhmm(s.end_time)}</span>
+                              {clock(s.start_time)}
+                              <span className="tt-end">~{clock(s.end_time)}</span>
                             </small>
                           </div>
                         )
@@ -3895,8 +4462,8 @@ function TeacherSheet({ ym, teacher, sessions, holidays, tone, outside = [] }) {
                             {s.student_name}
                           </b>
                           <small>
-                            {hhmm(s.start_time)}
-                            <span className="tt-end">~{hhmm(s.end_time)}</span>
+                            {clock(s.start_time)}
+                            <span className="tt-end">~{clock(s.end_time)}</span>
                           </small>
                         </div>
                       )
@@ -3989,7 +4556,7 @@ function WeekSheet({ ym, days, weekNo, teachers, sessions, outside, holidays, le
               .filter((t) => t % 60 === 0)
               .map((t) => (
                 <span key={t} className="tt-tk" style={{ left: pct(t) }}>
-                  {t / 60}시
+                  {hourLabel(t / 60)}
                 </span>
               ))}
           </div>
@@ -4062,8 +4629,8 @@ function WeekSheet({ ym, days, weekNo, teachers, sessions, outside, holidays, le
                               </b>
                               <small>
                                 {s.out && <span className="tt-outtag">외부</span>}
-                                {hhmm(s.start_time)}
-                                <span className="tt-end">~{hhmm(s.end_time)}</span>
+                                {clock(s.start_time)}
+                                <span className="tt-end">~{clock(s.end_time)}</span>
                               </small>
                             </div>
                           )
@@ -4153,15 +4720,13 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
         .tt-bar { position: sticky; top: 0; z-index: 2; background: #fff; border-bottom: 1px solid ${C.line};
           padding: 11px 16px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
         .tt-wrap { padding: 16px 12px 40px; overflow-x: auto; }
-        .tt-grid-page { padding: 8mm 7mm; }
+        .tt-grid-page { padding: 8mm 7mm; overflow: hidden; }
         .tt-gh { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 6px;
           border-bottom: 2px solid #1F2328; padding-bottom: 5px; }
         .tt-gh b { font-size: 15px; } .tt-gh span { font-size: 12px; color: #4A4F57; }
         .tt-gd { color: #71757C !important; }
-        .tt-glg { margin-left: auto; display: flex; gap: 4px; flex-wrap: wrap; }
-        .tt-glg span { font-size: 9.5px; border-radius: 3px; padding: 1px 5px; }
         /* 한 달이 한 장에 들어오도록 2단으로 */
-        .tt-gwrap { column-count: 2; column-gap: 5mm; }
+        .tt-gwrap { column-count: 2; column-gap: 5mm; flex: none; }
         .tt-gtbl { break-inside: avoid; page-break-inside: avoid; margin-bottom: 3.5mm; }
         .tt-gtbl { width: 100%; border-collapse: collapse; table-layout: fixed; }
         .tt-gtbl th, .tt-gtbl td { border: 0.6px solid #9AA0A6; height: 23px; vertical-align: top; padding: 1px; }
@@ -4370,7 +4935,7 @@ const ADD_DOW = ['일', '월', '화', '수', '목', '금', '토']
 function MakeupLog({ rows, staffOrder = [], ownerName, toneOf, busy, isAdmin, unmade = [], onMakeup, onAdd }) {
   const rank = (n) => (n === ownerName ? -1 : staffOrder.indexOf(n) < 0 ? 99 : staffOrder.indexOf(n))
   const md = (d) => (d ? d.slice(5).replace('-', '/') : '')
-  const hm2 = (t) => (t ? t.slice(0, 5) : '')
+  const hm2 = (t) => clock(t)
   const canBook = useMemo(() => new Set(unmade.map((x) => x.id)), [unmade])
   const [open, setOpen] = useState({})   // 보강 끝난 것은 접어 둡니다
 
@@ -4633,7 +5198,7 @@ function AddSessionModal({ students, staff, programs, absent, pairs = [], onClos
         <AddField label={`시작 시각 (${mins}분 수업)`}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
             <input type="time" step={300} value={start} onChange={(e) => setStart(e.target.value)} style={{ ...addInp, width: 'auto' }} />
-            <span style={{ fontSize: 13, color: C.sub }}>~ {end}</span>
+            <span style={{ fontSize: 13, color: C.sub }}>~ {clock(end)}</span>
           </div>
         </AddField>
 
@@ -6033,7 +6598,7 @@ function App() {
 
   // 직접 추가한 수업·보강 지우기
   const doRemoveSession = async (p) => {
-    if (!confirm(`${p.student_name} ${p.d.slice(5).replace('-', '/')} ${p.start_time.slice(0, 5)} 수업을 지웁니다.\n되돌릴 수 없어요.`)) return
+    if (!confirm(`${p.student_name} ${p.d.slice(5).replace('-', '/')} ${clock(p.start_time)} 수업을 지웁니다.\n되돌릴 수 없어요.`)) return
     setBusy(true)
     try {
       const msg = await removeSession(p.id)
@@ -6531,7 +7096,7 @@ function App() {
                 const ok2 = confirm(
                   undo
                     ? `${t} ${ym.slice(5)}월 마감을 취소합니다.\n출결을 다시 고칠 수 있게 됩니다. (급여 기록은 남아 있어요)`
-                    : `${t} ${ym.slice(5)}월을 마감합니다.\n\n· 이 달 급여가 기록에 저장됩니다\n· 그 달 출결이 잠겨서 더 이상 안 바뀝니다\n\n나중에 취소할 수 있어요.`
+                    : `${t} ${ym.slice(5)}월을 마감합니다.\n\n· 이 달 급여가 세금(소득세·지방세)까지 계산돼 기록에 저장됩니다\n· 그 달 출결이 잠겨서 더 이상 안 바뀝니다\n\n나중에 취소할 수 있어요.`
                 )
                 if (!ok2) return
                 setBusy(true)
@@ -6545,6 +7110,50 @@ function App() {
                 setBusy(false)
               }}
               payHistory={payHistory}
+              allStaff={staff.filter((x) => x.role !== 'admin')}
+              onSaveExtras={async (sid, items) => {
+                setBusy(true)
+                try {
+                  const msg = await setPayrollExtras(ym, sid, items)
+                  say(msg || '저장했습니다')
+                  await reloadMonth()
+                  setBusy(false)
+                  return true
+                } catch (e) {
+                  fail(e)
+                  setBusy(false)
+                  return false
+                }
+              }}
+              onSaveManual={async ({ ym: m, staffId, pay, items, memo }) => {
+                setBusy(true)
+                try {
+                  const msg = await savePayrollManual(m, staffId, pay, items, memo)
+                  say(msg || '저장했습니다')
+                  await reloadMonth()
+                  setBusy(false)
+                  return true
+                } catch (e) {
+                  fail(e)
+                  setBusy(false)
+                  return false
+                }
+              }}
+              onDeleteManual={async (rec) => {
+                if (!confirm(`${rec.staff_name} ${rec.ym.replace('-', '년 ')}월 급여 기록을 지웁니다.\n되돌릴 수 없어요.`)) return false
+                setBusy(true)
+                try {
+                  const msg = await deletePayrollManual(rec.ym, rec.staff_id)
+                  say(msg || '지웠습니다')
+                  await reloadMonth()
+                  setBusy(false)
+                  return true
+                } catch (e) {
+                  fail(e)
+                  setBusy(false)
+                  return false
+                }
+              }}
               onPayrollPaid={async (m, sid, clear) => {
                 setBusy(true)
                 try {
@@ -6807,8 +7416,8 @@ function App() {
           <div style={{ padding: '16px 18px', borderBottom: `1px solid ${C.line2}` }}>
             <div style={{ fontSize: 19, fontWeight: 700 }}>{pick.student_name}</div>
             <div style={{ fontSize: 12.5, color: C.sub, marginTop: 3 }}>
-              {pick.d.slice(5).replace('-', '월 ')}일 ({pick.weekday}) · {hhmm(pick.start_time)}–
-              {hhmm(pick.end_time)} · {pick.staff_name}
+              {pick.d.slice(5).replace('-', '월 ')}일 ({pick.weekday}) · {clock(pick.start_time)}–
+              {clock(pick.end_time)} · {pick.staff_name}
             </div>
             <div style={{ fontSize: 12.5, color: C.sub }}>{pick.program_label}</div>
           </div>
