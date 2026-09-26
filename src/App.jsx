@@ -309,6 +309,11 @@ async function loadTemplates() {
   )
 }
 
+// 아동 상태 바꾸기 (퇴소·휴원은 '언제부터'를 같이 보냅니다)
+async function setStudentStatus(id, status, from) {
+  return ok(await supabase.rpc('set_student_status', { p_student: id, p_status: status, p_from: from || null }))
+}
+
 async function saveStudent(id, v) {
   if (id) return ok(await supabase.from('students').update(v).eq('id', id))
   return ok(await supabase.from('students').insert(v))
@@ -1434,6 +1439,25 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
       .sort((a, b) => moneyOrder(a.name, a.amount, b.name, b.amount))
   }, [byStaff, staffOrder, ownerName])
 
+  // 인쇄 순서 = 화면에 보이는 순서 (선생님별 묶음 → 그 안에서 이름순, 아이는 한 번만)
+  const printOrder = useMemo(() => {
+    const seen = new Set()
+    const out = []
+    staffGroups.forEach((g) => {
+      g.rows.forEach((r) => {
+        if (seen.has(r.student_id)) return
+        seen.add(r.student_id)
+        const kid = byStudent.find((x) => x.id === r.student_id)
+        if (kid) out.push(kid)
+      })
+    })
+    byStudent.forEach((k) => {
+      if (!seen.has(k.id)) out.push(k)
+    })
+    return out
+  }, [staffGroups, byStudent])
+
+
   const rMap = useMemo(() => Object.fromEntries(receipts.map((r) => [r.student_id, r])), [receipts])
   const total = byStudent.reduce((a, b) => a + b.subtotal + (rMap[b.id]?.adjustment || 0), 0)
 
@@ -1460,8 +1484,8 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
         </div>
         {group !== 'closing' && (
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
-            <Btn onClick={() => onPrintAll(byStudent)} disabled={byStudent.length === 0}>
-              영수증 {byStudent.length}장 인쇄
+            <Btn onClick={() => onPrintAll(printOrder)} disabled={printOrder.length === 0}>
+              영수증 {printOrder.length}장 인쇄
             </Btn>
             <div style={{ fontSize: 20, fontWeight: 700, color: C.pkd }}>{won(total)}원</div>
           </div>
@@ -1748,7 +1772,9 @@ function ReceiptModal({ ym, student, receipt, extra, onClose, onIssue, onUnlock,
                 <tr key={i} style={{ borderTop: `1px solid ${C.line2}` }}>
                   <td style={{ padding: '9px 0' }}>
                     {l.program_label}
-                    <div style={{ fontSize: 11, color: C.mut }}>{l.staff_summary}</div>
+                    <div style={{ fontSize: 11, color: C.mut }}>
+                      {teacherLabel(l.staff_summary)}
+                    </div>
                     <div style={{ fontSize: 11, color: C.sub, marginTop: 3, lineHeight: 1.55 }}>
                       {(l.session_dates || []).map((d, k) => {
                         const dd = d.slice(-2)
@@ -2169,6 +2195,11 @@ function StudentModal({ student, staff, onClose, onSave, onRemove, busy }) {
   const [display, setDisplay] = useState(student?.display_name || '')
   const [main, setMain] = useState(student?.main_staff_id || staff[0]?.id || '')
   const [status, setStatus] = useState(student?.status || '재원')
+  // 퇴소·휴원 시작일 — 기본값은 다음 달 1일
+  const [from, setFrom] = useState(() => {
+    const d = new Date()
+    return `${d.getFullYear() + (d.getMonth() === 11 ? 1 : 0)}-${String(((d.getMonth() + 1) % 12) + 1).padStart(2, '0')}-01`
+  })
 
   return (
     <Modal onClose={onClose} max={370}>
@@ -2202,9 +2233,23 @@ function StudentModal({ student, staff, onClose, onSave, onRemove, busy }) {
             ))}
           </select>
         </Field>
-        {status !== '재원' && (
+        {status !== '재원' && student && (
+          <Field label={`${status} 시작일 — 이 날부터 수업이 없어집니다`}>
+            <input
+              type="date"
+              value={from}
+              onChange={(e) => setFrom(e.target.value)}
+              style={inp}
+            />
+            <div style={{ fontSize: 12, color: C.sub, marginTop: 6, lineHeight: 1.6 }}>
+              이 날부터의 시간표와 회차만 정리하고, <b>그 전 기록(회차·청구·영수증)은 그대로</b> 둡니다.
+              출결을 찍었거나 영수증이 발행된 회차는 지우지 않습니다.
+            </div>
+          </Field>
+        )}
+        {status !== '재원' && !student && (
           <div style={{ fontSize: 12, color: C.sub, marginTop: -4, marginBottom: 12, lineHeight: 1.6 }}>
-            재원이 아니면 다음 달부터 회차가 생성되지 않습니다. 이미 만들어진 회차는 그대로 남습니다.
+            재원이 아니면 회차가 만들어지지 않습니다.
           </div>
         )}
         {student && onRemove && (
@@ -2233,7 +2278,12 @@ function StudentModal({ student, staff, onClose, onSave, onRemove, busy }) {
           <Btn
             variant="primary"
             disabled={!name.trim() || busy}
-            onClick={() => onSave({ name: name.trim(), display_name: display.trim() || null, main_staff_id: main, status })}
+            onClick={() =>
+              onSave(
+                { name: name.trim(), display_name: display.trim() || null, main_staff_id: main, status },
+                student && status !== '재원' && status !== student.status ? from : null
+              )
+            }
             style={{ flex: 1, padding: '11px 0' }}
           >
             저장
@@ -4652,6 +4702,16 @@ function Stamp({ size = 40 }) {
 }
 
 /* 영수증 한 장 — compact=true 면 3등분용 납작한 형태 */
+// '민다혜3, 최성현4' → '민다혜T · 최성현T' (회차 수는 횟수 칸에 있으니 이름만)
+function teacherLabel(summary) {
+  return (summary || '')
+    .split(',')
+    .map((x) => x.trim().replace(/\s*\d+$/, ''))
+    .filter(Boolean)
+    .map((n) => n + ' 선생님')
+    .join(' · ')
+}
+
 function Sheet({ ym, s, adjustment, reason, compact, stamp, x }) {
   const R = receiptShow(s.subtotal, adjustment, x)
   const partial = R.used > 0 && !R.full
@@ -4717,10 +4777,19 @@ function Sheet({ ym, s, adjustment, reason, compact, stamp, x }) {
                   <td style={{ padding: F.row }}>
                     {l.program_label}
                     <div style={{ fontSize: F.note, color: C.mut, lineHeight: 1.35 }}>
-                      {l.staff_summary}
+                      {/* 최성현5 → 최성현T (회차 수는 옆 칸에 있으니 뺍니다) */}
+                      {teacherLabel(l.staff_summary)}
                       {days.length > 0 && ' · '}
                       {days.map((d, k) => (
-                        <span key={k} style={{ color: d.a ? C.danger : C.mut, marginRight: 3 }}>
+                        <span
+                          key={k}
+                          style={{
+                            color: d.a ? C.danger : C.ink,
+                            fontWeight: 600,
+                            marginLeft: k > 0 ? (compact ? 5 : 7) : 0,
+                          }}
+                        >
+                          {k > 0 && <span style={{ color: '#C9CCD1', fontWeight: 400, marginRight: compact ? 5 : 7 }}>·</span>}
                           {d.n}
                           {d.a ? '*' : ''}
                         </span>
@@ -6191,13 +6260,34 @@ function App() {
             }
             setBusy(false)
           }}
-          onSave={async (v) => {
+          onSave={async (v, leaveFrom) => {
             const id = editStudent === 'new' ? null : editStudent.id
             setEditStudent(null)
             setBusy(true)
             try {
-              await saveStudent(id, v)
-              say(id ? '수정했습니다' : '등록했습니다')
+              if (id && leaveFrom) {
+                // 퇴소·휴원: 그날부터의 시간표·회차만 정리 (그 전 기록은 그대로)
+                const { status, ...rest } = v
+                await saveStudent(id, rest)
+                let msg
+                try {
+                  msg = await setStudentStatus(id, status, leaveFrom)
+                } catch (err) {
+                  const m = String(err?.message || err)
+                  if (/set_student_status|function|찾을 수 없|not exist|schema cache/i.test(m)) {
+                    throw new Error(
+                      '퇴소·휴원 처리 기능이 DB에 아직 없습니다.\n' +
+                        'Supabase SQL Editor에서 schema_v2.sql 을 먼저 실행한 뒤 다시 해주세요.\n' +
+                        '(아동 이름·담당 등 나머지 수정은 저장됐습니다)'
+                    )
+                  }
+                  throw err
+                }
+                say(msg || '바꿨습니다')
+              } else {
+                await saveStudent(id, v)
+                say(id ? '수정했습니다' : '등록했습니다')
+              }
               await reloadAll()
             } catch (e) {
               fail(e)
