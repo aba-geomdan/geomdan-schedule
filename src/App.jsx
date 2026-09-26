@@ -309,6 +309,11 @@ async function loadTemplates() {
   )
 }
 
+// 직접 추가한 수업 · 보강 지우기
+async function removeSession(id) {
+  return ok(await supabase.rpc('remove_session', { p_session: id }))
+}
+
 // 그 달 그 선생님 마감 (한 번에) · 취소
 async function closeMonth(ym, staffId, undo) {
   return ok(await supabase.rpc('close_month', { p_ym: ym, p_staff: staffId, p_undo: !!undo }))
@@ -4166,11 +4171,38 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
 
 const ADD_DOW = ['일', '월', '화', '수', '목', '금', '토']
 
-function AddSessionModal({ students, staff, programs, absent, onClose, onSave, busy }) {
+function AddSessionModal({ students, staff, programs, absent, pairs = [], onClose, onSave, busy }) {
   const linked = !!absent
-  const [studentId, setStudentId] = useState(absent?.student_id || students[0]?.id || '')
   const [staffId, setStaffId] = useState(absent?.staff_id || staff[0]?.id || '')
+
+  // 고른 선생님이 가르치는 아이들 (수업 기록 + 담당으로 지정된 아이)
+  const myKids = useMemo(() => {
+    if (!staffId) return students
+    const ids = new Set(pairs.filter((x) => x.staff_id === staffId).map((x) => x.student_id))
+    students.forEach((k) => {
+      if (k.main_staff_id === staffId) ids.add(k.id)
+    })
+    const list = students.filter((k) => ids.has(k.id))
+    return list.length ? list : students
+  }, [staffId, students, pairs])
+
+  const [studentId, setStudentId] = useState(absent?.student_id || '')
+  useEffect(() => {
+    if (linked) return
+    if (!myKids.some((k) => k.id === studentId)) setStudentId(myKids[0]?.id || '')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [myKids])
+
   const [pcode, setPcode] = useState(absent?.program_code || programs[0]?.code || '')
+  // 그 아이가 그 선생님과 하던 수업 종류와 시간으로 자동 채움 (고칠 수 있습니다)
+  useEffect(() => {
+    if (linked || !studentId || !staffId) return
+    const hit = pairs.find((x) => x.staff_id === staffId && x.student_id === studentId)
+    if (!hit) return
+    if (hit.program_code) setPcode(hit.program_code)
+    if (hit.start_time) setStart(hhmm(hit.start_time))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [studentId, staffId])
   const [status, setStatus] = useState(linked ? '보강' : '보강')
   const [date, setDate] = useState(isoOf(new Date()))
   const [start, setStart] = useState(absent ? hhmm(absent.start_time) : '19:00')
@@ -4207,16 +4239,16 @@ function AddSessionModal({ students, staff, programs, absent, onClose, onSave, b
       <div style={{ padding: 18 }}>
         {!linked && (
           <>
-            <AddField label="아동">
-              <select value={studentId} onChange={(e) => setStudentId(e.target.value)} style={addInp}>
-                {students.map((s) => (
+            <AddField label="선생님">
+              <select value={staffId} onChange={(e) => setStaffId(e.target.value)} style={addInp}>
+                {staff.map((s) => (
                   <option key={s.id} value={s.id}>{s.name}</option>
                 ))}
               </select>
             </AddField>
-            <AddField label="선생님">
-              <select value={staffId} onChange={(e) => setStaffId(e.target.value)} style={addInp}>
-                {staff.map((s) => (
+            <AddField label={`아동 (${staff.find((x) => x.id === staffId)?.name || ''} 선생님 아이)`}>
+              <select value={studentId} onChange={(e) => setStudentId(e.target.value)} style={addInp}>
+                {myKids.map((s) => (
                   <option key={s.id} value={s.id}>{s.name}</option>
                 ))}
               </select>
@@ -5345,6 +5377,22 @@ function App() {
   const [ttPrint, setTtPrint] = useState(false)
   const [receiptExtras, setReceiptExtras] = useState([])
   const [payHistory, setPayHistory] = useState([])
+
+  // 어느 선생님이 어느 아이를 가르치는지 (수업 추가 창에서 아이 목록을 고르는 데 씁니다)
+  const teacherKidPairs = useMemo(() => {
+    const m = new Map()
+    monthSessions.forEach((s) => {
+      const k = s.staff_id + '|' + s.student_id
+      if (!m.has(k))
+        m.set(k, {
+          staff_id: s.staff_id,
+          student_id: s.student_id,
+          program_code: s.program_code,
+          start_time: s.start_time,
+        })
+    })
+    return [...m.values()]
+  }, [monthSessions])
   const [students, setStudents] = useState([])
   const [templates, setTemplates] = useState([])
   const [programs, setPrograms] = useState([])
@@ -5583,6 +5631,21 @@ function App() {
     try {
       const msg = await undoCancelCarry(id)
       say(msg || '되돌렸습니다')
+      await Promise.all([reloadWeek(), reloadCommon(), reloadMonth(), reloadMonthSessions()])
+      setPick(null)
+    } catch (e) {
+      fail(e)
+    }
+    setBusy(false)
+  }
+
+  // 직접 추가한 수업·보강 지우기
+  const doRemoveSession = async (p) => {
+    if (!confirm(`${p.student_name} ${p.d.slice(5).replace('-', '/')} ${p.start_time.slice(0, 5)} 수업을 지웁니다.\n되돌릴 수 없어요.`)) return
+    setBusy(true)
+    try {
+      const msg = await removeSession(p.id)
+      say(msg || '지웠습니다')
       await Promise.all([reloadWeek(), reloadCommon(), reloadMonth(), reloadMonthSessions()])
       setPick(null)
     } catch (e) {
@@ -6357,6 +6420,7 @@ function App() {
           absent={makeupFor}
           students={students.filter((x) => x.status === '재원')}
           staff={staff.filter((x) => x.active)}
+          pairs={teacherKidPairs}
           programs={programs}
           busy={busy}
           onClose={() => {
@@ -6399,8 +6463,19 @@ function App() {
               // 선생님: 결강 / 되돌리기만. 원장님: 결강 · 취소 / 되돌리기
               if (cur === '보강')
                 return (
-                  <div style={{ fontSize: 12.5, color: C.sub, lineHeight: 1.6 }}>
-                    보강 수업입니다.{isAdmin ? ' 바꾸려면 보강 화면에서 지워주세요.' : ' 바꾸려면 원장님께 말씀해주세요.'}
+                  <div>
+                    <div style={{ fontSize: 12.5, color: C.sub, lineHeight: 1.6 }}>
+                      보강 수업입니다.{!isAdmin && ' 바꾸려면 원장님께 말씀해주세요.'}
+                    </div>
+                    {isAdmin && (
+                      <Btn
+                        disabled={busy}
+                        onClick={() => doRemoveSession(pick)}
+                        style={{ width: '100%', padding: '11px 0', fontSize: 14, marginTop: 10, color: C.danger }}
+                      >
+                        이 수업 지우기
+                      </Btn>
+                    )}
                   </div>
                 )
               if (!isAdmin && cur === '취소')
@@ -6429,6 +6504,7 @@ function App() {
               if (cur !== '결강') btns.push(['결강', '결강'])
               if (isAdmin && cur !== '취소') btns.push(locked ? ['carry', '취소 (다음 달 차감)'] : ['취소', '취소'])
               return (
+                <div>
                 <div style={{ display: 'flex', gap: 6 }}>
                   {btns.map(([st, label]) => (
                     <Btn
@@ -6441,6 +6517,16 @@ function App() {
                       {label}
                     </Btn>
                   ))}
+                </div>
+                {isAdmin && pick.from_template === false && (
+                  <Btn
+                    disabled={busy}
+                    onClick={() => doRemoveSession(pick)}
+                    style={{ width: '100%', padding: '9px 0', fontSize: 12.5, marginTop: 8, color: C.danger }}
+                  >
+                    이 수업 지우기 (직접 추가한 수업)
+                  </Btn>
+                )}
                 </div>
               )
             })()}
