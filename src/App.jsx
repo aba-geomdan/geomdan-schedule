@@ -2574,7 +2574,7 @@ function PlanView({
   //   수업이 하나도 없는 아이(새로 등록 등)는 담당 선생님 묶음에 나옵니다.
   const byStaff = useMemo(() => {
     if (!rows) return []
-    const kids = students.filter((s) => s.status !== '퇴소')
+    const kids = students.filter((s) => s.status === '재원')   // 퇴소·휴원은 아래 '그만둔 아동'에만
     const groups = staff
       .filter((x) => x.active)
       .map((x) => ({
@@ -2597,7 +2597,14 @@ function PlanView({
       .map((k) => ({ ...k, items: rows.filter((r) => r.student_id === k.id), shared: false }))
       .sort((a, b) => a.name.localeCompare(b.name, 'ko'))
     if (rest.length) groups.push({ id: 'etc', name: '담당 미지정', kids: rest })
-    return groups.filter((g) => g.kids.length)
+    // 그만둔(퇴소·휴원) 아동 — 되돌리거나 고칠 수 있게 맨 아래에 따로
+    const gone = students
+      .filter((s) => s.status === '퇴소' || s.status === '휴원')
+      .map((k) => ({ ...k, items: [], shared: false, gone: true }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'ko'))
+    const out = groups.filter((g) => g.kids.length)
+    if (gone.length) out.push({ id: 'gone', name: '그만둔 아동', kids: gone, gone: true })
+    return out
   }, [rows, students, staff])
 
   const stat = useMemo(() => {
@@ -2840,8 +2847,8 @@ function PlanView({
             <div
               style={{
                 padding: '8px 14px',
-                background: g.id === 'etc' ? '#FBFBFC' : toneOf(g.name).bg,
-                color: g.id === 'etc' ? C.sub : toneOf(g.name).fg,
+                background: g.id === 'etc' || g.id === 'gone' ? '#F4F5F6' : toneOf(g.name).bg,
+                color: g.id === 'etc' || g.id === 'gone' ? C.sub : toneOf(g.name).fg,
                 fontSize: 13, fontWeight: 700,
                 borderTop: `1px solid ${C.line2}`,
                 borderBottom: `1px solid ${C.line2}`,
@@ -2849,6 +2856,11 @@ function PlanView({
             >
               {g.name}
               <span style={{ fontWeight: 400, marginLeft: 7, opacity: 0.8 }}>{g.kids.length}명</span>
+              {g.gone && (
+                <span style={{ fontWeight: 400, marginLeft: 8, fontSize: 11.5 }}>
+                  다시 다니면 <b>수정</b>에서 상태를 재원으로 바꾼 뒤 수업을 넣어주세요
+                </span>
+              )}
             </div>
             {g.kids.map((s, si) => (
           <div
@@ -2863,6 +2875,7 @@ function PlanView({
           >
             <div style={{ width: 92, paddingTop: 6, display: 'flex', flexDirection: 'column', gap: 3 }}>
               <div style={{ fontSize: 14, fontWeight: 700 }}>{s.name}</div>
+              {s.gone && <Pill tone="gray">{s.status}</Pill>}
               {s.shared && (
                 <div style={{ fontSize: 10.5, color: C.sub }} title="다른 선생님 수업도 있는 아동입니다">
                   다른 선생님도
@@ -3012,12 +3025,14 @@ function PlanView({
                   </div>
                 )
               })}
-              <Btn
-                onClick={() => addRow(s.id, g.id === 'etc' ? null : g.id)}
-                style={{ alignSelf: 'flex-start', padding: '4px 10px', fontSize: 12 }}
-              >
-                + 수업 추가
-              </Btn>
+              {!s.gone && (
+                <Btn
+                  onClick={() => addRow(s.id, g.id === 'etc' ? null : g.id)}
+                  style={{ alignSelf: 'flex-start', padding: '4px 10px', fontSize: 12 }}
+                >
+                  + 수업 추가
+                </Btn>
+              )}
             </div>
           </div>
             ))}
