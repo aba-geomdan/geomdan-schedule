@@ -3595,6 +3595,151 @@ function ttMin(t) {
   return h * 60 + m
 }
 
+/* 선생님별 · 표 모양 — 엑셀로 쓰시던 모양 (요일 칸 · 시간 줄 · 아이별 색) */
+const GRID_COLORS = [
+  ['#BFD9F2', '#14314F'], ['#F7D9A8', '#5A3B10'], ['#F6BBD0', '#5C1230'],
+  ['#D6E8A8', '#33470F'], ['#F7E8A8', '#5A4A10'], ['#CFC4EA', '#2F2358'],
+  ['#BEE3DC', '#11423B'], ['#F2C9B8', '#5B2716'], ['#CBD5E1', '#1E293B'],
+  ['#E7C9F0', '#4A1157'],
+]
+function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
+  const [y, m] = ym.split('-').map(Number)
+  const lastDay = new Date(y, m, 0).getDate()
+  const DOW = ['월', '화', '수', '목', '금', '토']
+
+  // 아이마다 색 (엑셀에서 쓰시던 것처럼)
+  const kidColor = useMemo(() => {
+    const names = [...new Set(sessions.map((s) => s.student_name))].sort((a, b) => a.localeCompare(b, 'ko'))
+    const m2 = {}
+    names.forEach((n, i) => (m2[n] = GRID_COLORS[i % GRID_COLORS.length]))
+    return m2
+  }, [sessions])
+
+  // 시간 범위 (시 단위)
+  const all = [...sessions, ...outside]
+  const h1 = all.length ? Math.min(...all.map((s) => Number(s.start_time.slice(0, 2)))) : 9
+  const h2 = all.length ? Math.max(...all.map((s) => Math.ceil(ttMin(s.end_time) / 60))) : 19
+  const hours = []
+  for (let h = h1; h < Math.max(h2, h1 + 4); h++) hours.push(h)
+
+  // 주 단위로 쪼개기 (월~토)
+  const weeks = []
+  let cur = []
+  for (let d = 1; d <= lastDay; d++) {
+    const x = new Date(y, m - 1, d)
+    if (x.getDay() === 0) {
+      if (cur.length) weeks.push(cur)
+      cur = []
+      continue
+    }
+    cur.push(x)
+  }
+  if (cur.length) weeks.push(cur)
+
+  const iso = (x) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`
+  const days = teacher ? [...new Set(sessions.map((s) => DOW[(new Date(s.d + 'T00:00:00').getDay() + 6) % 7]))] : []
+
+  const cellOf = (dIso, hour) => {
+    const list = sessions.filter((s) => s.d === dIso && Number(s.start_time.slice(0, 2)) === hour)
+    const outs = outside.filter((e) => e.d === dIso && Number(e.start_time.slice(0, 2)) === hour)
+    return { list, outs }
+  }
+
+  return (
+    <div className="tt-page tt-grid-page">
+      <div className="tt-gh">
+        <b>{teacher.name} 선생님</b>
+        <span>
+          {y}년 {m}월 시간표
+        </span>
+        {days.length > 0 && <span className="tt-gd">({days.join('·')})</span>}
+        <span className="tt-glg">
+          {Object.entries(kidColor).map(([n, c]) => (
+            <span key={n} style={{ background: c[0], color: c[1] }}>
+              {n}
+            </span>
+          ))}
+        </span>
+      </div>
+
+      <div className="tt-gwrap">
+        {weeks.map((wk, wi) => (
+          <table key={wi} className="tt-gtbl">
+            <thead>
+              <tr>
+                <th className="tt-gt" />
+                {DOW.map((dw, di) => {
+                  const day = wk.find((x) => (x.getDay() + 6) % 7 === di)
+                  return (
+                    <th key={dw} className={day && holidays[iso(day)] ? 'tt-ghol' : ''}>
+                      <div className="tt-gdw">{dw}</div>
+                      <div className="tt-gdt">{day ? day.getDate() : ''}</div>
+                    </th>
+                  )
+                })}
+              </tr>
+            </thead>
+            <tbody>
+              {hours.map((h) => (
+                <tr key={h}>
+                  <td className="tt-gt">
+                    {h}시-{h + 1}시
+                  </td>
+                  {DOW.map((dw, di) => {
+                    const day = wk.find((x) => (x.getDay() + 6) % 7 === di)
+                    if (!day) return <td key={dw} className="tt-gempty" />
+                    const dIso = iso(day)
+                    const hol = holidays[dIso]
+                    if (hol)
+                      return (
+                        <td key={dw} className="tt-ghol">
+                          {h === hours[Math.floor(hours.length / 2)] ? hol : ''}
+                        </td>
+                      )
+                    const { list, outs } = cellOf(dIso, h)
+                    return (
+                      <td key={dw}>
+                        {outs.map((e) => (
+                          <div key={e.id} className="tt-gout">
+                            <b>{e.label}</b>
+                            <small>
+                              {hhmm(e.start_time)}~{hhmm(e.end_time)}
+                            </small>
+                          </div>
+                        ))}
+                        {list.map((s) => {
+                          const c = kidColor[s.student_name] || ['#EEE', '#333']
+                          const mk = s.status === '보강'
+                          const ab = s.status === '결강'
+                          return (
+                            <div
+                              key={s.id}
+                              className={`tt-gcell${mk ? ' tt-gmk' : ''}${ab ? ' tt-gab' : ''}`}
+                              style={{ background: mk ? '#fff' : c[0], color: mk ? '#8A4B00' : c[1] }}
+                            >
+                              <b>
+                                {mk && <span className="tt-gtag">보강</span>}
+                                {s.student_name}
+                              </b>
+                              <small>
+                                {hhmm(s.start_time)}~{hhmm(s.end_time)}
+                              </small>
+                            </div>
+                          )
+                        })}
+                      </td>
+                    )
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function TeacherSheet({ ym, teacher, sessions, holidays, tone, outside = [] }) {
   const [y, m] = ym.split('-').map(Number)
   const lastDay = new Date(y, m, 0).getDate()
@@ -4008,6 +4153,34 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
         .tt-bar { position: sticky; top: 0; z-index: 2; background: #fff; border-bottom: 1px solid ${C.line};
           padding: 11px 16px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
         .tt-wrap { padding: 16px 12px 40px; overflow-x: auto; }
+        .tt-grid-page { padding: 8mm 7mm; }
+        .tt-gh { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 6px;
+          border-bottom: 2px solid #1F2328; padding-bottom: 5px; }
+        .tt-gh b { font-size: 15px; } .tt-gh span { font-size: 12px; color: #4A4F57; }
+        .tt-gd { color: #71757C !important; }
+        .tt-glg { margin-left: auto; display: flex; gap: 4px; flex-wrap: wrap; }
+        .tt-glg span { font-size: 9.5px; border-radius: 3px; padding: 1px 5px; }
+        /* 한 달이 한 장에 들어오도록 2단으로 */
+        .tt-gwrap { column-count: 2; column-gap: 5mm; }
+        .tt-gtbl { break-inside: avoid; page-break-inside: avoid; margin-bottom: 3.5mm; }
+        .tt-gtbl { width: 100%; border-collapse: collapse; table-layout: fixed; }
+        .tt-gtbl th, .tt-gtbl td { border: 0.6px solid #9AA0A6; height: 23px; vertical-align: top; padding: 1px; }
+        .tt-gtbl th { background: #F2E9C9; height: 19px; padding: 0; }
+        .tt-gdw { font-size: 8.5px; font-weight: 700; } .tt-gdt { font-size: 9.5px; font-weight: 700; }
+        .tt-gt { width: 42px; background: #FAFAFB; font-size: 7.5px; color: #4A4F57; text-align: center;
+          vertical-align: middle !important; white-space: nowrap; }
+        .tt-gempty { background: #F7F8F9; }
+        .tt-ghol { background: #E9A9A2 !important; color: #5A1410; font-size: 10px; font-weight: 700;
+          text-align: center; vertical-align: middle !important; }
+        .tt-gcell { border-radius: 2px; padding: 2px 3px; margin-bottom: 1px; line-height: 1.15; }
+        .tt-gcell b { display: block; font-size: 9px; font-weight: 700; }
+        .tt-gcell small { font-size: 7.5px; opacity: .85; }
+        .tt-gmk { border: 1px dashed #E07B00; }
+        .tt-gtag { font-size: 8px; background: #E07B00; color: #fff; border-radius: 2px;
+          padding: 0 3px; margin-right: 3px; vertical-align: 1px; }
+        .tt-gab { text-decoration: line-through; opacity: .55; }
+        .tt-gout { background: #3F4652; color: #fff; border-radius: 2px; padding: 2px 3px; margin-bottom: 1px; line-height: 1.15; }
+        .tt-gout b { display: block; font-size: 8.5px; } .tt-gout small { font-size: 7.5px; opacity: .9; }
         .tt-page { width: 297mm; height: 210mm; margin: 0 auto 10mm; background: #fff; padding: 6mm 8mm;
           box-shadow: 0 1px 4px rgba(0,0,0,.12); display: flex; flex-direction: column; box-sizing: border-box; color: ${C.ink}; }
         .tt-ph { display: flex; align-items: baseline; gap: 8px; margin-bottom: 2mm; flex-wrap: wrap; row-gap: 2px; }
@@ -4089,7 +4262,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
       <div className="tt-bar">
         <div style={{ fontSize: 15, fontWeight: 700 }}>{ym.replace('-', '년 ')}월 시간표 인쇄</div>
         <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 9 }}>
-          {[['teacher', '선생님별'], ['all', '전체']].map(([k, l]) => (
+          {[['teacher', '선생님별 (가로형)'], ['grid', '선생님별 (표 모양)'], ['all', '전체']].map(([k, l]) => (
             <button
               key={k}
               onClick={() => setMode(k)}
@@ -4157,6 +4330,17 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
               en={gEn}
             />
           ))}
+        {mode === 'grid' && shown.map((t) => (
+          <TeacherGrid
+            key={t.id}
+            ym={ym}
+            teacher={t}
+            tone={{ ...toneOf(t.name), line: colorOf(t.name) }}
+            holidays={holFor(t)}
+            sessions={sessions.filter((s) => s.staff_name === t.name && s.status !== '취소')}
+            outside={t.name === ownerName ? outside.filter((e) => e.d.slice(0, 7) === ym) : []}
+          />
+        ))}
         {mode === 'teacher' && shown.map((t) => (
           <TeacherSheet
             key={t.id}
