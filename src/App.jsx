@@ -4176,55 +4176,82 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
 
 const ADD_DOW = ['일', '월', '화', '수', '목', '금', '토']
 
-/* ================= 보강 기록 (전체 · 달별 → 선생님별) ================= */
-function MakeupLog({ rows, staffOrder = [], ownerName, toneOf }) {
+/* ================= 보강 (선생님별 → 달별) ================= */
+function MakeupLog({ rows, staffOrder = [], ownerName, toneOf, busy, isAdmin, unmade = [], onMakeup, onAdd }) {
   const rank = (n) => (n === ownerName ? -1 : staffOrder.indexOf(n) < 0 ? 99 : staffOrder.indexOf(n))
   const md = (d) => (d ? d.slice(5).replace('-', '/') : '')
   const hm2 = (t) => (t ? t.slice(0, 5) : '')
+  const canBook = useMemo(() => new Set(unmade.map((x) => x.id)), [unmade])
+  const [open, setOpen] = useState({})   // 보강 끝난 것은 접어 둡니다
 
-  const months = useMemo(() => {
+  const row = (r, isTodo) => (
+    <div
+      key={r.absent_id}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+        padding: '9px 14px', borderBottom: `1px solid ${C.line2}`, fontSize: 13,
+        background: isTodo ? '#fff' : '#FCFCFD',
+      }}
+    >
+      <div style={{ fontWeight: 700, minWidth: 64 }}>{r.student_name}</div>
+      <div style={{ color: C.sub, minWidth: 108, fontSize: 12 }}>{r.program_label}</div>
+      <div style={{ color: isTodo ? C.danger : C.sub, whiteSpace: 'nowrap' }}>
+        {r.absent_d.slice(2).replace(/-/g, '/')} {hm2(r.absent_start)} 결강
+      </div>
+      <div style={{ color: C.mut }}>→</div>
+      {r.makeup_d ? (
+        <div style={{ fontWeight: 700, color: '#1F5B3A', whiteSpace: 'nowrap' }}>
+          {r.makeup_d.slice(2).replace(/-/g, '/')} {hm2(r.makeup_start)} 보강
+        </div>
+      ) : (
+        <Pill tone="pink">아직</Pill>
+      )}
+      {r.by_other && (
+        <span style={{ fontSize: 11.5, color: C.sub, background: '#F2F3F5', borderRadius: 99, padding: '2px 8px' }}>
+          {r.makeup_staff} 선생님이 함
+        </span>
+      )}
+      {!r.makeup_d && isAdmin && canBook.has(r.absent_id) && (
+        <Btn
+          variant="primary"
+          disabled={busy}
+          onClick={() => onMakeup(r)}
+          style={{ marginLeft: 'auto', padding: '5px 12px', fontSize: 12 }}
+        >
+          보강 잡기
+        </Btn>
+      )}
+    </div>
+  )
+
+  const staffs = useMemo(() => {
     const m = {}
     rows.forEach((r) => {
-      if (!m[r.ym]) m[r.ym] = {}
-      if (!m[r.ym][r.staff_name]) m[r.ym][r.staff_name] = []
-      m[r.ym][r.staff_name].push(r)
+      if (!m[r.staff_name]) m[r.staff_name] = []
+      m[r.staff_name].push(r)
     })
     return Object.entries(m)
-      .sort((a, b) => b[0].localeCompare(a[0]))
-      .map(([ym, byStaff]) => {
-        const list = Object.values(byStaff).flat()
-        return {
-          ym,
-          total: list.length,
-          todo: list.filter((r) => !r.makeup_d).length,
-          groups: Object.entries(byStaff)
-            .sort((a, b) => rank(a[0]) - rank(b[0]))
-            .map(([name, items]) => ({
-              name,
-              // 아직 보강 안 한 것부터 위로, 보강 끝난 건 아래로
-              items: items.sort((a, b) => {
-                const at = a.makeup_d ? 1 : 0
-                const bt = b.makeup_d ? 1 : 0
-                if (at !== bt) return at - bt
-                return a.absent_d.localeCompare(b.absent_d)
-              }),
-              todo: items.filter((r) => !r.makeup_d).length,
-            })),
-        }
-      })
+      .sort((a, b) => rank(a[0]) - rank(b[0]))
+      .map(([name, items]) => ({
+        name,
+        total: items.length,
+        // 아직 안 한 것은 오래된 결강부터, 보강 끝난 것은 최근 보강부터
+        todos: items.filter((r) => !r.makeup_d).sort((a, b) => a.absent_d.localeCompare(b.absent_d)),
+        dones: items.filter((r) => r.makeup_d).sort((a, b) => b.makeup_d.localeCompare(a.makeup_d)),
+      }))
   }, [rows, staffOrder, ownerName])
 
   const done = rows.filter((r) => r.makeup_d).length
   const todo = rows.length - done
 
-  if (!rows.length) return <Empty>아직 결강 기록이 없습니다.</Empty>
-
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 14, marginBottom: 12, flexWrap: 'wrap' }}>
-        <div style={{ fontSize: 15, fontWeight: 700 }}>보강 기록</div>
-        <span style={{ fontSize: 12.5, color: C.sub }}>결강한 수업을 언제 보강했는지 모아 둔 곳이에요</span>
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 16, whiteSpace: 'nowrap' }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
+        <div style={{ fontSize: 15, fontWeight: 700 }}>보강</div>
+        <span style={{ fontSize: 12.5, color: C.sub }}>
+          결강한 수업과 보강 날짜입니다. 앱 쓰기 전의 결강이나 이미 해준 보강은 <b>수업 직접 추가</b>로 기록하세요.
+        </span>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 14, alignItems: 'center', whiteSpace: 'nowrap' }}>
           <span style={{ fontSize: 13, color: C.sub }}>
             결강 <b style={{ fontSize: 15, color: C.ink }}>{rows.length}</b>건
           </span>
@@ -4234,69 +4261,56 @@ function MakeupLog({ rows, staffOrder = [], ownerName, toneOf }) {
           <span style={{ fontSize: 13, color: C.sub }}>
             아직 <b style={{ fontSize: 15, color: todo ? C.danger : C.mut }}>{todo}</b>건
           </span>
+          {isAdmin && (
+            <Btn variant="primary" onClick={onAdd} style={{ padding: '6px 13px', fontSize: 12.5 }}>
+              수업 직접 추가
+            </Btn>
+          )}
         </div>
       </div>
 
-      {months.map((mth) => (
-        <Card key={mth.ym} style={{ marginBottom: 12, overflow: 'hidden' }}>
-          <div
-            style={{
-              padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10,
-              background: '#FBFBFC', borderBottom: `1px solid ${C.line2}`,
-            }}
-          >
-            <div style={{ fontSize: 14, fontWeight: 700 }}>{mth.ym.replace('-', '년 ')}월</div>
-            <span style={{ fontSize: 12, color: C.sub }}>결강 {mth.total}건</span>
-            {mth.todo > 0 ? <Pill tone="pink">아직 {mth.todo}건</Pill> : <Pill tone="green">모두 보강함</Pill>}
-          </div>
+      {rows.length === 0 ? (
+        <Empty>결강 기록이 없습니다.</Empty>
+      ) : (
+        staffs.map((g) => (
+          <Card key={g.name} style={{ marginBottom: 12, overflow: 'hidden' }}>
+            <div
+              style={{
+                padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10,
+                background: toneOf ? toneOf(g.name).bg : '#F7F8F9',
+                color: toneOf ? toneOf(g.name).fg : C.ink,
+                borderBottom: `1px solid ${C.line2}`,
+              }}
+            >
+              <div style={{ fontSize: 14, fontWeight: 700 }}>{g.name} 선생님</div>
+              <span style={{ fontSize: 12, opacity: 0.85 }}>결강 {g.total}건</span>
+              {g.todos.length > 0 ? <Pill tone="pink">아직 {g.todos.length}건</Pill> : <Pill tone="green">모두 보강함</Pill>}
+            </div>
 
-          {mth.groups.map((g) => (
-            <div key={g.name}>
-              <div
-                style={{
-                  padding: '6px 14px', fontSize: 12.5, fontWeight: 700,
-                  background: toneOf ? toneOf(g.name).bg : '#F7F8F9',
-                  color: toneOf ? toneOf(g.name).fg : C.ink,
-                  borderBottom: `1px solid ${C.line2}`,
-                }}
-              >
-                {g.name} 선생님
-                <span style={{ fontWeight: 400, marginLeft: 7, opacity: 0.85 }}>{g.items.length}건</span>
-                {g.todo > 0 && <span style={{ fontWeight: 400, marginLeft: 7, opacity: 0.85 }}>· 아직 {g.todo}건</span>}
-              </div>
-              {g.items.map((r) => (
-                <div
-                  key={r.absent_id}
+            {g.todos.map((r) => row(r, true))}
+            {g.todos.length === 0 && (
+              <div style={{ padding: '10px 14px', fontSize: 12.5, color: C.sub }}>보강할 수업이 없습니다.</div>
+            )}
+
+            {g.dones.length > 0 && (
+              <>
+                <button
+                  onClick={() => setOpen((o) => ({ ...o, [g.name]: !o[g.name] }))}
                   style={{
-                    display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
-                    padding: '9px 14px', borderBottom: `1px solid ${C.line2}`, fontSize: 13,
+                    width: '100%', textAlign: 'left', border: 'none', cursor: 'pointer',
+                    background: '#FBFBFC', padding: '9px 14px', fontSize: 12.5, color: C.sub,
+                    borderTop: `1px solid ${C.line2}`,
                   }}
                 >
-                  <div style={{ fontWeight: 700, minWidth: 64 }}>{r.student_name}</div>
-                  <div style={{ color: C.sub, minWidth: 110, fontSize: 12 }}>{r.program_label}</div>
-                  <div style={{ color: C.danger, whiteSpace: 'nowrap' }}>
-                    {md(r.absent_d)} {hm2(r.absent_start)} 결강
-                  </div>
-                  <div style={{ color: C.mut }}>→</div>
-                  {r.makeup_d ? (
-                    <div style={{ fontWeight: 700, color: '#1F5B3A', whiteSpace: 'nowrap' }}>
-                      {md(r.makeup_d)} {hm2(r.makeup_start)} 보강
-                    </div>
-                  ) : (
-                    <Pill tone="pink">아직</Pill>
-                  )}
-                  {r.by_other && (
-                    <span style={{ fontSize: 11.5, color: C.sub, background: '#F2F3F5', borderRadius: 99, padding: '2px 8px' }}>
-                      {r.makeup_staff} 선생님이 함
-                    </span>
-                  )}
-                  {r.note && <span style={{ fontSize: 11.5, color: C.mut, marginLeft: 'auto' }}>{r.note}</span>}
-                </div>
-              ))}
-            </div>
-          ))}
-        </Card>
-      ))}
+                  <span style={{ color: '#1F5B3A', fontWeight: 700 }}>보강 끝난 것 {g.dones.length}건</span>
+                  <span style={{ marginLeft: 6 }}>{open[g.name] ? '접기 ▴' : '보기 ▾'}</span>
+                </button>
+                {open[g.name] && g.dones.map((r) => row(r, false))}
+              </>
+            )}
+          </Card>
+        ))
+      )}
     </div>
   )
 }
@@ -4324,17 +4338,24 @@ function AddSessionModal({ students, staff, programs, absent, pairs = [], onClos
   }, [myKids])
 
   const [pcode, setPcode] = useState(absent?.program_code || programs[0]?.code || '')
-  // 그 아이가 그 선생님과 하던 수업 종류와 시간으로 자동 채움 (고칠 수 있습니다)
-  useEffect(() => {
-    if (linked || !studentId || !staffId) return
-    const hit = pairs.find((x) => x.staff_id === staffId && x.student_id === studentId)
-    if (!hit) return
-    if (hit.program_code) setPcode(hit.program_code)
-    if (hit.start_time) setStart(hhmm(hit.start_time))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [studentId, staffId])
+
   const [status, setStatus] = useState(linked ? '보강' : '보강')
   const [date, setDate] = useState(isoOf(new Date()))
+
+  // 고른 날짜의 '요일'에 그 아이가 하는 정규 수업 시간·종류로 채웁니다 (고칠 수 있습니다)
+  //   그 요일에 정규 수업이 없으면 건드리지 않습니다.
+  const regular = useMemo(() => {
+    if (linked || !studentId || !staffId || !date) return null
+    const wd = new Date(date + 'T00:00:00').getDay()
+    return pairs.find((x) => x.staff_id === staffId && x.student_id === studentId && x.weekday === wd) || null
+  }, [linked, studentId, staffId, date, pairs])
+
+  useEffect(() => {
+    if (!regular) return
+    if (regular.program_code) setPcode(regular.program_code)
+    if (regular.start_time) setStart(hhmm(regular.start_time))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [regular])
   const [start, setStart] = useState(absent ? hhmm(absent.start_time) : '19:00')
   // 길이는 프로그램이 정합니다. 보강은 원래 결강 수업과 같은 길이로.
   const mins = useMemo(() => {
@@ -5507,20 +5528,24 @@ function App() {
   const [ttPrint, setTtPrint] = useState(false)
   const [receiptExtras, setReceiptExtras] = useState([])
   const [payHistory, setPayHistory] = useState([])
-  const [makeupTab, setMakeupTab] = useState('todo')
   const [makeupLog, setMakeupLog] = useState([])
 
   // 어느 선생님이 어느 아이를 가르치는지 (수업 추가 창에서 아이 목록을 고르는 데 씁니다)
+  // 선생님·아이·요일별 정규 수업 (수업 추가 창에서 시간·수업 종류를 채우는 데 씁니다)
   const teacherKidPairs = useMemo(() => {
     const m = new Map()
-    monthSessions.forEach((s) => {
-      const k = s.staff_id + '|' + s.student_id
+    monthSessions.forEach((x) => {
+      if (x.status === '취소' || x.status === '보강') return
+      if (x.from_template === false) return
+      const wd = new Date(x.d + 'T00:00:00').getDay()
+      const k = x.staff_id + '|' + x.student_id + '|' + wd
       if (!m.has(k))
         m.set(k, {
-          staff_id: s.staff_id,
-          student_id: s.student_id,
-          program_code: s.program_code,
-          start_time: s.start_time,
+          staff_id: x.staff_id,
+          student_id: x.student_id,
+          weekday: wd,
+          start_time: x.start_time,
+          program_code: x.program_code,
         })
     })
     return [...m.values()]
@@ -6221,84 +6246,21 @@ function App() {
         )}
 
         {!loading && tab === 'month' && schedView === 'makeup' && (
-          <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 8, width: 'fit-content', marginBottom: 12 }}>
-            {[['todo', `아직 안 함 ${unmadeUp.length}`], ['log', '보강 기록']].map(([k, label]) => (
-              <button
-                key={k}
-                onClick={() => setMakeupTab(k)}
-                style={{
-                  border: 'none', cursor: 'pointer', padding: '5px 14px', borderRadius: 6,
-                  fontSize: 12.5, fontWeight: 600,
-                  background: makeupTab === k ? '#fff' : 'transparent',
-                  color: makeupTab === k ? C.ink : C.sub,
-                  boxShadow: makeupTab === k ? '0 1px 2px rgba(0,0,0,.06)' : 'none',
-                }}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {!loading && tab === 'month' && schedView === 'makeup' && makeupTab === 'log' && (
           <MakeupLog
             rows={makeupLog}
             staffOrder={staff.map((x) => x.name)}
             ownerName={staff.find((x) => x.role === 'admin')?.name}
             toneOf={toneOf}
+            busy={busy}
+            isAdmin={isAdmin}
+            unmade={unmadeUp}
+            onMakeup={(r) => {
+              const hit = unmadeUp.find((x) => x.id === r.absent_id)
+              if (hit) setMakeupFor(hit)
+            }}
+            onAdd={() => setAddOpen(true)}
           />
         )}
-
-        {!loading && tab === 'month' && schedView === 'makeup' && makeupTab === 'todo' && (
-          <Card style={{ overflow: 'hidden' }}>
-            <div style={{ padding: '14px 18px', borderBottom: `1px solid ${C.line2}` }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                <div style={{ fontSize: 15, fontWeight: 700 }}>보강해야 할 수업 {unmadeUp.length}건</div>
-                {isAdmin && (
-                  <Btn
-                    variant="primary"
-                    onClick={() => setAddOpen(true)}
-                    style={{ marginLeft: 'auto', padding: '6px 13px', fontSize: 12.5 }}
-                  >
-                    수업 직접 추가
-                  </Btn>
-                )}
-              </div>
-              <div style={{ fontSize: 12, color: C.sub, marginTop: 3, lineHeight: 1.6 }}>
-                결강했지만 아직 보강 날짜가 안 잡힌 수업입니다. 월정액이라 수강료는 이미 받은 회차예요.
-                앱을 쓰기 전의 결강이나 이미 해준 보강은 <b>수업 직접 추가</b>로 기록하세요.
-              </div>
-            </div>
-            {unmadeUp.length === 0 ? (
-              <Empty>보강할 수업이 없습니다.</Empty>
-            ) : (
-              [...unmadeUp].sort((a, b) => a.d.localeCompare(b.d)).map((s) => (
-                <div
-                  key={s.id}
-                  style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '11px 18px', borderBottom: `1px solid ${C.line2}`, flexWrap: 'wrap' }}
-                >
-                  <span style={{ width: 4, height: 24, borderRadius: 2, background: colorOf(s.staff_name) }} />
-                  <div style={{ minWidth: 64, fontSize: 14, fontWeight: 700 }}>{s.student_name}</div>
-                  <div style={{ fontSize: 12, color: C.sub, minWidth: 140 }}>
-                    {s.d.slice(5).replace('-', '/')} ({s.weekday}) {hhmm(s.start_time)}
-                  </div>
-                  <div style={{ fontSize: 12, color: C.sub, minWidth: 60 }}>{s.staff_name}</div>
-                  {(() => {
-                    const n = daysSince(s.d)
-                    const tone = n >= 30 ? 'pink' : n >= 14 ? 'amber' : 'gray'
-                    return <Pill tone={tone}>{n}일 지남</Pill>
-                  })()}
-                  <div style={{ marginLeft: 'auto' }}>
-                    <Btn variant="primary" disabled={busy} onClick={() => setMakeupFor(s)} style={{ padding: '6px 13px', fontSize: 12.5 }}>
-                      보강 잡기
-                    </Btn>
-                  </div>
-                </div>
-              ))
-            )}
-          </Card>
-        )}
-
 
         {!loading && tab === 'billing' && isAdmin && (
           <>
