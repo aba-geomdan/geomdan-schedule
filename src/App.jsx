@@ -309,7 +309,12 @@ async function loadTemplates() {
   )
 }
 
-// 급여 기록 (마감 승인할 때 저장된 것)
+// 그 달 그 선생님 마감 (한 번에) · 취소
+async function closeMonth(ym, staffId, undo) {
+  return ok(await supabase.rpc('close_month', { p_ym: ym, p_staff: staffId, p_undo: !!undo }))
+}
+
+// 급여 기록 (마감할 때 저장된 것)
 async function loadPayrollHistory(from, to) {
   return ok(await supabase.rpc('payroll_history', { p_from: from || null, p_to: to || null }))
 }
@@ -1527,7 +1532,9 @@ function PayrollHistory({ rows, staffOrder = [], ownerName, toneOf, busy, onPaid
   )
 }
 
-function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onPrintAll, onSetRate, onDetail, busy, closing, staffOrder = [], ownerName, payHistory = [], onPayrollPaid, toneOf }) {
+function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onPrintAll, onSetRate, onDetail, busy, closing, closings = [], onClose, staffOrder = [], ownerName, payHistory = [], onPayrollPaid, toneOf }) {
+  // 이 달 마감한 선생님
+  const closedSet = useMemo(() => new Set((closings || []).filter((c) => c.status === '승인').map((c) => c.staff_name)), [closings])
   // 정산 화면 선생님 순서: 원장님은 맨 위 고정, 나머지는 등록 순서 (금액과 상관없이 늘 같은 자리)
   const moneyOrder = (an, _aAmt, bn, _bAmt) => {
     if (an === ownerName && bn !== ownerName) return -1
@@ -1606,7 +1613,7 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
         <div style={{ fontSize: 15, fontWeight: 700 }}>{ym.replace('-', '년 ')}월 정산</div>
         <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 8 }}>
-          {[['staff', '영수증'], ['payroll', '급여'], ['closing', '마감']].map(([k, label]) => (
+          {[['staff', '영수증'], ['payroll', '급여']].map(([k, label]) => (
             <button
               key={k}
               onClick={() => setGroup(k)}
@@ -1622,7 +1629,7 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
             </button>
           ))}
         </div>
-        {group !== 'closing' && (
+        {true && (
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
             <Btn onClick={() => onPrintAll(printOrder)} disabled={printOrder.length === 0}>
               영수증 {printOrder.length}장 인쇄
@@ -1632,9 +1639,7 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
         )}
       </div>
 
-      {group === 'closing' ? (
-        closing
-      ) : group === 'payroll' ? (
+      {group === 'payroll' ? (
         <div>
           <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 8, width: 'fit-content', marginBottom: 12 }}>
             {[['now', '이 달'], ['hist', '기록']].map(([k, label]) => (
@@ -1731,6 +1736,29 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
                     </td>
                     <td style={{ padding: '9px 12px', textAlign: 'right', color: r.unmade_up ? C.danger : '#C9CCD1', fontWeight: r.unmade_up ? 700 : 400 }}>
                       {r.unmade_up || '—'}
+                    </td>
+                    <td style={{ padding: '9px 12px', textAlign: 'center', whiteSpace: 'nowrap' }}>
+                      {closedSet.has(r.staff_name) ? (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                          <Pill tone="green">마감함</Pill>
+                          <Btn
+                            disabled={busy}
+                            onClick={() => onClose(r.staff_id, true)}
+                            style={{ padding: '4px 9px', fontSize: 11.5, color: C.sub }}
+                          >
+                            취소
+                          </Btn>
+                        </span>
+                      ) : (
+                        <Btn
+                          variant="primary"
+                          disabled={busy}
+                          onClick={() => onClose(r.staff_id, false)}
+                          style={{ padding: '5px 11px', fontSize: 12 }}
+                        >
+                          마감하기
+                        </Btn>
+                      )}
                     </td>
                     <td style={{ padding: '9px 12px', textAlign: 'right' }}>
                       <Btn disabled={busy} onClick={() => openDetail(r)} style={{ padding: '5px 11px', fontSize: 12 }}>
@@ -3336,10 +3364,10 @@ function HomeView({ ym, onPrevYm, onNextYm, onLoad, onGo, busy }) {
     const closing = {
       key: 'closing',
       state: closingDone ? 'done' : 'todo',
-      title: `${thisLabel} 출결 마감`,
+      title: `${thisLabel} 마감 · 급여`,
       desc: h.closing_total
-        ? `선생님 ${h.closing_total}명 중 ${h.closing_done}명 확인`
-        : '아직 마감 대상이 없습니다',
+        ? `선생님 ${h.closing_total}명 중 ${h.closing_done}명 마감함 (정산 › 급여에서)`
+        : '정산 › 급여에서 선생님별로 마감하세요',
       go: 'closing',
     }
     const pay = {
@@ -6076,6 +6104,25 @@ function App() {
               ym={ym}
               staffOrder={staff.map((x) => x.name)}
               toneOf={toneOf}
+              closings={closings}
+              onClose={async (sid, undo) => {
+                const t = staff.find((x) => x.id === sid)?.name || '선생님'
+                const ok2 = confirm(
+                  undo
+                    ? `${t} ${ym.slice(5)}월 마감을 취소합니다.\n출결을 다시 고칠 수 있게 됩니다. (급여 기록은 남아 있어요)`
+                    : `${t} ${ym.slice(5)}월을 마감합니다.\n\n· 이 달 급여가 기록에 저장됩니다\n· 그 달 출결이 잠겨서 더 이상 안 바뀝니다\n\n나중에 취소할 수 있어요.`
+                )
+                if (!ok2) return
+                setBusy(true)
+                try {
+                  const msg = await closeMonth(ym, sid, undo)
+                  say(msg || (undo ? '마감을 취소했습니다' : '마감했습니다'))
+                  await Promise.all([reloadMonth(), reloadMonthSessions(), reloadWeek()])
+                } catch (e) {
+                  fail(e)
+                }
+                setBusy(false)
+              }}
               payHistory={payHistory}
               onPayrollPaid={async (m, sid, clear) => {
                 setBusy(true)
