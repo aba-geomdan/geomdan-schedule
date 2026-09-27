@@ -5106,43 +5106,45 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
   })
   const [hols, setHols] = useState([])
   const [mode, setMode] = useState('grid')
-  // 선생님별: 표를 그림으로 찍어 인쇄 (브라우저 · 종이 방향과 상관없이 한 장에 딱 맞게)
+  // 선생님별: 표를 미리 그림으로 찍어 두고, 인쇄할 때는 그 그림만 나가게 합니다.
+  //   그림은 어떤 브라우저 · 종이 방향에서도 종이에 맞춰 줄어들 뿐 잘리지 않습니다.
+  //   미리 만들어 두므로 [인쇄] 버튼이든 Ctrl+P 든 똑같이 그림이 인쇄됩니다.
   const [imgs, setImgs] = useState(null)
   const [making, setMaking] = useState(false)
-  const printNow = async () => {
-    if (mode !== 'grid') return window.print()
-    setMaking(true)
-    try {
-      const { toPng } = await import('html-to-image')
-      const nodes = [...document.querySelectorAll('.tt-root .tt-gcap')]
-      const out = []
-      for (const n of nodes) {
-        out.push(
-          await toPng(n, {
-            pixelRatio: 2, backgroundColor: '#ffffff', width: n.offsetWidth, height: n.offsetHeight,
-            skipFonts: true, cacheBust: false, style: { margin: '0', transform: 'none' },
-          })
-        )
-      }
-      setImgs(out)
-    } catch (e) {
-      setImgs(null)
-      window.print()   // 그림을 못 만들면 그냥 화면 그대로 인쇄
-    }
-    setMaking(false)
-  }
+  const [imgErr, setImgErr] = useState('')
+  const snapKey = mode + '|' + [...picked].sort().join(',') + '|' + ym + '|' + sessions.length + '|' + hols.length
   useEffect(() => {
-    if (!imgs) return
+    if (mode !== 'grid') return
     let on = true
-    const done = () => setImgs(null)
-    window.addEventListener('afterprint', done)
-    Promise.all(imgs.map((u) => { const im = new Image(); im.src = u; return im.decode ? im.decode().catch(() => {}) : null }))
-      .then(() => { if (on) setTimeout(() => window.print(), 60) })
+    setImgs(null)
+    setMaking(true)
+    setImgErr('')
+    const t = setTimeout(async () => {
+      try {
+        const { toPng } = await import('html-to-image')
+        const nodes = [...document.querySelectorAll('.tt-root .tt-gcap')]
+        const out = []
+        for (const n of nodes) {
+          out.push(
+            await toPng(n, {
+              pixelRatio: 2, backgroundColor: '#ffffff', width: n.offsetWidth, height: n.offsetHeight,
+              skipFonts: true, cacheBust: false, style: { margin: '0', transform: 'none' },
+            })
+          )
+        }
+        if (on) setImgs(out)
+      } catch (e) {
+        if (on) setImgErr(String((e && e.message) || e || '알 수 없는 오류'))
+      }
+      if (on) setMaking(false)
+    }, 700)
     return () => {
       on = false
-      window.removeEventListener('afterprint', done)
+      clearTimeout(t)
     }
-  }, [imgs])
+  }, [snapKey])
+  const useImgs = mode === 'grid' && imgs && imgs.length > 0
+  const printNow = () => window.print()
 
   useEffect(() => {
     const [y, m] = ym.split('-').map(Number)
@@ -5200,7 +5202,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
   const pageCount = mode === 'all' ? weeks.length : shown.length
 
   return createPortal(
-    <div className={`tt-root${imgs ? ' tt-hasimgs' : ''}`}>
+    <div className={`tt-root${useImgs ? ' tt-hasimgs' : ''}`}>
       <style>{`
         .tt-root { position: fixed; inset: 0; background: #E9EAEC; z-index: 100; overflow: auto; }
         .tt-bar { position: sticky; top: 0; z-index: 2; background: #fff; border-bottom: 1px solid ${C.line};
@@ -5333,7 +5335,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
         <div style={{ fontSize: 15, fontWeight: 700 }}>
           {ym.replace('-', '년 ')}월 시간표 인쇄
           {/* 새 파일이 제대로 올라갔는지 확인용 — 브라우저가 옛 파일을 기억하고 있으면 이 표시가 안 보입니다 */}
-          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-5</span>
+          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-6</span>
         </div>
         <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 9 }}>
           {[['grid', '선생님별'], ['all', '전체']].map(([k, l]) => (
@@ -5377,8 +5379,13 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
         </div>
         )}
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 7 }}>
-          <Btn variant="primary" disabled={!pageCount || making} onClick={printNow}>
-            {making ? '준비 중…' : `${pageCount}장 인쇄`}
+          {mode === 'grid' && imgErr && (
+            <span style={{ fontSize: 12, color: C.danger, alignSelf: 'center' }} title={imgErr}>
+              그림 만들기 실패 — 화면 그대로 인쇄됩니다 ({imgErr.slice(0, 40)})
+            </span>
+          )}
+          <Btn variant="primary" disabled={!pageCount || (mode === 'grid' && making)} onClick={printNow}>
+            {mode === 'grid' && making ? '인쇄 준비 중…' : `${pageCount}장 인쇄`}
           </Btn>
           <Btn onClick={onClose}>닫기</Btn>
         </div>
@@ -5419,7 +5426,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
           <div style={{ textAlign: 'center', color: C.sub, padding: 40 }}>뽑을 선생님을 골라주세요.</div>
         )}
       </div>
-      {imgs && (
+      {useImgs && (
         <div className="tt-imgs">
           {imgs.map((u, i) => (
             <div key={i} className="tt-imgpage">
