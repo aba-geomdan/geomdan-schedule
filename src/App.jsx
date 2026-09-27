@@ -2214,7 +2214,15 @@ function CopayView({ loadCopay, say }) {
   )
 }
 
-/* 교육비 납입 증명서 (아동 한 명, 기간 선택) */
+/* 교육비 납입 증명서 (아동 한 명, 기간 선택)
+   · 보호자 성명 · 주민번호, 금액 · 횟수는 증명서 위에서 바로 고칠 수 있습니다 (인쇄용, DB에는 저장 안 함)
+   · 보호자 성명만 이 컴퓨터에 기억해 둡니다. 주민번호는 어디에도 저장하지 않습니다. */
+const guardianKey = (name) => `copay-guardian:${name}`
+const fmtRrn = (v) => {
+  const d = String(v || '').replace(/\D/g, '').slice(0, 13)
+  return d.length > 6 ? `${d.slice(0, 6)}-${d.slice(6)}` : d
+}
+
 function CertificatePrint({ name, year, rows: yearRows, loadCopay, say, onClose }) {
   const today = isoOf(new Date())
   const [mode, setMode] = useState('year') // year | recent2 | custom
@@ -2223,7 +2231,25 @@ function CertificatePrint({ name, year, rows: yearRows, loadCopay, say, onClose 
   const [issued, setIssued] = useState(today)
   const [pool, setPool] = useState(yearRows) // 최근 2개월 · 기간 직접일 때 다른 해도 불러옴
   const [saving, setSaving] = useState(false)
+  const [guardian, setGuardian] = useState(() => {
+    try {
+      return window.localStorage.getItem(guardianKey(name)) || ''
+    } catch (e) {
+      return ''
+    }
+  })
+  const [kidRrn, setKidRrn] = useState('')
+  const [guardRrn, setGuardRrn] = useState('')
+  const [edits, setEdits] = useState({}) // { ym: { amt, sess } } — 증명서에서 고친 값
   const sheetRef = useRef(null)
+
+  useEffect(() => {
+    try {
+      if (guardian.trim()) window.localStorage.setItem(guardianKey(name), guardian.trim())
+    } catch (e) {
+      /* 저장 안 돼도 괜찮음 */
+    }
+  }, [guardian, name])
 
   // 기간 직접: 걸친 해를 모두 불러옵니다 / 최근 2개월: 해가 바뀐 1월에도 되도록 작년까지
   useEffect(() => {
@@ -2250,15 +2276,22 @@ function CertificatePrint({ name, year, rows: yearRows, loadCopay, say, onClose 
     return sorted.filter((r) => r.ym >= from && r.ym <= to)
   }, [mode, pool, yearRows, from, to])
 
+  // 고친 값 반영
+  const amtOf = (r) => (edits[r.ym]?.amt != null ? edits[r.ym].amt : r.copay)
+  const sessOf = (r) => (edits[r.ym]?.sess != null ? edits[r.ym].sess : sessLabel(r))
+  const setEdit = (ym, patch) => setEdits((e) => ({ ...e, [ym]: { ...(e[ym] || {}), ...patch } }))
+  const edited = Object.keys(edits).length > 0
+
   const period =
     list.length === 0
       ? ''
       : mode === 'year'
       ? `${year}년 1월 ~ ${year}년 12월`
       : `${ymLong(list[0].ym)} ~ ${ymLong(list[list.length - 1].ym)}`
-  const total = list.reduce((a, r) => a + r.copay, 0)
-  const sessKnown = list.every((r) => r.sessions != null)
-  const sessTotal = list.reduce((a, r) => a + (Number(r.sessions) || 0), 0)
+  const total = list.reduce((a, r) => a + (Number(amtOf(r)) || 0), 0)
+  const sessNums = list.map((r) => String(sessOf(r) || '').match(/^\s*(\d+(?:\.\d+)?)\s*회?\s*$/))
+  const sessKnown = list.length > 0 && sessNums.every(Boolean)
+  const sessTotal = sessKnown ? sessNums.reduce((a, m) => a + Number(m[1]), 0) : 0
   const [iy, im, idd] = issued.split('-')
 
   const saveImage = async () => {
@@ -2267,10 +2300,17 @@ function CertificatePrint({ name, year, rows: yearRows, loadCopay, say, onClose 
     try {
       const { toPng } = await import('html-to-image')
       const n = sheetRef.current
-      const url = await toPng(n, {
-        pixelRatio: 2, backgroundColor: '#ffffff', width: n.offsetWidth, height: n.offsetHeight,
-        skipFonts: true, cacheBust: false, style: { margin: '0' },
-      })
+      document.activeElement && document.activeElement.blur && document.activeElement.blur()
+      n.classList.add('cert-shot')
+      let url
+      try {
+        url = await toPng(n, {
+          pixelRatio: 2, backgroundColor: '#ffffff', width: n.offsetWidth, height: n.offsetHeight,
+          skipFonts: true, cacheBust: false, style: { margin: '0' },
+        })
+      } finally {
+        n.classList.remove('cert-shot')
+      }
       const a = document.createElement('a')
       a.href = url
       a.download = `${name} 교육비 납입증명서 ${period.replace(/\s/g, '')}.png`
@@ -2280,6 +2320,16 @@ function CertificatePrint({ name, year, rows: yearRows, loadCopay, say, onClose 
       say && say('이미지 저장에 실패했습니다', 'err')
     }
     setSaving(false)
+  }
+
+  const doPrint = () => {
+    document.activeElement && document.activeElement.blur && document.activeElement.blur()
+    setTimeout(() => window.print(), 50)
+  }
+  const savePdf = () => {
+    say && say("인쇄 창에서 프린터(대상)를 'PDF로 저장'으로 고르세요")
+    document.activeElement && document.activeElement.blur && document.activeElement.blur()
+    setTimeout(() => window.print(), 400)
   }
 
   const chip = (k, label) => (
@@ -2297,54 +2347,92 @@ function CertificatePrint({ name, year, rows: yearRows, loadCopay, say, onClose 
   )
   const th = { border: '1px solid #9AA0A6', padding: '6px 8px', background: '#F4F5F7', fontWeight: 700 }
   const td = { border: '1px solid #9AA0A6', padding: '6px 8px' }
+  const tdIn = { border: '1px solid #9AA0A6', padding: '2px 4px' }
 
   return createPortal(
     <div className="cert-root">
       <style>{`
+        @page certpage { size: A4 portrait; margin: 0; }
         .cert-root { position: fixed; inset: 0; z-index: 95; background: #E9EAEC; overflow: auto; }
         .cert-sheet { width: 210mm; min-height: 297mm; margin: 12px auto 30px; background: #fff; padding: 22mm 20mm;
-          box-sizing: border-box; color: #1D2023; box-shadow: 0 1px 4px rgba(0,0,0,.12); }
+          box-sizing: border-box; color: #1D2023; box-shadow: 0 1px 4px rgba(0,0,0,.12); page: certpage; }
+        .cert-in { width: 100%; box-sizing: border-box; border: none; border-bottom: 1px dashed #C8324F; background: #FFF7F9;
+          font: inherit; color: inherit; padding: 4px 4px; outline: none; }
+        .cert-in:focus { background: #FFEDF2; }
+        .cert-in.r { text-align: right; } .cert-in.c { text-align: center; }
+        .cert-in::placeholder { color: #C9A3AE; }
+        /* 이미지 저장할 때도 인쇄처럼 글자만 */
+        .cert-shot .cert-in { border: none !important; background: transparent !important; padding: 0 !important; }
+        .cert-shot .cert-in::placeholder { color: transparent !important; }
         @media print {
           @page { size: A4 portrait; margin: 0; }
           html, body { height: auto !important; overflow: visible !important; background: #fff !important; }
           body > *:not(.cert-root) { display: none !important; }
           .cert-root { position: static !important; overflow: visible !important; background: #fff; }
           .cert-bar { display: none !important; }
-          .cert-sheet { margin: 0; box-shadow: none; }
+          .cert-sheet { margin: 0; box-shadow: none; min-height: 0; height: 296mm; overflow: hidden; }
+          .cert-in { border: none !important; background: transparent !important; padding: 0 !important; }
+          .cert-in::placeholder { color: transparent !important; }
         }
       `}</style>
-      <div className="cert-bar" style={{ position: 'sticky', top: 0, zIndex: 2, background: '#fff', borderBottom: `1px solid ${C.line}`, padding: '10px 14px', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-        <div style={{ fontSize: 15, fontWeight: 700 }}>{name} 납입증명서</div>
-        {chip('year', `${year}년 전체 (연말정산)`)}
-        {chip('recent2', '최근 2개월')}
-        {chip('custom', '기간 직접')}
-        {mode === 'custom' && (
-          <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center', fontSize: 12.5 }}>
-            <input type="month" value={from} onChange={(e) => setFrom(e.target.value)} style={{ fontSize: 12.5, padding: '4px 6px', border: '1px solid #DEE0E3', borderRadius: 6 }} />
-            ~
-            <input type="month" value={to} onChange={(e) => setTo(e.target.value)} style={{ fontSize: 12.5, padding: '4px 6px', border: '1px solid #DEE0E3', borderRadius: 6 }} />
+      <div className="cert-bar" style={{ position: 'sticky', top: 0, zIndex: 2, background: '#fff', borderBottom: `1px solid ${C.line}`, padding: '10px 14px' }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 15, fontWeight: 700 }}>{name} 납입증명서</div>
+          {chip('year', `${year}년 전체 (연말정산)`)}
+          {chip('recent2', '최근 2개월')}
+          {chip('custom', '기간 직접')}
+          {mode === 'custom' && (
+            <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center', fontSize: 12.5 }}>
+              <input type="month" value={from} onChange={(e) => setFrom(e.target.value)} style={{ fontSize: 12.5, padding: '4px 6px', border: '1px solid #DEE0E3', borderRadius: 6 }} />
+              ~
+              <input type="month" value={to} onChange={(e) => setTo(e.target.value)} style={{ fontSize: 12.5, padding: '4px 6px', border: '1px solid #DEE0E3', borderRadius: 6 }} />
+            </span>
+          )}
+          <label style={{ fontSize: 12.5, color: C.sub, display: 'inline-flex', gap: 4, alignItems: 'center' }}>
+            발급일
+            <input type="date" value={issued} onChange={(e) => setIssued(e.target.value || today)} style={{ fontSize: 12.5, padding: '4px 6px', border: '1px solid #DEE0E3', borderRadius: 6 }} />
+          </label>
+          <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6, flexWrap: 'wrap' }}>
+            <Btn onClick={onClose}>닫기</Btn>
+            <Btn onClick={saveImage} disabled={saving || !list.length}>{saving ? '저장 중…' : '이미지 저장'}</Btn>
+            <Btn onClick={savePdf} disabled={!list.length}>PDF 저장</Btn>
+            <Btn variant="primary" onClick={doPrint} disabled={!list.length}>인쇄</Btn>
           </span>
-        )}
-        <label style={{ fontSize: 12.5, color: C.sub, display: 'inline-flex', gap: 4, alignItems: 'center' }}>
-          발급일
-          <input type="date" value={issued} onChange={(e) => setIssued(e.target.value || today)} style={{ fontSize: 12.5, padding: '4px 6px', border: '1px solid #DEE0E3', borderRadius: 6 }} />
-        </label>
-        <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6 }}>
-          <Btn onClick={onClose}>닫기</Btn>
-          <Btn onClick={saveImage} disabled={saving || !list.length}>{saving ? '저장 중…' : '이미지 저장'}</Btn>
-          <Btn variant="primary" onClick={() => window.print()} disabled={!list.length}>인쇄</Btn>
-        </span>
+        </div>
+        <div style={{ fontSize: 12, color: C.sub, marginTop: 6, lineHeight: 1.6 }}>
+          분홍 칸은 눌러서 바로 적거나 고칠 수 있어요 (인쇄에는 글자만 나옵니다). 주민번호는 저장하지 않으니 매번 적어주세요.
+          {edited && (
+            <>
+              {' '}금액·횟수를 고친 곳이 있어요 —{' '}
+              <button onClick={() => setEdits({})} style={{ border: 'none', background: 'none', color: C.pkd, cursor: 'pointer', padding: 0, fontSize: 12, fontWeight: 700 }}>
+                원래대로
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
       <div className="cert-sheet" ref={sheetRef}>
         <div style={{ textAlign: 'center', fontSize: 26, fontWeight: 700, letterSpacing: 10, marginBottom: 26 }}>교육비 납입 증명서</div>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13.5, marginBottom: 14 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13.5, marginBottom: 14, tableLayout: 'fixed' }}>
           <tbody>
             <tr>
-              <td style={{ ...th, width: '18%' }}>아 동 명</td>
-              <td style={{ ...td, width: '32%' }}>{name}</td>
-              <td style={{ ...th, width: '18%' }}>보 호 자</td>
-              <td style={td} />
+              <td style={{ ...th, width: '19%' }}>아 동 명</td>
+              <td style={{ ...td, width: '31%' }}>{name}</td>
+              <td style={{ ...th, width: '19%' }}>주민등록번호</td>
+              <td style={tdIn}>
+                <input className="cert-in" value={kidRrn} onChange={(e) => setKidRrn(fmtRrn(e.target.value))} placeholder="아동 주민번호" inputMode="numeric" autoComplete="off" />
+              </td>
+            </tr>
+            <tr>
+              <td style={th}>보호자 성명</td>
+              <td style={tdIn}>
+                <input className="cert-in" value={guardian} onChange={(e) => setGuardian(e.target.value)} placeholder="보호자 이름" autoComplete="off" />
+              </td>
+              <td style={th}>주민등록번호</td>
+              <td style={tdIn}>
+                <input className="cert-in" value={guardRrn} onChange={(e) => setGuardRrn(fmtRrn(e.target.value))} placeholder="보호자 주민번호" inputMode="numeric" autoComplete="off" />
+              </td>
             </tr>
             <tr>
               <td style={th}>기 간</td>
@@ -2353,7 +2441,7 @@ function CertificatePrint({ name, year, rows: yearRows, loadCopay, say, onClose 
           </tbody>
         </table>
 
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13.5 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13.5, tableLayout: 'fixed' }}>
           <thead>
             <tr>
               <th style={{ ...th, textAlign: 'center' }}>납 입 월</th>
@@ -2365,8 +2453,18 @@ function CertificatePrint({ name, year, rows: yearRows, loadCopay, say, onClose 
             {list.map((r) => (
               <tr key={r.ym}>
                 <td style={{ ...td, textAlign: 'center' }}>{ymLong(r.ym)}</td>
-                <td style={{ ...td, textAlign: 'center' }}>{sessLabel(r) || '—'}</td>
-                <td style={{ ...td, textAlign: 'right' }}>{won(r.copay)}</td>
+                <td style={tdIn}>
+                  <input className="cert-in c" value={sessOf(r) || ''} onChange={(e) => setEdit(r.ym, { sess: e.target.value })} autoComplete="off" />
+                </td>
+                <td style={tdIn}>
+                  <input
+                    className="cert-in r"
+                    inputMode="numeric"
+                    autoComplete="off"
+                    value={won(Number(amtOf(r)) || 0)}
+                    onChange={(e) => setEdit(r.ym, { amt: Number(e.target.value.replace(/\D/g, '')) || 0 })}
+                  />
+                </td>
               </tr>
             ))}
             {list.length === 0 && (
@@ -2378,7 +2476,7 @@ function CertificatePrint({ name, year, rows: yearRows, loadCopay, say, onClose 
           <tfoot>
             <tr>
               <td style={{ ...th, textAlign: 'center' }}>합 계</td>
-              <td style={{ ...th, textAlign: 'center' }}>{sessKnown && list.length ? `${sessTotal}회` : ''}</td>
+              <td style={{ ...th, textAlign: 'center' }}>{sessKnown ? `${sessTotal}회` : ''}</td>
               <td style={{ ...th, textAlign: 'right' }}>{won(total)}</td>
             </tr>
           </tfoot>
@@ -4732,21 +4830,32 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
 
   // 종이 한 장에 딱 맞게 크기 자동 조절
   //   시간 줄이 많거나 한 칸에 아이가 여럿이면 넘치고, 수업이 적으면 너무 작게 나와서
-  //   화면에서 실제 높이를 재고 남는 공간에 맞춰 키우거나 줄입니다 (최대 1.5배).
-  //   인쇄 영역(283×194mm)과 화면 종이 안쪽 크기가 같아서 인쇄에도 그대로 맞습니다.
+  //   화면에서 실제 높이를 재고 남는 공간에 맞춰 키우거나 줄입니다 (최대 1.4배).
+  //   폭은 '100% ÷ 배율'로 넓혀 둔 뒤 배율만큼 줄이므로, 결과 폭은 언제나 종이 폭과 같습니다.
+  //   인쇄 영역도 화면 종이 안쪽과 같은 283×196mm 라서 인쇄에 그대로 맞습니다.
   const pageRef = useRef(null)
   const wrapRef = useRef(null)
   useLayoutEffect(() => {
     const pg = pageRef.current
     const wr = wrapRef.current
     if (!pg || !wr) return
-    wr.style.zoom = '1'
+    wr.style.transform = 'none'
+    wr.style.width = '100%'
+    wr.style.zoom = ''
     const cs = getComputedStyle(pg)
     const head = pg.querySelector('.tt-gh')
     const availH =
       pg.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom) - (head ? head.offsetHeight : 0) - 6
     const h = wr.scrollHeight
-    if (h > 0 && availH > 0) wr.style.zoom = String(Math.min(1.5, availH / h))
+    if (!(h > 0 && availH > 0)) return
+    let z = Math.min(1.4, availH / h)
+    wr.style.width = `${100 / z}%`
+    // 폭을 넓히면 줄바꿈이 줄어 높이가 달라질 수 있어 한 번 더 잽니다
+    const h2 = wr.scrollHeight
+    if (h2 > 0 && h2 * z > availH) z = availH / h2
+    wr.style.width = `${100 / z}%`
+    wr.style.transformOrigin = 'top left'
+    wr.style.transform = `scale(${z})`
   }, [sessions, outside, holidays, ym])
 
   const cellOf = (dIso, hour) => {
@@ -4766,7 +4875,10 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
       </div>
 
       <div className="tt-gwrap" ref={wrapRef}>
-        {weeks.map((wk, wi) => (
+        {/* 왼쪽 · 오른쪽 두 줄 — 인쇄할 때 칸이 엉뚱하게 나뉘지 않도록 직접 나눕니다 */}
+        {[weeks.slice(0, Math.ceil(weeks.length / 2)), weeks.slice(Math.ceil(weeks.length / 2))].map((col, ci) => (
+        <div key={ci} className="tt-gcol">
+        {col.map((wk, wj) => { const wi = ci * Math.ceil(weeks.length / 2) + wj; return (
           <table key={wi} className="tt-gtbl">
             <thead>
               <tr>
@@ -4837,6 +4949,8 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
               ))}
             </tbody>
           </table>
+        ) })}
+        </div>
         ))}
       </div>
     </div>
@@ -5256,13 +5370,15 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
         .tt-bar { position: sticky; top: 0; z-index: 2; background: #fff; border-bottom: 1px solid ${C.line};
           padding: 11px 16px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
         .tt-wrap { padding: 16px 12px 40px; overflow-x: auto; }
-        .tt-grid-page { padding: 8mm 7mm; overflow: hidden; }
+        /* 표 모양: 화면 종이 안쪽(283×196mm)과 인쇄 영역(A4 가로 − 여백 7mm)을 똑같이 맞춥니다 */
+        .tt-grid-page { padding: 7mm; overflow: hidden; }
         .tt-gh { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 6px;
           border-bottom: 2px solid #1F2328; padding-bottom: 5px; }
         .tt-gh b { font-size: 15px; } .tt-gh span { font-size: 12px; color: #4A4F57; }
         .tt-gd { color: #71757C !important; }
         /* 한 달이 한 장에 들어오도록 2단으로 */
-        .tt-gwrap { column-count: 2; column-gap: 5mm; flex: none; }
+        .tt-gwrap { display: flex; gap: 5mm; align-items: flex-start; flex: none; }
+        .tt-gcol { flex: 1 1 0; min-width: 0; }
         .tt-gtbl { break-inside: avoid; page-break-inside: avoid; margin-bottom: 3.5mm; }
         .tt-gtbl { width: 100%; border-collapse: collapse; table-layout: fixed; }
         .tt-gtbl th, .tt-gtbl td { border: 0.6px solid #9AA0A6; height: 23px; vertical-align: top; padding: 1px; }
@@ -5342,10 +5458,13 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
         .tt-lbl-s { font-size: 10px !important; padding: 0 7px !important; }
         .tt-lbl { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); font-size: 11px; font-weight: 700;
           color: #fff; background: #C8324F; border-radius: 99px; padding: 1px 9px; }
+        /* 이름 붙인 페이지 — 다른 화면의 @page 규칙과 섞이지 않고 무조건 A4 가로 */
+        @page ttland { size: A4 landscape; margin: 7mm; }
         @media print {
           /* 종이 크기에 고정하지 않고, 인쇄 영역 폭에 맞춰 줄어들게 합니다.
              브라우저·프린터마다 여백과 배율 계산이 달라도 잘리지 않습니다. */
           @page { size: A4 landscape; margin: 7mm; }
+          .tt-page { page: ttland; }
           html, body { height: auto !important; overflow: visible !important; background: #fff !important;
             margin: 0 !important; padding: 0 !important; min-width: 0 !important; }
           body > *:not(.tt-root) { display: none !important; }
@@ -5357,6 +5476,9 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
             page-break-after: always; break-after: page; page-break-inside: avoid; break-inside: avoid;
             -webkit-print-color-adjust: exact; print-color-adjust: exact; }
           .tt-page:last-child { page-break-after: auto; break-after: auto; }
+          /* 표 모양은 크기를 화면에서 재서 맞추므로 인쇄에서도 같은 크기(283×196mm)로 고정 */
+          .tt-grid-page { width: 283mm !important; height: 196mm !important; aspect-ratio: auto !important;
+            max-height: none !important; overflow: hidden !important; }
         }
       `}</style>
 
