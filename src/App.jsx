@@ -5123,14 +5123,20 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
       try {
         const { toPng } = await import('html-to-image')
         const nodes = [...document.querySelectorAll('.tt-root .tt-gcap')]
+        if (!nodes.length) throw new Error('시간표를 찾지 못함')
         const out = []
         for (const n of nodes) {
-          out.push(
-            await toPng(n, {
-              pixelRatio: 2, backgroundColor: '#ffffff', width: n.offsetWidth, height: n.offsetHeight,
-              skipFonts: true, cacheBust: false, style: { margin: '0', transform: 'none' },
-            })
-          )
+          // 12초 안에 못 만들면 멈춘 것으로 보고 알려줍니다
+          const shot = toPng(n, {
+            pixelRatio: 2, backgroundColor: '#ffffff', width: n.offsetWidth, height: n.offsetHeight,
+            skipFonts: true, cacheBust: false, style: { margin: '0', transform: 'none' },
+          })
+          const url = await Promise.race([
+            shot,
+            new Promise((_, rej) => setTimeout(() => rej(new Error('시간 초과')), 12000)),
+          ])
+          if (!url || url.length < 2000) throw new Error('빈 그림')
+          out.push(url)
         }
         if (on) setImgs(out)
       } catch (e) {
@@ -5335,7 +5341,13 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
         <div style={{ fontSize: 15, fontWeight: 700 }}>
           {ym.replace('-', '년 ')}월 시간표 인쇄
           {/* 새 파일이 제대로 올라갔는지 확인용 — 브라우저가 옛 파일을 기억하고 있으면 이 표시가 안 보입니다 */}
-          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-6</span>
+          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-7</span>
+          {mode === 'grid' && (
+            <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: imgErr ? C.danger : useImgs ? '#1F7A45' : C.mut }}>
+              {imgErr ? `그림 실패: ${imgErr.slice(0, 60)}` : useImgs ? `그림 준비됨 ${imgs.length}장` : '그림 만드는 중'}
+              {' · '}화면 {Math.round((window.devicePixelRatio || 1) * 100)}%
+            </span>
+          )}
         </div>
         <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 9 }}>
           {[['grid', '선생님별'], ['all', '전체']].map(([k, l]) => (
