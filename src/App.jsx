@@ -5278,7 +5278,11 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
       `}</style>
 
       <div className="tt-bar">
-        <div style={{ fontSize: 15, fontWeight: 700 }}>{ym.replace('-', '년 ')}월 시간표 인쇄</div>
+        <div style={{ fontSize: 15, fontWeight: 700 }}>
+          {ym.replace('-', '년 ')}월 시간표 인쇄
+          {/* 새 파일이 제대로 올라갔는지 확인용 — 브라우저가 옛 파일을 기억하고 있으면 이 표시가 안 보입니다 */}
+          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-4</span>
+        </div>
         <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 9 }}>
           {[['grid', '선생님별'], ['all', '전체']].map(([k, l]) => (
             <button
