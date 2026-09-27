@@ -4762,6 +4762,9 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
   const [y, m] = ym.split('-').map(Number)
   const lastDay = new Date(y, m, 0).getDate()
   const DOW = ['월', '화', '수', '목', '금', '토']
+  // 토요일 일정이 한 건도 없으면 토요일 칸을 빼서 나머지 칸 · 글자를 더 크게
+  const hasSat = [...sessions, ...outside].some((x) => new Date(x.d + 'T00:00:00').getDay() === 6)
+  const DAYS = hasSat ? DOW : DOW.slice(0, 5)
 
   // 아이마다 색 (엑셀에서 쓰시던 것처럼)
   const kidColor = useMemo(() => {
@@ -4820,6 +4823,26 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
       setGW(w)
       return
     }
+    // 칸이 좁아 이름 · 시간이 안 들어가는 칸만 글자를 한 단계씩 줄입니다 (잘리지 않게)
+    el.querySelectorAll('.tt-gblk').forEach((blk) => {
+      blk.classList.remove('tt-gsm', 'tt-gxs', 'tt-g2t')
+      const over = () => {
+        const bb = blk.querySelector('b')
+        return blk.scrollWidth > blk.clientWidth + 1 || blk.scrollHeight > blk.clientHeight + 1 ||
+          (bb && bb.scrollWidth > bb.clientWidth + 1)
+      }
+      if (over()) {
+        blk.classList.add('tt-gsm')
+        if (over()) {
+          blk.classList.remove('tt-gsm')
+          blk.classList.add('tt-gxs')
+          if (over()) {   // 그래도 안 되면 이름 · 시간을 두 줄로 작게
+            blk.classList.remove('tt-gxs')
+            blk.classList.add('tt-g2t')
+          }
+        }
+      }
+    })
     const z = Math.min(bw / GW, bh / h)
     const x = Math.max(0, (bw - GW * z) / 2)
     if (Math.abs(z - fit.z) > 0.002 || Math.abs(x - fit.x) > 1) setFit({ z, x })
@@ -4827,7 +4850,21 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
 
   // 시간 비례: 한 시간 = GH px. 수업은 시작 분 ~ 끝 분 위치에 그 길이만큼 그립니다.
   //   같은 시간에 겹치는 일정은 나란히 (겹친 것끼리만 폭을 나눔)
-  const GH = 34
+  const GH = 26
+  // 이 달 내내 일정이 한 건도 없는 시간 줄은 얇게 접어서, 그만큼 표 전체(글자)를 크게 씁니다.
+  //   일정이 있는 시간 줄 안에서는 분 단위 위치 · 길이가 그대로 정확합니다.
+  const busyHour = (h) =>
+    [...sessions, ...outside].some((x) => ttMin(x.start_time) < (h + 1) * 60 && ttMin(x.end_time) > h * 60)
+  const rows = hours.map((h) => ({ h, H: busyHour(h) ? GH : Math.round(GH * 0.38), thin: !busyHour(h) }))
+  const rowTop = []
+  rows.reduce((acc, r, i) => ((rowTop[i] = acc), acc + r.H), 0)
+  const bodyH = rows.reduce((a, r) => a + r.H, 0)
+  const yOf = (min) => {
+    const i = Math.min(Math.max(Math.floor(min / 60) - h1, 0), rows.length - 1)
+    const frac = Math.min(Math.max((min - (h1 + i) * 60) / 60, 0), 1)
+    return rowTop[i] + frac * rows[i].H
+  }
+
   const blocksOf = (dIso) => {
     const items = [
       ...outside.filter((e) => e.d === dIso).map((x) => ({ x, out: true })),
@@ -4877,10 +4914,10 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
         {[weeks.slice(0, Math.ceil(weeks.length / 2)), weeks.slice(Math.ceil(weeks.length / 2))].map((col, ci) => (
         <div key={ci} className="tt-gcol">
         {col.map((wk, wj) => { const wi = ci * Math.ceil(weeks.length / 2) + wj; return (
-          <div key={wi} className="tt-gw" style={{ '--H': `${GH}px` }}>
+          <div key={wi} className="tt-gw" style={{ '--H': `${GH}px`, '--ND': DAYS.length }}>
             <div className="tt-gw-head">
               <div />
-              {DOW.map((dw, di) => {
+              {DAYS.map((dw, di) => {
                 const day = wk.find((x) => (x.getDay() + 6) % 7 === di)
                 return (
                   <div key={dw} className={day && holidays[iso(day)] ? 'tt-ghol' : ''}>
@@ -4890,13 +4927,13 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
                 )
               })}
             </div>
-            <div className="tt-gw-body" style={{ height: hours.length * GH }}>
+            <div className="tt-gw-body" style={{ height: bodyH }}>
               <div className="tt-gw-axis">
                 {hours.map((h) => (
-                  <div key={h} style={{ height: GH }}>{hourLabel(h)}</div>
+                  <div key={h} className={busyHour(h) ? '' : 'tt-gthin'} style={{ height: rows[hours.indexOf(h)].H }}>{hourLabel(h)}</div>
                 ))}
               </div>
-              {DOW.map((dw, di) => {
+              {DAYS.map((dw, di) => {
                 const day = wk.find((x) => (x.getDay() + 6) % 7 === di)
                 if (!day) return <div key={dw} className="tt-gw-day tt-gempty" />
                 const dIso = iso(day)
@@ -4909,15 +4946,18 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
                   )
                 return (
                   <div key={dw} className="tt-gw-day">
+                    <div className="tt-glines">
+                      {rows.map((r) => <div key={r.h} style={{ height: r.H }} />)}
+                    </div>
                     {blocksOf(dIso).map((k) => {
-                      const top = ((k.a - h1 * 60) / 60) * GH
-                      const hgt = Math.max(((k.b - k.a) / 60) * GH - 1, 8)
+                      const top = yOf(k.a)
+                      const hgt = Math.max(yOf(k.b) - top - 1, 8)
                       const pos = {
                         top, height: hgt,
                         left: `calc(${(k.lane / k.lanes) * 100}% + 1px)`,
                         width: `calc(${100 / k.lanes}% - 2px)`,
                       }
-                      const one = hgt < 22   // 짧으면 한 줄로
+                      const one = hgt < 40   // 1시간 20분 미만은 이름 · 시간을 한 줄로 (크게)
                       if (k.out)
                         return (
                           <div key={'o' + k.x.id} className={`tt-gblk tt-gout${one ? ' tt-g1' : ''}`} style={pos}>
@@ -5270,14 +5310,31 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
         .tt-gw-axis > div { box-sizing: border-box; border-bottom: 0.6px solid #DADDE1; font-size: 7.5px; color: #4A4F57;
           text-align: center; padding-top: 2px; white-space: nowrap; }
         .tt-gw-day { position: relative; border-left: 0.6px solid #9AA0A6; border-top: 0.6px solid #9AA0A6;
-          background-image: linear-gradient(to bottom, transparent calc(var(--H) - 0.6px), #DADDE1 calc(var(--H) - 0.6px));
-          background-size: 100% var(--H); }
+          }
+        .tt-glines { position: absolute; inset: 0; pointer-events: none; }
+        .tt-glines > div { box-sizing: border-box; border-bottom: 0.6px solid #DADDE1; }
+        .tt-gw-axis > div.tt-gthin { font-size: 8.5px !important; padding-top: 0; line-height: 1; color: #9AA0A6; }
         .tt-gw-day.tt-ghol { display: flex; align-items: center; justify-content: center; background: #E9A9A2; }
         .tt-gw-day.tt-gempty { background: #F7F8F9; }
-        .tt-gblk { position: absolute; box-sizing: border-box; overflow: hidden; margin: 0 !important; }
-        .tt-gblk.tt-g1 { display: flex; align-items: center; gap: 3px; padding-top: 0 !important; padding-bottom: 0 !important; }
-        .tt-gblk.tt-g1 b { display: inline !important; }
-        .tt-gblk small { white-space: nowrap; }
+        .tt-gblk { position: absolute; box-sizing: border-box; overflow: hidden; margin: 0 !important; padding: 1px 3px !important;
+          line-height: 1.08 !important; border-radius: 3px; }
+        /* 표 모양 글자 최대로 — 이름 17px · 시간 14px (칸이 좁으면 그 칸만 한 단계씩 줄임) */
+        .tt-gblk b { display: block; font-size: 17px !important; font-weight: 800; white-space: nowrap; letter-spacing: -0.3px; overflow: hidden; text-overflow: ellipsis; }
+        .tt-gblk small { display: block; font-size: 14px !important; font-weight: 700; opacity: .9 !important; white-space: nowrap; letter-spacing: -0.3px; }
+        .tt-gblk.tt-g1 { display: flex; align-items: center; gap: 4px; padding-top: 0 !important; padding-bottom: 0 !important; }
+        .tt-gblk.tt-g1 b { flex: 0 1 auto; min-width: 0; }
+        .tt-gblk.tt-g1 small { flex: none; }
+        .tt-gblk .tt-gtag { font-size: 10.5px !important; padding: 0 3px; margin-right: 3px; }
+        .tt-gblk.tt-gout b { font-size: 14.5px !important; } .tt-gblk.tt-gout small { font-size: 12.5px !important; }
+        .tt-gblk.tt-gsm b { font-size: 14.5px !important; } .tt-gblk.tt-gsm small { font-size: 12px !important; }
+        .tt-gblk.tt-gxs b { font-size: 12.5px !important; } .tt-gblk.tt-gxs small { font-size: 10.5px !important; }
+        .tt-gblk.tt-g2t { display: block !important; padding-top: 1px !important; line-height: 1.02 !important; }
+        .tt-gblk.tt-g2t b { font-size: 10px !important; } .tt-gblk.tt-g2t small { font-size: 9px !important; }
+        .tt-gblk.tt-gsm .tt-gtag, .tt-gblk.tt-gxs .tt-gtag, .tt-gblk.tt-g2t .tt-gtag { font-size: 9px !important; padding: 0 2px; margin-right: 2px; }
+        .tt-gw-axis > div { font-size: 13px !important; font-weight: 700; }
+        .tt-gw-head .tt-gdw { font-size: 13px; } .tt-gw-head .tt-gdt { font-size: 15px; }
+        .tt-gw-head, .tt-gw-body { grid-template-columns: 48px repeat(var(--ND, 6), minmax(0, 1fr)) !important; }
+        .tt-gw-day.tt-ghol span { font-size: 15px; font-weight: 800; }
         .tt-gtbl { width: 100%; border-collapse: collapse; table-layout: fixed; }
         .tt-gtbl th, .tt-gtbl td { border: 0.6px solid #9AA0A6; height: 23px; vertical-align: top; padding: 1px; }
         .tt-gtbl th { background: #F2E9C9; height: 19px; padding: 0; }
@@ -5379,7 +5436,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
           .tt-root.tt-hasimgs .tt-imgs { display: block !important; }
           .tt-imgpage { page: ttland; break-after: page; page-break-after: always; break-inside: avoid; }
           .tt-imgpage:last-child { break-after: auto; page-break-after: auto; }
-          .tt-imgpage img { display: block; width: 100%; height: auto; max-height: 190mm; object-fit: contain; margin: 0 auto; }
+          .tt-imgpage img { display: block; width: 100%; height: auto; max-height: 194mm; object-fit: contain; margin: 0 auto; }
         }
       `}</style>
 
@@ -5387,7 +5444,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
         <div style={{ fontSize: 15, fontWeight: 700 }}>
           {ym.replace('-', '년 ')}월 시간표 인쇄
           {/* 새 파일이 제대로 올라갔는지 확인용 — 브라우저가 옛 파일을 기억하고 있으면 이 표시가 안 보입니다 */}
-          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-8</span>
+          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-12</span>
           {mode === 'grid' && (
             <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: imgErr ? C.danger : useImgs ? '#1F7A45' : C.mut }}>
               {imgErr ? `그림 실패: ${imgErr.slice(0, 60)}` : useImgs ? `그림 준비됨 ${imgs.length}장` : '그림 만드는 중'}
