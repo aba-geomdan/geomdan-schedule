@@ -2230,7 +2230,6 @@ function CertificatePrint({ name, year, rows: yearRows, loadCopay, say, onClose 
   const [to, setTo] = useState(`${year}-12`)
   const [issued, setIssued] = useState(today)
   const [pool, setPool] = useState(yearRows) // 최근 2개월 · 기간 직접일 때 다른 해도 불러옴
-  const [saving, setSaving] = useState(false)
   const [guardian, setGuardian] = useState(() => {
     try {
       return window.localStorage.getItem(guardianKey(name)) || ''
@@ -2294,34 +2293,6 @@ function CertificatePrint({ name, year, rows: yearRows, loadCopay, say, onClose 
   const sessTotal = sessKnown ? sessNums.reduce((a, m) => a + Number(m[1]), 0) : 0
   const [iy, im, idd] = issued.split('-')
 
-  const saveImage = async () => {
-    if (!sheetRef.current) return
-    setSaving(true)
-    try {
-      const { toPng } = await import('html-to-image')
-      const n = sheetRef.current
-      document.activeElement && document.activeElement.blur && document.activeElement.blur()
-      n.classList.add('cert-shot')
-      let url
-      try {
-        url = await toPng(n, {
-          pixelRatio: 2, backgroundColor: '#ffffff', width: n.offsetWidth, height: n.offsetHeight,
-          skipFonts: true, cacheBust: false, style: { margin: '0' },
-        })
-      } finally {
-        n.classList.remove('cert-shot')
-      }
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `${name} 교육비 납입증명서 ${period.replace(/\s/g, '')}.png`
-      a.click()
-      say && say('저장했습니다')
-    } catch (e) {
-      say && say('이미지 저장에 실패했습니다', 'err')
-    }
-    setSaving(false)
-  }
-
   const doPrint = () => {
     document.activeElement && document.activeElement.blur && document.activeElement.blur()
     setTimeout(() => window.print(), 50)
@@ -2361,9 +2332,6 @@ function CertificatePrint({ name, year, rows: yearRows, loadCopay, say, onClose 
         .cert-in:focus { background: #FFEDF2; }
         .cert-in.r { text-align: right; } .cert-in.c { text-align: center; }
         .cert-in::placeholder { color: #C9A3AE; }
-        /* 이미지 저장할 때도 인쇄처럼 글자만 */
-        .cert-shot .cert-in { border: none !important; background: transparent !important; padding: 0 !important; }
-        .cert-shot .cert-in::placeholder { color: transparent !important; }
         @media print {
           @page { size: A4 portrait; margin: 0; }
           html, body { height: auto !important; overflow: visible !important; background: #fff !important; }
@@ -2394,7 +2362,6 @@ function CertificatePrint({ name, year, rows: yearRows, loadCopay, say, onClose 
           </label>
           <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6, flexWrap: 'wrap' }}>
             <Btn onClick={onClose}>닫기</Btn>
-            <Btn onClick={saveImage} disabled={saving || !list.length}>{saving ? '저장 중…' : '이미지 저장'}</Btn>
             <Btn onClick={savePdf} disabled={!list.length}>PDF 저장</Btn>
             <Btn variant="primary" onClick={doPrint} disabled={!list.length}>인쇄</Btn>
           </span>
@@ -4828,35 +4795,32 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
   const iso = (x) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`
   const days = teacher ? [...new Set(sessions.map((s) => DOW[(new Date(s.d + 'T00:00:00').getDay() + 6) % 7]))] : []
 
-  // 종이 한 장에 딱 맞게 크기 자동 조절
-  //   시간 줄이 많거나 한 칸에 아이가 여럿이면 넘치고, 수업이 적으면 너무 작게 나와서
-  //   화면에서 실제 높이를 재고 남는 공간에 맞춰 키우거나 줄입니다 (최대 1.4배).
-  //   폭은 '100% ÷ 배율'로 넓혀 둔 뒤 배율만큼 줄이므로, 결과 폭은 언제나 종이 폭과 같습니다.
-  //   인쇄 영역도 화면 종이 안쪽과 같은 283×196mm 라서 인쇄에 그대로 맞습니다.
-  const pageRef = useRef(null)
-  const wrapRef = useRef(null)
+  // 종이 한 장에 딱 맞게 — 표 전체를 SVG 안에 넣어 두면 브라우저가 종이(가로든 세로든) 크기에 맞춰
+  // 알아서 늘리고 줄입니다. 프린터 · 브라우저가 종이 방향을 어떻게 잡아도 잘리지 않습니다.
+  //   GW = 표를 그리는 기준 폭(px) — 종이 비율에 맞춰 정해서 빈 여백이 적게,
+  //   gh = 그 폭에서 잰 실제 높이
+  const fitRef = useRef(null)
+  const innerRef = useRef(null)
+  const [GW, setGW] = useState(1070)
+  const [gh, setGh] = useState(700)
+  const tries = useRef(0)
+  useEffect(() => {
+    tries.current = 0
+  }, [sessions, holidays, ym])
   useLayoutEffect(() => {
-    const pg = pageRef.current
-    const wr = wrapRef.current
-    if (!pg || !wr) return
-    wr.style.transform = 'none'
-    wr.style.width = '100%'
-    wr.style.zoom = ''
-    const cs = getComputedStyle(pg)
-    const head = pg.querySelector('.tt-gh')
-    const availH =
-      pg.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom) - (head ? head.offsetHeight : 0) - 6
-    const h = wr.scrollHeight
-    if (!(h > 0 && availH > 0)) return
-    let z = Math.min(1.4, availH / h)
-    wr.style.width = `${100 / z}%`
-    // 폭을 넓히면 줄바꿈이 줄어 높이가 달라질 수 있어 한 번 더 잽니다
-    const h2 = wr.scrollHeight
-    if (h2 > 0 && h2 * z > availH) z = availH / h2
-    wr.style.width = `${100 / z}%`
-    wr.style.transformOrigin = 'top left'
-    wr.style.transform = `scale(${z})`
-  }, [sessions, outside, holidays, ym])
+    const el = innerRef.current
+    const box = fitRef.current
+    if (!el || !box || tries.current > 6) return
+    const h = Math.ceil(el.scrollHeight)
+    if (!(h > 0)) return
+    const ratio = box.clientHeight > 0 ? box.clientWidth / box.clientHeight : 1.45
+    const w = Math.max(900, Math.min(2400, Math.round(h * ratio)))
+    if (Math.abs(h - gh) > 1 || Math.abs(w - GW) > 6) {
+      tries.current += 1
+      if (Math.abs(h - gh) > 1) setGh(h)
+      if (Math.abs(w - GW) > 6) setGW(w)
+    }
+  })
 
   const cellOf = (dIso, hour) => {
     const list = sessions.filter((s) => s.d === dIso && Number(s.start_time.slice(0, 2)) === hour)
@@ -4865,7 +4829,7 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
   }
 
   return (
-    <div className="tt-page tt-grid-page" ref={pageRef}>
+    <div className="tt-page tt-grid-page">
       <div className="tt-gh">
         <b>{teacher.name} 선생님</b>
         <span>
@@ -4874,7 +4838,10 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
         {days.length > 0 && <span className="tt-gd">({days.join('·')})</span>}
       </div>
 
-      <div className="tt-gwrap" ref={wrapRef}>
+      <div className="tt-gfit" ref={fitRef}>
+      <svg className="tt-gsvg" viewBox={`0 0 ${GW} ${gh}`} preserveAspectRatio="xMidYMin meet">
+      <foreignObject x="0" y="0" width={GW} height={gh}>
+      <div className="tt-gwrap" ref={innerRef} style={{ width: GW }}>
         {/* 왼쪽 · 오른쪽 두 줄 — 인쇄할 때 칸이 엉뚱하게 나뉘지 않도록 직접 나눕니다 */}
         {[weeks.slice(0, Math.ceil(weeks.length / 2)), weeks.slice(Math.ceil(weeks.length / 2))].map((col, ci) => (
         <div key={ci} className="tt-gcol">
@@ -4953,182 +4920,12 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
         </div>
         ))}
       </div>
-    </div>
-  )
-}
-
-function TeacherSheet({ ym, teacher, sessions, holidays, tone, outside = [] }) {
-  const [y, m] = ym.split('-').map(Number)
-  const lastDay = new Date(y, m, 0).getDate()
-
-  // 이 선생님 수업(원장님은 외부 일정까지)에 맞춰 시간 범위를 잡습니다
-  const mins = [...sessions, ...outside].map((s) => ttMin(s.start_time))
-  const maxs = [...sessions, ...outside].map((s) => ttMin(s.end_time))
-  let st = mins.length ? Math.floor(Math.min(...mins) / 60) * 60 : 13 * 60
-  let en = maxs.length ? Math.ceil(Math.max(...maxs) / 60) * 60 : 19 * 60
-  if (en - st < 240) en = st + 240
-  const span = en - st
-  const pct = (v) => `${(((v - st) / span) * 100).toFixed(3)}%`
-
-  const byDay = {}
-  sessions.forEach((s) => {
-    if (!byDay[s.d]) byDay[s.d] = []
-    byDay[s.d].push(s)
-  })
-  // 원장님 외부 일정도 같은 줄에 (진한 회색)
-  outside.forEach((e) => {
-    if (!byDay[e.d]) byDay[e.d] = []
-    byDay[e.d].push({ ...e, id: 'out-' + e.id, out: true })
-  })
-
-  const rows = []
-  let prevWeek = null
-  for (let d = 1; d <= lastDay; d++) {
-    const x = new Date(y, m - 1, d)
-    const w = x.getDay()
-    if (w === 0) continue
-    const iso = ttIso(x)
-    const mon = new Date(x)
-    mon.setDate(mon.getDate() - ((w + 6) % 7))
-    const wk = ttIso(mon)
-    rows.push({ d, w, iso, newWeek: prevWeek !== null && wk !== prevWeek })
-    prevWeek = wk
-  }
-
-  const ticks = []
-  for (let t = st; t <= en; t += 30) ticks.push(t)
-
-  return (
-    <div className="tt-page">
-      <div className="tt-ph">
-        <b>{teacher.name} 선생님</b>
-        <span>
-          {y}년 {m}월
-        </span>
-        <span className="tt-lg">
-          <span>
-            <i style={{ background: '#E9B93A', height: 3, verticalAlign: 2 }} />
-            50분 이상 빈 시간
-          </span>
-          <span>
-            <i style={{ background: '#fff', border: '1.5px dashed #E07B00', borderLeft: `3px solid ${tone.line}` }} />
-            보강
-          </span>
-          {outside.length > 0 && (
-            <span>
-              <i style={{ background: OUT_TONE.bg }} />
-              외부 일정
-            </span>
-          )}
-        </span>
-      </div>
-
-      <div className="tt-tbl">
-        <div className="tt-axis">
-          <div />
-          <div className="tt-lane">
-            {ticks
-              .filter((t) => t % 60 === 0)
-              .map((t) => (
-                <span key={t} className="tt-tk" style={{ left: pct(t) }}>
-                  {hourLabel(t / 60)}
-                </span>
-              ))}
-          </div>
-        </div>
-
-        {rows.map((r) => {
-          const off = holidays[r.iso]
-          const list = (byDay[r.iso] || [])
-            .map((s) => ({ ...s, s0: ttMin(s.start_time), s1: ttMin(s.end_time) }))
-            .sort((a, b) => a.s0 - b.s0)
-
-          const gaps = []
-          for (let i = 0; i < list.length - 1; i++) {
-            const g0 = list[i].s1
-            const g1 = list[i + 1].s0
-            if (g1 - g0 >= 50) gaps.push([g0, g1])
-          }
-
-          return (
-            <div key={r.iso} className={`tt-row${r.newWeek ? ' tt-wk' : ''}${off ? ' tt-off' : ''}`}>
-              <div className={`tt-dt${r.w === 6 ? ' tt-sat' : ''}`}>
-                {m}/{r.d} <i>{TT_DOW[r.w]}</i>
-              </div>
-              <div className="tt-lane">
-                {ticks.map((t) => (
-                  <div key={t} className={`tt-vl${t % 60 === 0 ? ' tt-h' : ''}`} style={{ left: pct(t) }} />
-                ))}
-                {off ? (
-                  <span className="tt-lbl">{off}</span>
-                ) : (
-                  <>
-                    {gaps.map(([g0, g1]) => (
-                      <div
-                        key={g0}
-                        className="tt-gap"
-                        style={{ left: pct(g0), width: `${(((g1 - g0) / span) * 100).toFixed(3)}%` }}
-                      />
-                    ))}
-                    {list.map((s) => {
-                      const mk = s.status === '보강'
-                      const ab = s.status === '결강'
-                      if (s.out)
-                        return (
-                          <div
-                            key={s.id}
-                            className="tt-ev"
-                            title={s.memo || ''}
-                            style={{
-                              left: pct(s.s0),
-                              width: `calc(${(((s.s1 - s.s0) / span) * 100).toFixed(3)}% - 1px)`,
-                              background: OUT_TONE.bg, borderColor: OUT_TONE.bd, borderLeftColor: OUT_TONE.bd, color: OUT_TONE.fg,
-                            }}
-                          >
-                            <b>{s.label}</b>
-                            <small>
-                              <span className="tt-outtag">외부</span>
-                              {clock(s.start_time)}
-                              <span className="tt-end">~{clock(s.end_time)}</span>
-                            </small>
-                          </div>
-                        )
-                      return (
-                        <div
-                          key={s.id}
-                          className={`tt-ev${mk ? ' tt-mk' : ''}${ab ? ' tt-ab' : ''}`}
-                          style={{
-                            left: pct(s.s0),
-                            width: `calc(${(((s.s1 - s.s0) / span) * 100).toFixed(3)}% - 1px)`,
-                            background: mk ? '#fff' : tone.bg,
-                            borderColor: tone.bd,
-                            borderLeftColor: tone.line,
-                            color: tone.fg,
-                            '--ln': tone.line,
-                          }}
-                        >
-                          <b>
-                            {mk && <span className="tt-tag">보강</span>}
-                            {s.student_name}
-                          </b>
-                          <small>
-                            {clock(s.start_time)}
-                            <span className="tt-end">~{clock(s.end_time)}</span>
-                          </small>
-                        </div>
-                      )
-                    })}
-                  </>
-                )}
-              </div>
-            </div>
-          )
-        })}
+      </foreignObject>
+      </svg>
       </div>
     </div>
   )
 }
-
 
 /* 전체 — 한 주에 한 장, 날짜마다 선생님 줄 */
 const OUT_TONE = { bg: '#3F4652', bd: '#2B3038', fg: '#FFFFFF' }
@@ -5306,7 +5103,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
     return new Set(one ? [one.id] : teachers.map((t) => t.id))
   })
   const [hols, setHols] = useState([])
-  const [mode, setMode] = useState('teacher')
+  const [mode, setMode] = useState('grid')
 
   useEffect(() => {
     const [y, m] = ym.split('-').map(Number)
@@ -5370,14 +5167,15 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
         .tt-bar { position: sticky; top: 0; z-index: 2; background: #fff; border-bottom: 1px solid ${C.line};
           padding: 11px 16px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
         .tt-wrap { padding: 16px 12px 40px; overflow-x: auto; }
-        /* 표 모양: 화면 종이 안쪽(283×196mm)과 인쇄 영역(A4 가로 − 여백 7mm)을 똑같이 맞춥니다 */
         .tt-grid-page { padding: 7mm; overflow: hidden; }
         .tt-gh { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 6px;
           border-bottom: 2px solid #1F2328; padding-bottom: 5px; }
         .tt-gh b { font-size: 15px; } .tt-gh span { font-size: 12px; color: #4A4F57; }
         .tt-gd { color: #71757C !important; }
         /* 한 달이 한 장에 들어오도록 2단으로 */
-        .tt-gwrap { display: flex; gap: 5mm; align-items: flex-start; flex: none; }
+        .tt-gwrap { display: flex; gap: 18px; align-items: flex-start; }
+        .tt-gfit { flex: 1; min-height: 0; position: relative; }
+        .tt-gsvg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; overflow: visible; }
         .tt-gcol { flex: 1 1 0; min-width: 0; }
         .tt-gtbl { break-inside: avoid; page-break-inside: avoid; margin-bottom: 3.5mm; }
         .tt-gtbl { width: 100%; border-collapse: collapse; table-layout: fixed; }
@@ -5476,16 +5274,13 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
             page-break-after: always; break-after: page; page-break-inside: avoid; break-inside: avoid;
             -webkit-print-color-adjust: exact; print-color-adjust: exact; }
           .tt-page:last-child { page-break-after: auto; break-after: auto; }
-          /* 표 모양은 크기를 화면에서 재서 맞추므로 인쇄에서도 같은 크기(283×196mm)로 고정 */
-          .tt-grid-page { width: 283mm !important; height: 196mm !important; aspect-ratio: auto !important;
-            max-height: none !important; overflow: hidden !important; }
         }
       `}</style>
 
       <div className="tt-bar">
         <div style={{ fontSize: 15, fontWeight: 700 }}>{ym.replace('-', '년 ')}월 시간표 인쇄</div>
         <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 9 }}>
-          {[['teacher', '선생님별 (가로형)'], ['grid', '선생님별 (표 모양)'], ['all', '전체']].map(([k, l]) => (
+          {[['grid', '선생님별'], ['all', '전체']].map(([k, l]) => (
             <button
               key={k}
               onClick={() => setMode(k)}
@@ -5499,7 +5294,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
             </button>
           ))}
         </div>
-        {mode === 'teacher' && (
+        {mode === 'grid' && (
         <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginLeft: 6 }}>
           {teachers.map((t) => {
             const on = picked.has(t.id)
@@ -5564,18 +5359,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
             outside={t.name === ownerName ? outside.filter((e) => e.d.slice(0, 7) === ym) : []}
           />
         ))}
-        {mode === 'teacher' && shown.map((t) => (
-          <TeacherSheet
-            key={t.id}
-            ym={ym}
-            teacher={t}
-            tone={{ ...toneOf(t.name), line: colorOf(t.name) }}
-            holidays={holFor(t)}
-            sessions={sessions.filter((s) => s.staff_name === t.name && s.status !== '취소')}
-            outside={t.name === ownerName ? outside.filter((e) => e.d.slice(0, 7) === ym) : []}
-          />
-        ))}
-        {mode === 'teacher' && !shown.length && (
+        {mode === 'grid' && !shown.length && (
           <div style={{ textAlign: 'center', color: C.sub, padding: 40 }}>뽑을 선생님을 골라주세요.</div>
         )}
       </div>
