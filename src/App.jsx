@@ -4825,10 +4825,39 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
     if (Math.abs(z - fit.z) > 0.002 || Math.abs(x - fit.x) > 1) setFit({ z, x })
   })
 
-  const cellOf = (dIso, hour) => {
-    const list = sessions.filter((s) => s.d === dIso && Number(s.start_time.slice(0, 2)) === hour)
-    const outs = outside.filter((e) => e.d === dIso && Number(e.start_time.slice(0, 2)) === hour)
-    return { list, outs }
+  // 시간 비례: 한 시간 = GH px. 수업은 시작 분 ~ 끝 분 위치에 그 길이만큼 그립니다.
+  //   같은 시간에 겹치는 일정은 나란히 (겹친 것끼리만 폭을 나눔)
+  const GH = 34
+  const blocksOf = (dIso) => {
+    const items = [
+      ...outside.filter((e) => e.d === dIso).map((x) => ({ x, out: true })),
+      ...sessions.filter((x) => x.d === dIso).map((x) => ({ x, out: false })),
+    ]
+      .map((k) => {
+        const a = Math.max(ttMin(k.x.start_time), h1 * 60)
+        const b = Math.max(ttMin(k.x.end_time), a + 10)
+        return { ...k, a, b }
+      })
+      .sort((p, q) => p.a - q.a || q.b - p.b)
+    // 겹치는 묶음마다 줄(lane) 나누기
+    let group = []
+    let groupEnd = -1
+    const flush = () => {
+      const lanes = Math.max(1, ...group.map((g) => g.lane + 1))
+      group.forEach((g) => (g.lanes = lanes))
+      group = []
+    }
+    for (const k of items) {
+      if (k.a >= groupEnd && group.length) flush()
+      const used = new Set(group.filter((g) => g.b > k.a).map((g) => g.lane))
+      let lane = 0
+      while (used.has(lane)) lane++
+      k.lane = lane
+      group.push(k)
+      groupEnd = Math.max(groupEnd, k.b)
+    }
+    if (group.length) flush()
+    return items
   }
 
   return (
@@ -4848,76 +4877,77 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
         {[weeks.slice(0, Math.ceil(weeks.length / 2)), weeks.slice(Math.ceil(weeks.length / 2))].map((col, ci) => (
         <div key={ci} className="tt-gcol">
         {col.map((wk, wj) => { const wi = ci * Math.ceil(weeks.length / 2) + wj; return (
-          <table key={wi} className="tt-gtbl">
-            <thead>
-              <tr>
-                <th className="tt-gt" />
-                {DOW.map((dw, di) => {
-                  const day = wk.find((x) => (x.getDay() + 6) % 7 === di)
+          <div key={wi} className="tt-gw" style={{ '--H': `${GH}px` }}>
+            <div className="tt-gw-head">
+              <div />
+              {DOW.map((dw, di) => {
+                const day = wk.find((x) => (x.getDay() + 6) % 7 === di)
+                return (
+                  <div key={dw} className={day && holidays[iso(day)] ? 'tt-ghol' : ''}>
+                    <div className="tt-gdw">{dw}</div>
+                    <div className="tt-gdt">{day ? day.getDate() : ''}</div>
+                  </div>
+                )
+              })}
+            </div>
+            <div className="tt-gw-body" style={{ height: hours.length * GH }}>
+              <div className="tt-gw-axis">
+                {hours.map((h) => (
+                  <div key={h} style={{ height: GH }}>{hourLabel(h)}</div>
+                ))}
+              </div>
+              {DOW.map((dw, di) => {
+                const day = wk.find((x) => (x.getDay() + 6) % 7 === di)
+                if (!day) return <div key={dw} className="tt-gw-day tt-gempty" />
+                const dIso = iso(day)
+                const hol = holidays[dIso]
+                if (hol)
                   return (
-                    <th key={dw} className={day && holidays[iso(day)] ? 'tt-ghol' : ''}>
-                      <div className="tt-gdw">{dw}</div>
-                      <div className="tt-gdt">{day ? day.getDate() : ''}</div>
-                    </th>
+                    <div key={dw} className="tt-gw-day tt-ghol">
+                      <span>{hol}</span>
+                    </div>
                   )
-                })}
-              </tr>
-            </thead>
-            <tbody>
-              {hours.map((h) => (
-                <tr key={h}>
-                  <td className="tt-gt">
-                    {hourLabel(h)}
-                  </td>
-                  {DOW.map((dw, di) => {
-                    const day = wk.find((x) => (x.getDay() + 6) % 7 === di)
-                    if (!day) return <td key={dw} className="tt-gempty" />
-                    const dIso = iso(day)
-                    const hol = holidays[dIso]
-                    if (hol)
-                      return (
-                        <td key={dw} className="tt-ghol">
-                          {h === hours[Math.floor(hours.length / 2)] ? hol : ''}
-                        </td>
-                      )
-                    const { list, outs } = cellOf(dIso, h)
-                    return (
-                      <td key={dw}>
-                        {outs.map((e) => (
-                          <div key={e.id} className="tt-gout">
-                            <b>{e.label}</b>
-                            <small>
-                              {clock(e.start_time)}~{clock(e.end_time)}
-                            </small>
+                return (
+                  <div key={dw} className="tt-gw-day">
+                    {blocksOf(dIso).map((k) => {
+                      const top = ((k.a - h1 * 60) / 60) * GH
+                      const hgt = Math.max(((k.b - k.a) / 60) * GH - 1, 8)
+                      const pos = {
+                        top, height: hgt,
+                        left: `calc(${(k.lane / k.lanes) * 100}% + 1px)`,
+                        width: `calc(${100 / k.lanes}% - 2px)`,
+                      }
+                      const one = hgt < 22   // 짧으면 한 줄로
+                      if (k.out)
+                        return (
+                          <div key={'o' + k.x.id} className={`tt-gblk tt-gout${one ? ' tt-g1' : ''}`} style={pos}>
+                            <b>{k.x.label}</b>
+                            <small>{clock(k.x.start_time)}~{clock(k.x.end_time)}</small>
                           </div>
-                        ))}
-                        {list.map((s) => {
-                          const c = kidColor[s.student_name] || ['#EEE', '#333']
-                          const mk = s.status === '보강'
-                          const ab = s.status === '결강'
-                          return (
-                            <div
-                              key={s.id}
-                              className={`tt-gcell${mk ? ' tt-gmk' : ''}${ab ? ' tt-gab' : ''}`}
-                              style={{ background: mk ? '#fff' : c[0], color: mk ? '#8A4B00' : c[1] }}
-                            >
-                              <b>
-                                {mk && <span className="tt-gtag">보강</span>}
-                                {s.student_name}
-                              </b>
-                              <small>
-                                {clock(s.start_time)}~{clock(s.end_time)}
-                              </small>
-                            </div>
-                          )
-                        })}
-                      </td>
-                    )
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                        )
+                      const s2 = k.x
+                      const c = kidColor[s2.student_name] || ['#EEE', '#333']
+                      const mk = s2.status === '보강'
+                      const ab = s2.status === '결강'
+                      return (
+                        <div
+                          key={s2.id}
+                          className={`tt-gblk tt-gcell${mk ? ' tt-gmk' : ''}${ab ? ' tt-gab' : ''}${one ? ' tt-g1' : ''}`}
+                          style={{ ...pos, background: mk ? '#fff' : c[0], color: mk ? '#8A4B00' : c[1] }}
+                        >
+                          <b>
+                            {mk && <span className="tt-gtag">보강</span>}
+                            {s2.student_name}
+                          </b>
+                          <small>{clock(s2.start_time)}~{clock(s2.end_time)}</small>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
         ) })}
         </div>
         ))}
@@ -5231,7 +5261,23 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
         /* 인쇄용 그림 (화면에서는 숨김) */
         .tt-imgs { display: none; }
         .tt-gcol { flex: 1 1 0; min-width: 0; }
-        .tt-gtbl { break-inside: avoid; page-break-inside: avoid; margin-bottom: 3.5mm; }
+        .tt-gw { break-inside: avoid; page-break-inside: avoid; margin-bottom: 3.5mm; border: 0.6px solid #9AA0A6; }
+        .tt-gw-head, .tt-gw-body { display: grid; grid-template-columns: 42px repeat(6, minmax(0, 1fr)); }
+        .tt-gw-head > div { background: #F2E9C9; border-left: 0.6px solid #9AA0A6; text-align: center; padding: 1px 0 2px; }
+        .tt-gw-head > div:first-child { border-left: none; }
+        .tt-gw-head > div.tt-ghol { background: #E9A9A2; color: #5A1410; }
+        .tt-gw-axis { background: #FAFAFB; border-top: 0.6px solid #9AA0A6; }
+        .tt-gw-axis > div { box-sizing: border-box; border-bottom: 0.6px solid #DADDE1; font-size: 7.5px; color: #4A4F57;
+          text-align: center; padding-top: 2px; white-space: nowrap; }
+        .tt-gw-day { position: relative; border-left: 0.6px solid #9AA0A6; border-top: 0.6px solid #9AA0A6;
+          background-image: linear-gradient(to bottom, transparent calc(var(--H) - 0.6px), #DADDE1 calc(var(--H) - 0.6px));
+          background-size: 100% var(--H); }
+        .tt-gw-day.tt-ghol { display: flex; align-items: center; justify-content: center; background: #E9A9A2; }
+        .tt-gw-day.tt-gempty { background: #F7F8F9; }
+        .tt-gblk { position: absolute; box-sizing: border-box; overflow: hidden; margin: 0 !important; }
+        .tt-gblk.tt-g1 { display: flex; align-items: center; gap: 3px; padding-top: 0 !important; padding-bottom: 0 !important; }
+        .tt-gblk.tt-g1 b { display: inline !important; }
+        .tt-gblk small { white-space: nowrap; }
         .tt-gtbl { width: 100%; border-collapse: collapse; table-layout: fixed; }
         .tt-gtbl th, .tt-gtbl td { border: 0.6px solid #9AA0A6; height: 23px; vertical-align: top; padding: 1px; }
         .tt-gtbl th { background: #F2E9C9; height: 19px; padding: 0; }
@@ -5341,7 +5387,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
         <div style={{ fontSize: 15, fontWeight: 700 }}>
           {ym.replace('-', '년 ')}월 시간표 인쇄
           {/* 새 파일이 제대로 올라갔는지 확인용 — 브라우저가 옛 파일을 기억하고 있으면 이 표시가 안 보입니다 */}
-          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-7</span>
+          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-8</span>
           {mode === 'grid' && (
             <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: imgErr ? C.danger : useImgs ? '#1F7A45' : C.mut }}>
               {imgErr ? `그림 실패: ${imgErr.slice(0, 60)}` : useImgs ? `그림 준비됨 ${imgs.length}장` : '그림 만드는 중'}
