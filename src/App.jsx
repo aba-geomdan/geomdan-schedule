@@ -157,13 +157,23 @@ async function loadRevenue() {
   return ok(await supabase.rpc('monthly_revenue'))
 }
 
-async function addDeposit(studentId, { amount, date, method, memo }) {
+async function addDeposit(studentId, { amount, date, method, memo, voucherKind, forYm }) {
   return ok(
     await supabase.rpc('add_deposit', {
       p_student: studentId, p_amount: amount,
       p_date: date, p_method: method ?? null, p_memo: memo ?? null,
+      p_voucher_kind: method === '바우처' ? voucherKind ?? null : null,
+      p_for_ym: method === '바우처' ? forYm ?? null : null,
     })
   )
+}
+
+// 본인부담금 (연말정산 서류) · 달별 매출
+async function loadCopayYear(year) {
+  return ok(await supabase.rpc('copay_year', { p_year: year }))
+}
+async function loadRevenueByMonth() {
+  return ok(await supabase.rpc('revenue_by_month'))
 }
 
 async function addRefund(studentId, { amount, date, method, memo }) {
@@ -2042,7 +2052,531 @@ function PayrollHistory({ rows, staffOrder = [], ownerName, toneOf, busy, onPaid
   )
 }
 
-function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onPrintAll, onSetRate, onDetail, busy, closing, closings = [], onClose, staffOrder = [], ownerName, payHistory = [], onPayrollPaid, toneOf, allStaff = [], onSaveExtras, onSaveManual, onDeleteManual }) {
+/* ================= 연말정산 · 본인부담금 ================= */
+// 본인부담금 = 그 달 수강료 − 그 달분 바우처. 앱으로 영수증을 발행하기 전 달은 엑셀 기록지에서 옮긴 값.
+const CENTER = {
+  name: '검단ABA언어행동연구소',
+  addr: '인천 검단구 이음1로 377 눈담봄 905호',
+  head: '대표 민 다 혜',
+}
+const ymLabel = (ym) => `${Number(ym.slice(5))}월`
+const ymLong = (ym) => `${ym.slice(0, 4)}년 ${Number(ym.slice(5))}월`
+const sessLabel = (r) => (r.sessions != null ? `${Number(r.sessions)}회` : r.sessions_text || '')
+
+function CopayView({ loadCopay, say }) {
+  const thisYear = new Date().getFullYear()
+  const years = useMemo(() => {
+    const out = []
+    for (let y = thisYear; y >= 2023; y--) out.push(y)
+    return out
+  }, [thisYear])
+  const [year, setYear] = useState(thisYear)
+  const [rows, setRows] = useState(null)
+  const [q, setQ] = useState('')
+  const [cert, setCert] = useState(null) // 아동 이름
+  const [printAll, setPrintAll] = useState(false)
+
+  useEffect(() => {
+    let on = true
+    setRows(null)
+    loadCopay(year)
+      .then((r) => on && setRows(r || []))
+      .catch(() => on && setRows([]))
+    return () => { on = false }
+  }, [year])
+
+  const kids = useMemo(() => {
+    const m = {}
+    ;(rows || []).forEach((r) => {
+      if (!m[r.child_name]) m[r.child_name] = { name: r.child_name, months: {}, total: 0, voucher: 0 }
+      m[r.child_name].months[r.ym] = r
+      m[r.child_name].total += r.copay
+      m[r.child_name].voucher += r.voucher || 0
+    })
+    return Object.values(m).sort((a, b) => a.name.localeCompare(b.name, 'ko'))
+  }, [rows])
+  const shown = q.trim() ? kids.filter((k) => k.name.includes(q.trim())) : kids
+  const monthsInYear = Array.from({ length: 12 }, (_, i) => `${year}-${String(i + 1).padStart(2, '0')}`)
+  const usedMonths = monthsInYear.filter((m) => (rows || []).some((r) => r.ym === m))
+  const grand = kids.reduce((a, k) => a + k.total, 0)
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.75, marginBottom: 12 }}>
+        엄마들이 연말정산 서류를 달라고 하시면 아이 이름 옆 <b>증명서</b>를 누르세요. 기간을 골라 인쇄하거나 이미지로 저장할 수 있어요.
+        <br />
+        금액은 <b>본인부담금</b>(수강료에서 바우처로 받은 금액을 뺀 것)입니다. 바우처는 입금 기록할 때 '바우처'로 적으면 자동으로 빠져요.
+      </div>
+
+      <div style={{ display: 'flex', gap: 6, marginBottom: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+        {years.map((y) => (
+          <button
+            key={y}
+            onClick={() => setYear(y)}
+            style={{
+              border: `1px solid ${year === y ? C.pkd : '#DEE0E3'}`, borderRadius: 99, cursor: 'pointer',
+              padding: '4px 12px', fontSize: 12.5, fontWeight: 700,
+              background: year === y ? C.pkl : '#fff', color: year === y ? C.pkd : C.sub,
+            }}
+          >
+            {y}
+          </button>
+        ))}
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="이름 찾기"
+          style={{ fontSize: 13, padding: '6px 10px', border: '1px solid #DEE0E3', borderRadius: 8, width: 110, marginLeft: 'auto' }}
+        />
+        <Btn onClick={() => setPrintAll(true)} disabled={!kids.length} style={{ padding: '6px 12px', fontSize: 12.5 }}>
+          전체 인쇄
+        </Btn>
+      </div>
+
+      {rows === null ? (
+        <Loading />
+      ) : kids.length === 0 ? (
+        <Empty>{year}년 기록이 없습니다.</Empty>
+      ) : (
+        <Card style={{ overflow: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, minWidth: 180 + usedMonths.length * 78 }}>
+            <thead>
+              <tr style={{ background: '#FBFBFC', color: C.sub }}>
+                <th style={{ padding: '8px 10px', textAlign: 'left', fontWeight: 600, position: 'sticky', left: 0, background: '#FBFBFC' }}>아동</th>
+                {usedMonths.map((m) => (
+                  <th key={m} style={{ padding: '8px 6px', textAlign: 'right', fontWeight: 600 }}>{ymLabel(m)}</th>
+                ))}
+                <th style={{ padding: '8px 10px', textAlign: 'right', fontWeight: 600 }}>합계</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map((k) => (
+                <tr key={k.name} style={{ borderTop: `1px solid ${C.line2}` }}>
+                  <td style={{ padding: '7px 10px', fontWeight: 700, whiteSpace: 'nowrap', position: 'sticky', left: 0, background: '#fff' }}>{k.name}</td>
+                  {usedMonths.map((m) => {
+                    const r = k.months[m]
+                    return (
+                      <td key={m} style={{ padding: '7px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                        {r ? (
+                          <>
+                            {won(r.copay)}
+                            <div style={{ fontSize: 10.5, color: C.mut }}>
+                              {sessLabel(r)}
+                              {r.voucher > 0 && <span style={{ color: '#254B8C' }}> · 바우처 −{won(r.voucher)}</span>}
+                            </div>
+                          </>
+                        ) : (
+                          <span style={{ color: '#D0D3D8' }}>—</span>
+                        )}
+                      </td>
+                    )
+                  })}
+                  <td style={{ padding: '7px 10px', textAlign: 'right', fontWeight: 700, whiteSpace: 'nowrap' }}>{won(k.total)}</td>
+                  <td style={{ padding: '7px 10px', textAlign: 'right' }}>
+                    <Btn onClick={() => setCert(k.name)} style={{ padding: '4px 10px', fontSize: 12 }}>
+                      증명서
+                    </Btn>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr style={{ background: C.pkl, fontWeight: 700 }}>
+                <td style={{ padding: '9px 10px', position: 'sticky', left: 0, background: C.pkl }}>합계 {kids.length}명</td>
+                {usedMonths.map((m) => (
+                  <td key={m} style={{ padding: '9px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    {won((rows || []).filter((r) => r.ym === m).reduce((a, r) => a + r.copay, 0))}
+                  </td>
+                ))}
+                <td style={{ padding: '9px 10px', textAlign: 'right', color: C.pkd, whiteSpace: 'nowrap' }}>{won(grand)}</td>
+                <td />
+              </tr>
+            </tfoot>
+          </table>
+        </Card>
+      )}
+
+      {cert && (
+        <CertificatePrint
+          name={cert}
+          year={year}
+          rows={(rows || []).filter((r) => r.child_name === cert)}
+          loadCopay={loadCopay}
+          say={say}
+          onClose={() => setCert(null)}
+        />
+      )}
+      {printAll && (
+        <CopayYearPrint year={year} kids={kids} months={usedMonths} rows={rows || []} onClose={() => setPrintAll(false)} />
+      )}
+    </div>
+  )
+}
+
+/* 교육비 납입 증명서 (아동 한 명, 기간 선택) */
+function CertificatePrint({ name, year, rows: yearRows, loadCopay, say, onClose }) {
+  const today = isoOf(new Date())
+  const [mode, setMode] = useState('year') // year | recent2 | custom
+  const [from, setFrom] = useState(`${year}-01`)
+  const [to, setTo] = useState(`${year}-12`)
+  const [issued, setIssued] = useState(today)
+  const [pool, setPool] = useState(yearRows) // 최근 2개월 · 기간 직접일 때 다른 해도 불러옴
+  const [saving, setSaving] = useState(false)
+  const sheetRef = useRef(null)
+
+  // 기간 직접: 걸친 해를 모두 불러옵니다 / 최근 2개월: 해가 바뀐 1월에도 되도록 작년까지
+  useEffect(() => {
+    if (mode === 'year') return
+    const y1 = mode === 'recent2' ? year - 1 : Number(from.slice(0, 4))
+    const y2 = mode === 'recent2' ? year : Number(to.slice(0, 4))
+    if (!(y1 >= 2000 && y2 >= y1 && y2 - y1 < 6)) return
+    let on = true
+    Promise.all(Array.from({ length: y2 - y1 + 1 }, (_, i) => loadCopay(y1 + i)))
+      .then((all) => {
+        if (!on) return
+        const seen = new Set()
+        setPool(all.flat().filter((r) => r.child_name === name && !seen.has(r.ym) && seen.add(r.ym)))
+      })
+      .catch(() => {})
+    return () => { on = false }
+  }, [mode, from, to, name, year])
+
+  const list = useMemo(() => {
+    const src = mode === 'year' ? yearRows : pool
+    const sorted = [...src].sort((a, b) => a.ym.localeCompare(b.ym))
+    if (mode === 'year') return sorted
+    if (mode === 'recent2') return sorted.filter((r) => r.ym <= ymOf(new Date())).slice(-2)
+    return sorted.filter((r) => r.ym >= from && r.ym <= to)
+  }, [mode, pool, yearRows, from, to])
+
+  const period =
+    list.length === 0
+      ? ''
+      : mode === 'year'
+      ? `${year}년 1월 ~ ${year}년 12월`
+      : `${ymLong(list[0].ym)} ~ ${ymLong(list[list.length - 1].ym)}`
+  const total = list.reduce((a, r) => a + r.copay, 0)
+  const sessKnown = list.every((r) => r.sessions != null)
+  const sessTotal = list.reduce((a, r) => a + (Number(r.sessions) || 0), 0)
+  const [iy, im, idd] = issued.split('-')
+
+  const saveImage = async () => {
+    if (!sheetRef.current) return
+    setSaving(true)
+    try {
+      const { toPng } = await import('html-to-image')
+      const n = sheetRef.current
+      const url = await toPng(n, {
+        pixelRatio: 2, backgroundColor: '#ffffff', width: n.offsetWidth, height: n.offsetHeight,
+        skipFonts: true, cacheBust: false, style: { margin: '0' },
+      })
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${name} 교육비 납입증명서 ${period.replace(/\s/g, '')}.png`
+      a.click()
+      say && say('저장했습니다')
+    } catch (e) {
+      say && say('이미지 저장에 실패했습니다', 'err')
+    }
+    setSaving(false)
+  }
+
+  const chip = (k, label) => (
+    <button
+      key={k}
+      onClick={() => setMode(k)}
+      style={{
+        border: `1px solid ${mode === k ? C.pkd : '#DEE0E3'}`, borderRadius: 99, cursor: 'pointer',
+        padding: '4px 11px', fontSize: 12.5, fontWeight: 600,
+        background: mode === k ? C.pkl : '#fff', color: mode === k ? C.pkd : C.sub,
+      }}
+    >
+      {label}
+    </button>
+  )
+  const th = { border: '1px solid #9AA0A6', padding: '6px 8px', background: '#F4F5F7', fontWeight: 700 }
+  const td = { border: '1px solid #9AA0A6', padding: '6px 8px' }
+
+  return createPortal(
+    <div className="cert-root">
+      <style>{`
+        .cert-root { position: fixed; inset: 0; z-index: 95; background: #E9EAEC; overflow: auto; }
+        .cert-sheet { width: 210mm; min-height: 297mm; margin: 12px auto 30px; background: #fff; padding: 22mm 20mm;
+          box-sizing: border-box; color: #1D2023; box-shadow: 0 1px 4px rgba(0,0,0,.12); }
+        @media print {
+          @page { size: A4 portrait; margin: 0; }
+          html, body { height: auto !important; overflow: visible !important; background: #fff !important; }
+          body > *:not(.cert-root) { display: none !important; }
+          .cert-root { position: static !important; overflow: visible !important; background: #fff; }
+          .cert-bar { display: none !important; }
+          .cert-sheet { margin: 0; box-shadow: none; }
+        }
+      `}</style>
+      <div className="cert-bar" style={{ position: 'sticky', top: 0, zIndex: 2, background: '#fff', borderBottom: `1px solid ${C.line}`, padding: '10px 14px', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div style={{ fontSize: 15, fontWeight: 700 }}>{name} 납입증명서</div>
+        {chip('year', `${year}년 전체 (연말정산)`)}
+        {chip('recent2', '최근 2개월')}
+        {chip('custom', '기간 직접')}
+        {mode === 'custom' && (
+          <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center', fontSize: 12.5 }}>
+            <input type="month" value={from} onChange={(e) => setFrom(e.target.value)} style={{ fontSize: 12.5, padding: '4px 6px', border: '1px solid #DEE0E3', borderRadius: 6 }} />
+            ~
+            <input type="month" value={to} onChange={(e) => setTo(e.target.value)} style={{ fontSize: 12.5, padding: '4px 6px', border: '1px solid #DEE0E3', borderRadius: 6 }} />
+          </span>
+        )}
+        <label style={{ fontSize: 12.5, color: C.sub, display: 'inline-flex', gap: 4, alignItems: 'center' }}>
+          발급일
+          <input type="date" value={issued} onChange={(e) => setIssued(e.target.value || today)} style={{ fontSize: 12.5, padding: '4px 6px', border: '1px solid #DEE0E3', borderRadius: 6 }} />
+        </label>
+        <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6 }}>
+          <Btn onClick={onClose}>닫기</Btn>
+          <Btn onClick={saveImage} disabled={saving || !list.length}>{saving ? '저장 중…' : '이미지 저장'}</Btn>
+          <Btn variant="primary" onClick={() => window.print()} disabled={!list.length}>인쇄</Btn>
+        </span>
+      </div>
+
+      <div className="cert-sheet" ref={sheetRef}>
+        <div style={{ textAlign: 'center', fontSize: 26, fontWeight: 700, letterSpacing: 10, marginBottom: 26 }}>교육비 납입 증명서</div>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13.5, marginBottom: 14 }}>
+          <tbody>
+            <tr>
+              <td style={{ ...th, width: '18%' }}>아 동 명</td>
+              <td style={{ ...td, width: '32%' }}>{name}</td>
+              <td style={{ ...th, width: '18%' }}>보 호 자</td>
+              <td style={td} />
+            </tr>
+            <tr>
+              <td style={th}>기 간</td>
+              <td style={td} colSpan={3}>{period || '—'}</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13.5 }}>
+          <thead>
+            <tr>
+              <th style={{ ...th, textAlign: 'center' }}>납 입 월</th>
+              <th style={{ ...th, textAlign: 'center', width: '22%' }}>수업 횟수</th>
+              <th style={{ ...th, textAlign: 'center', width: '34%' }}>금 액 (원)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {list.map((r) => (
+              <tr key={r.ym}>
+                <td style={{ ...td, textAlign: 'center' }}>{ymLong(r.ym)}</td>
+                <td style={{ ...td, textAlign: 'center' }}>{sessLabel(r) || '—'}</td>
+                <td style={{ ...td, textAlign: 'right' }}>{won(r.copay)}</td>
+              </tr>
+            ))}
+            {list.length === 0 && (
+              <tr>
+                <td style={{ ...td, textAlign: 'center', color: '#8A8F97' }} colSpan={3}>이 기간 기록이 없습니다</td>
+              </tr>
+            )}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td style={{ ...th, textAlign: 'center' }}>합 계</td>
+              <td style={{ ...th, textAlign: 'center' }}>{sessKnown && list.length ? `${sessTotal}회` : ''}</td>
+              <td style={{ ...th, textAlign: 'right' }}>{won(total)}</td>
+            </tr>
+          </tfoot>
+        </table>
+
+        <div style={{ textAlign: 'center', fontSize: 15, marginTop: 34, lineHeight: 2 }}>
+          위 금액을 교육비로 납입하였음을 증명합니다.
+          <div style={{ marginTop: 18 }}>{iy}년 {Number(im)}월 {Number(idd)}일</div>
+        </div>
+
+        <div style={{ textAlign: 'center', marginTop: 34, lineHeight: 1.9 }}>
+          <div style={{ fontSize: 17, fontWeight: 700 }}>{CENTER.name}</div>
+          <div style={{ fontSize: 12.5, color: '#4B5057' }}>{CENTER.addr}</div>
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 10, marginTop: 4 }}>
+            <span style={{ fontSize: 15, fontWeight: 700 }}>{CENTER.head}</span>
+            <Stamp size={52} />
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body
+  )
+}
+
+/* 한 해 전체 표 인쇄 (엑셀 기록지 모양) */
+function CopayYearPrint({ year, kids, months, rows, onClose }) {
+  return createPortal(
+    <div className="cyp-root">
+      <style>{`
+        .cyp-root { position: fixed; inset: 0; z-index: 95; background: #fff; overflow: auto; }
+        .cyp-sheet { padding: 14px 16px; color: #1D2023; }
+        .cyp-sheet table { width: 100%; border-collapse: collapse; font-size: 10.5px; table-layout: fixed; }
+        .cyp-sheet th, .cyp-sheet td { border: 0.6px solid #9AA0A6; padding: 3px 4px; text-align: right; }
+        .cyp-sheet th { background: #F4F5F7; text-align: center; }
+        .cyp-sheet td.n { text-align: left; font-weight: 700; white-space: nowrap; overflow: hidden; }
+        .cyp-sheet small { display: block; color: #6B7079; font-size: 9px; }
+        @media print {
+          @page { size: A4 landscape; margin: 8mm; }
+          html, body { height: auto !important; overflow: visible !important; background: #fff !important; }
+          body > *:not(.cyp-root) { display: none !important; }
+          .cyp-root { position: static !important; overflow: visible !important; }
+          .cyp-bar { display: none !important; }
+          .cyp-sheet { padding: 0; }
+          .cyp-sheet tr { break-inside: avoid; }
+        }
+      `}</style>
+      <div className="cyp-bar" style={{ position: 'sticky', top: 0, background: '#fff', borderBottom: `1px solid ${C.line}`, padding: '10px 14px', display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div style={{ fontSize: 15, fontWeight: 700 }}>{year}년 본인부담금 기록 인쇄</div>
+        <Btn onClick={onClose} style={{ marginLeft: 'auto' }}>닫기</Btn>
+        <Btn variant="primary" onClick={() => window.print()}>인쇄</Btn>
+      </div>
+      <div className="cyp-sheet">
+        <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>({year}년) 본인 부담금 확인 기록지</div>
+        <table>
+          <thead>
+            <tr>
+              <th style={{ width: 62 }}>아동명</th>
+              {months.map((m) => <th key={m}>{ymLabel(m)}</th>)}
+              <th style={{ width: 78 }}>합계</th>
+            </tr>
+          </thead>
+          <tbody>
+            {kids.map((k) => (
+              <tr key={k.name}>
+                <td className="n">{k.name}</td>
+                {months.map((m) => {
+                  const r = k.months[m]
+                  return (
+                    <td key={m}>
+                      {r ? won(r.copay) : ''}
+                      {r && sessLabel(r) && <small>{sessLabel(r)}</small>}
+                    </td>
+                  )
+                })}
+                <td style={{ fontWeight: 700 }}>{won(k.total)}</td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr>
+              <th>합계</th>
+              {months.map((m) => (
+                <th key={m} style={{ textAlign: 'right' }}>{won(rows.filter((r) => r.ym === m).reduce((a, r) => a + r.copay, 0))}</th>
+              ))}
+              <th style={{ textAlign: 'right' }}>{won(kids.reduce((a, k) => a + k.total, 0))}</th>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>,
+    document.body
+  )
+}
+
+/* 영수증 화면 오른쪽 위 금액 — 눌러서 달별 · 연도별 매출 보기 */
+function RevenueMenu({ total, loadRevenueList }) {
+  const [open, setOpen] = useState(false)
+  const [view, setView] = useState('month')
+  const [list, setList] = useState(null)
+  const boxRef = useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+    let on = true
+    setList(null)
+    loadRevenueList()
+      .then((r) => on && setList(r || []))
+      .catch(() => on && setList([]))
+    const close = (e) => {
+      if (boxRef.current && !boxRef.current.contains(e.target)) setOpen(false)
+    }
+    document.addEventListener('mousedown', close)
+    document.addEventListener('touchstart', close)
+    return () => {
+      on = false
+      document.removeEventListener('mousedown', close)
+      document.removeEventListener('touchstart', close)
+    }
+  }, [open])
+
+  const years = useMemo(() => {
+    const m = {}
+    ;(list || []).forEach((r) => {
+      const y = r.ym.slice(0, 4)
+      if (!m[y]) m[y] = { y, amount: 0, months: 0 }
+      m[y].amount += r.amount || 0
+      m[y].months += 1
+    })
+    return Object.values(m).sort((a, b) => b.y.localeCompare(a.y))
+  }, [list])
+
+  return (
+    <div ref={boxRef} style={{ position: 'relative' }}>
+      <button
+        onClick={() => setOpen(!open)}
+        title="달별 · 연도별 매출 보기"
+        style={{
+          border: 'none', background: 'transparent', cursor: 'pointer', padding: 0,
+          fontSize: 20, fontWeight: 700, color: C.pkd, display: 'inline-flex', alignItems: 'center', gap: 4,
+        }}
+      >
+        {won(total)}원
+        <span style={{ fontSize: 12, color: C.sub }}>{open ? '▲' : '▼'}</span>
+      </button>
+      {open && (
+        <div
+          style={{
+            position: 'absolute', right: 0, top: 'calc(100% + 6px)', zIndex: 30, width: 300, maxWidth: '86vw',
+            background: '#fff', border: `1px solid ${C.line}`, borderRadius: 12, boxShadow: '0 8px 24px rgba(0,0,0,.12)',
+          }}
+        >
+          <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 8, margin: 10 }}>
+            {[['month', '월별'], ['year', '연도별']].map(([k, l]) => (
+              <button
+                key={k}
+                onClick={() => setView(k)}
+                style={{
+                  flex: 1, border: 'none', cursor: 'pointer', padding: '5px 0', borderRadius: 6, fontSize: 12.5, fontWeight: 600,
+                  background: view === k ? '#fff' : 'transparent', color: view === k ? C.ink : C.sub,
+                }}
+              >
+                {l}
+              </button>
+            ))}
+          </div>
+          <div style={{ maxHeight: 320, overflow: 'auto', padding: '0 12px 10px' }}>
+            {list === null ? (
+              <div style={{ fontSize: 12.5, color: C.mut, padding: 10 }}>불러오는 중…</div>
+            ) : list.length === 0 ? (
+              <div style={{ fontSize: 12.5, color: C.mut, padding: 10 }}>기록이 없습니다.</div>
+            ) : view === 'month' ? (
+              list.map((r) => (
+                <div key={r.ym} style={{ display: 'flex', alignItems: 'baseline', gap: 6, padding: '6px 0', borderBottom: `1px solid ${C.line2}`, fontSize: 13 }}>
+                  <span style={{ fontWeight: 600, minWidth: 82 }}>{ymLong(r.ym)}</span>
+                  <span style={{ fontSize: 11, color: C.mut }}>{r.students}명{r.source !== '앱' ? ` · ${r.source}` : ''}</span>
+                  <span style={{ marginLeft: 'auto', fontWeight: 700 }}>{won(r.amount)}</span>
+                </div>
+              ))
+            ) : (
+              years.map((y) => (
+                <div key={y.y} style={{ display: 'flex', alignItems: 'baseline', gap: 6, padding: '8px 0', borderBottom: `1px solid ${C.line2}`, fontSize: 13.5 }}>
+                  <span style={{ fontWeight: 700, minWidth: 60 }}>{y.y}년</span>
+                  <span style={{ fontSize: 11, color: C.mut }}>{y.months}개월</span>
+                  <span style={{ marginLeft: 'auto', fontWeight: 700, color: C.pkd }}>{won(y.amount)}원</span>
+                </div>
+              ))
+            )}
+            <div style={{ fontSize: 11, color: C.mut, marginTop: 8, lineHeight: 1.6 }}>
+              영수증 발행 금액 기준. '엑셀' 표시는 본인부담금 기록지에서 옮긴 금액이 들어간 달이에요.
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onPrintAll, onSetRate, onDetail, busy, closing, closings = [], onClose, staffOrder = [], ownerName, payHistory = [], onPayrollPaid, toneOf, allStaff = [], onSaveExtras, onSaveManual, onDeleteManual, loadCopay, loadRevenueList, say }) {
   // 이 달 마감한 선생님
   const closedSet = useMemo(() => new Set((closings || []).filter((c) => c.status === '승인').map((c) => c.staff_name)), [closings])
   // 정산 화면 선생님 순서: 원장님은 맨 위 고정, 나머지는 등록 순서 (금액과 상관없이 늘 같은 자리)
@@ -2129,7 +2663,7 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
         <div style={{ fontSize: 15, fontWeight: 700 }}>{ym.replace('-', '년 ')}월 정산</div>
         <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 8 }}>
-          {[['staff', '영수증'], ['payroll', '급여']].map(([k, label]) => (
+          {[['staff', '영수증'], ['payroll', '급여'], ['copay', '연말정산']].map(([k, label]) => (
             <button
               key={k}
               onClick={() => setGroup(k)}
@@ -2145,17 +2679,19 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
             </button>
           ))}
         </div>
-        {true && (
+        {group !== 'copay' && (
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
             <Btn onClick={() => onPrintAll(printOrder)} disabled={printOrder.length === 0}>
               영수증 {printOrder.length}장 인쇄
             </Btn>
-            <div style={{ fontSize: 20, fontWeight: 700, color: C.pkd }}>{won(total)}원</div>
+            <RevenueMenu total={total} loadRevenueList={loadRevenueList} />
           </div>
         )}
       </div>
 
-      {group === 'payroll' ? (
+      {group === 'copay' ? (
+        <CopayView loadCopay={loadCopay} say={say} />
+      ) : group === 'payroll' ? (
         <div>
           <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 8, width: 'fit-content', marginBottom: 12 }}>
             {[['now', '이 달'], ['hist', '기록']].map(([k, label]) => (
@@ -5570,6 +6106,7 @@ function PaymentView({
       {depositFor && (
         <DepositModal
           row={depositFor}
+          ym={ym}
           busy={busy}
           onClose={() => setDepositFor(null)}
           onSave={(v) => {
@@ -5604,11 +6141,14 @@ function PaymentView({
   )
 }
 
-function DepositModal({ row, onClose, onSave, busy }) {
+function DepositModal({ row, ym, onClose, onSave, busy }) {
   const [amount, setAmount] = useState(row.balance > 0 ? row.balance : row.billed)
   const [date, setDate] = useState(isoOf(new Date()))
   const [method, setMethod] = useState('계좌이체')
   const [memo, setMemo] = useState('')
+  const [voucherKind, setVoucherKind] = useState('')
+  const [forYm, setForYm] = useState(ym || ymOf(new Date()))
+  const isVoucher = method === '바우처'
 
   const months = row.billed ? (amount / row.billed).toFixed(1) : '0'
 
@@ -5657,18 +6197,45 @@ function DepositModal({ row, onClose, onSave, busy }) {
         />
 
         <div style={{ fontSize: 12, color: C.sub, margin: '13px 0 6px' }}>방법</div>
-        <div style={{ display: 'flex', gap: 6 }}>
-          {['계좌이체', '현금', '카드'].map((m) => (
+        <div style={{ display: 'flex', gap: 5 }}>
+          {['계좌이체', '현금', '카드', '바우처'].map((m) => (
             <Btn
               key={m}
               variant={method === m ? 'primary' : 'default'}
               onClick={() => setMethod(m)}
-              style={{ flex: 1, padding: '9px 0', fontSize: 13 }}
+              style={{ flex: 1, padding: '9px 0', fontSize: 12.5 }}
             >
               {m}
             </Btn>
           ))}
         </div>
+        {isVoucher && (
+          <div style={{ marginTop: 10, padding: '10px 12px', background: '#EEF3FD', borderRadius: 8 }}>
+            <div style={{ fontSize: 12, color: '#254B8C', marginBottom: 6 }}>바우처 종류</div>
+            <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+              {['심리지원', '방과후카드', '드림스타트'].map((k) => (
+                <Btn
+                  key={k}
+                  variant={voucherKind === k ? 'primary' : 'default'}
+                  onClick={() => setVoucherKind(k)}
+                  style={{ padding: '5px 10px', fontSize: 12 }}
+                >
+                  {k}
+                </Btn>
+              ))}
+            </div>
+            <div style={{ fontSize: 12, color: '#254B8C', margin: '10px 0 6px' }}>몇 월분</div>
+            <input
+              type="month"
+              value={forYm}
+              onChange={(e) => setForYm(e.target.value)}
+              style={{ width: '100%', fontSize: 14, padding: '8px 10px', border: '1px solid #DEE0E3', borderRadius: 8, boxSizing: 'border-box' }}
+            />
+            <div style={{ fontSize: 11.5, color: '#254B8C', marginTop: 7, lineHeight: 1.6 }}>
+              받은 돈으로 똑같이 셉니다. 연말정산 서류(본인부담금)에서만 이 금액이 빠져요.
+            </div>
+          </div>
+        )}
 
         <div style={{ fontSize: 12, color: C.sub, margin: '13px 0 6px' }}>메모 (선택)</div>
         <input
@@ -5681,8 +6248,8 @@ function DepositModal({ row, onClose, onSave, busy }) {
         <div style={{ display: 'flex', gap: 7, marginTop: 16 }}>
           <Btn
             variant="primary"
-            disabled={busy || !amount}
-            onClick={() => onSave({ amount, date, method, memo: memo.trim() || null })}
+            disabled={busy || !amount || (isVoucher && (!voucherKind || !/^\d{4}-\d{2}$/.test(forYm) || amount <= 0))}
+            onClick={() => onSave({ amount, date, method, memo: memo.trim() || null, voucherKind, forYm })}
             style={{ flex: 1, padding: '11px 0' }}
           >
             기록
@@ -5831,7 +6398,7 @@ function HistoryModal({ row, onClose, onRemove, loadHistory, busy }) {
                   {d.amount < 0 ? `환불 ${won(-d.amount)}` : won(d.amount)}원
                 </div>
                 <div style={{ fontSize: 11.5, color: C.mut }}>
-                  {[d.method, d.memo].filter(Boolean).join(' · ') || '—'}
+                  {[d.method, d.voucher_kind, d.for_ym ? `${Number(d.for_ym.slice(5))}월분` : null, d.memo].filter(Boolean).join(' · ') || '—'}
                 </div>
               </div>
               <Btn
@@ -7110,6 +7677,9 @@ function App() {
                 setBusy(false)
               }}
               payHistory={payHistory}
+              loadCopay={loadCopayYear}
+              loadRevenueList={loadRevenueByMonth}
+              say={say}
               allStaff={staff.filter((x) => x.role !== 'admin')}
               onSaveExtras={async (sid, items) => {
                 setBusy(true)
