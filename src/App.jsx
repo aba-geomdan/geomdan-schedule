@@ -4795,31 +4795,34 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
   const iso = (x) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`
   const days = teacher ? [...new Set(sessions.map((s) => DOW[(new Date(s.d + 'T00:00:00').getDay() + 6) % 7]))] : []
 
-  // 종이 한 장에 딱 맞게 — 표 전체를 SVG 안에 넣어 두면 브라우저가 종이(가로든 세로든) 크기에 맞춰
-  // 알아서 늘리고 줄입니다. 프린터 · 브라우저가 종이 방향을 어떻게 잡아도 잘리지 않습니다.
-  //   GW = 표를 그리는 기준 폭(px) — 종이 비율에 맞춰 정해서 빈 여백이 적게,
-  //   gh = 그 폭에서 잰 실제 높이
+  // 화면 미리보기: 표를 기준 폭(GW)으로 그린 뒤 종이 칸에 맞춰 줄이거나 늘려 보여줍니다.
+  // 인쇄: [N장 인쇄]를 누르면 이 표(.tt-gcap)를 그림으로 찍어서 그림을 인쇄합니다.
+  //   그림은 어떤 브라우저 · 종이 방향에서도 종이 폭에 맞춰 줄어들 뿐 잘리지 않습니다.
   const fitRef = useRef(null)
-  const innerRef = useRef(null)
+  const capRef = useRef(null)
   const [GW, setGW] = useState(1070)
-  const [gh, setGh] = useState(700)
+  const [fit, setFit] = useState({ z: 1, x: 0 })
   const tries = useRef(0)
   useEffect(() => {
     tries.current = 0
   }, [sessions, holidays, ym])
   useLayoutEffect(() => {
-    const el = innerRef.current
+    const el = capRef.current
     const box = fitRef.current
-    if (!el || !box || tries.current > 6) return
-    const h = Math.ceil(el.scrollHeight)
-    if (!(h > 0)) return
-    const ratio = box.clientHeight > 0 ? box.clientWidth / box.clientHeight : 1.45
-    const w = Math.max(900, Math.min(2400, Math.round(h * ratio)))
-    if (Math.abs(h - gh) > 1 || Math.abs(w - GW) > 6) {
+    if (!el || !box) return
+    const h = el.offsetHeight
+    const bw = box.clientWidth
+    const bh = box.clientHeight
+    if (!(h > 0 && bw > 0 && bh > 0)) return
+    const w = Math.max(900, Math.min(2400, Math.round((h * bw) / bh)))
+    if (Math.abs(w - GW) > 6 && tries.current < 6) {
       tries.current += 1
-      if (Math.abs(h - gh) > 1) setGh(h)
-      if (Math.abs(w - GW) > 6) setGW(w)
+      setGW(w)
+      return
     }
+    const z = Math.min(bw / GW, bh / h)
+    const x = Math.max(0, (bw - GW * z) / 2)
+    if (Math.abs(z - fit.z) > 0.002 || Math.abs(x - fit.x) > 1) setFit({ z, x })
   })
 
   const cellOf = (dIso, hour) => {
@@ -4830,6 +4833,9 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
 
   return (
     <div className="tt-page tt-grid-page">
+      <div className="tt-gfit" ref={fitRef}>
+      <div className="tt-gscale" style={{ width: GW, transform: `translateX(${fit.x}px) scale(${fit.z})` }}>
+      <div className="tt-gcap" ref={capRef} style={{ width: GW }} data-name={teacher.name}>
       <div className="tt-gh">
         <b>{teacher.name} 선생님</b>
         <span>
@@ -4837,11 +4843,7 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
         </span>
         {days.length > 0 && <span className="tt-gd">({days.join('·')})</span>}
       </div>
-
-      <div className="tt-gfit" ref={fitRef}>
-      <svg className="tt-gsvg" viewBox={`0 0 ${GW} ${gh}`} preserveAspectRatio="xMidYMin meet">
-      <foreignObject x="0" y="0" width={GW} height={gh}>
-      <div className="tt-gwrap" ref={innerRef} style={{ width: GW }}>
+      <div className="tt-gwrap">
         {/* 왼쪽 · 오른쪽 두 줄 — 인쇄할 때 칸이 엉뚱하게 나뉘지 않도록 직접 나눕니다 */}
         {[weeks.slice(0, Math.ceil(weeks.length / 2)), weeks.slice(Math.ceil(weeks.length / 2))].map((col, ci) => (
         <div key={ci} className="tt-gcol">
@@ -4920,8 +4922,8 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
         </div>
         ))}
       </div>
-      </foreignObject>
-      </svg>
+      </div>
+      </div>
       </div>
     </div>
   )
@@ -5104,6 +5106,43 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
   })
   const [hols, setHols] = useState([])
   const [mode, setMode] = useState('grid')
+  // 선생님별: 표를 그림으로 찍어 인쇄 (브라우저 · 종이 방향과 상관없이 한 장에 딱 맞게)
+  const [imgs, setImgs] = useState(null)
+  const [making, setMaking] = useState(false)
+  const printNow = async () => {
+    if (mode !== 'grid') return window.print()
+    setMaking(true)
+    try {
+      const { toPng } = await import('html-to-image')
+      const nodes = [...document.querySelectorAll('.tt-root .tt-gcap')]
+      const out = []
+      for (const n of nodes) {
+        out.push(
+          await toPng(n, {
+            pixelRatio: 2, backgroundColor: '#ffffff', width: n.offsetWidth, height: n.offsetHeight,
+            skipFonts: true, cacheBust: false, style: { margin: '0', transform: 'none' },
+          })
+        )
+      }
+      setImgs(out)
+    } catch (e) {
+      setImgs(null)
+      window.print()   // 그림을 못 만들면 그냥 화면 그대로 인쇄
+    }
+    setMaking(false)
+  }
+  useEffect(() => {
+    if (!imgs) return
+    let on = true
+    const done = () => setImgs(null)
+    window.addEventListener('afterprint', done)
+    Promise.all(imgs.map((u) => { const im = new Image(); im.src = u; return im.decode ? im.decode().catch(() => {}) : null }))
+      .then(() => { if (on) setTimeout(() => window.print(), 60) })
+    return () => {
+      on = false
+      window.removeEventListener('afterprint', done)
+    }
+  }, [imgs])
 
   useEffect(() => {
     const [y, m] = ym.split('-').map(Number)
@@ -5161,7 +5200,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
   const pageCount = mode === 'all' ? weeks.length : shown.length
 
   return createPortal(
-    <div className="tt-root">
+    <div className={`tt-root${imgs ? ' tt-hasimgs' : ''}`}>
       <style>{`
         .tt-root { position: fixed; inset: 0; background: #E9EAEC; z-index: 100; overflow: auto; }
         .tt-bar { position: sticky; top: 0; z-index: 2; background: #fff; border-bottom: 1px solid ${C.line};
@@ -5174,8 +5213,15 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
         .tt-gd { color: #71757C !important; }
         /* 한 달이 한 장에 들어오도록 2단으로 */
         .tt-gwrap { display: flex; gap: 18px; align-items: flex-start; }
-        .tt-gfit { flex: 1; min-height: 0; position: relative; }
-        .tt-gsvg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; overflow: visible; }
+        .tt-gfit { flex: 1; min-height: 0; position: relative; overflow: hidden; }
+        .tt-gscale { position: absolute; top: 0; left: 0; transform-origin: top left; }
+        /* 그림으로 찍을 때 웹글꼴이 빠져도 글자 폭이 같도록 컴퓨터에 있는 글꼴로 고정 */
+        .tt-gcap { background: #fff; font-family: 'Malgun Gothic', '맑은 고딕', 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif; }
+        .tt-gcap .tt-gh b, .tt-gcap .tt-gh span { white-space: nowrap; }
+        .tt-gcap .tt-gh { margin-bottom: 10px; padding-bottom: 8px; border-bottom-width: 3px; }
+        .tt-gcap .tt-gh b { font-size: 26px; } .tt-gcap .tt-gh span { font-size: 18px; }
+        /* 인쇄용 그림 (화면에서는 숨김) */
+        .tt-imgs { display: none; }
         .tt-gcol { flex: 1 1 0; min-width: 0; }
         .tt-gtbl { break-inside: avoid; page-break-inside: avoid; margin-bottom: 3.5mm; }
         .tt-gtbl { width: 100%; border-collapse: collapse; table-layout: fixed; }
@@ -5274,6 +5320,12 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
             page-break-after: always; break-after: page; page-break-inside: avoid; break-inside: avoid;
             -webkit-print-color-adjust: exact; print-color-adjust: exact; }
           .tt-page:last-child { page-break-after: auto; break-after: auto; }
+          /* [N장 인쇄]로 만든 그림이 있으면 그림만 인쇄 */
+          .tt-root.tt-hasimgs .tt-wrap { display: none !important; }
+          .tt-root.tt-hasimgs .tt-imgs { display: block !important; }
+          .tt-imgpage { page: ttland; break-after: page; page-break-after: always; break-inside: avoid; }
+          .tt-imgpage:last-child { break-after: auto; page-break-after: auto; }
+          .tt-imgpage img { display: block; width: 100%; height: auto; max-height: 190mm; object-fit: contain; margin: 0 auto; }
         }
       `}</style>
 
@@ -5281,7 +5333,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
         <div style={{ fontSize: 15, fontWeight: 700 }}>
           {ym.replace('-', '년 ')}월 시간표 인쇄
           {/* 새 파일이 제대로 올라갔는지 확인용 — 브라우저가 옛 파일을 기억하고 있으면 이 표시가 안 보입니다 */}
-          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-4</span>
+          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-5</span>
         </div>
         <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 9 }}>
           {[['grid', '선생님별'], ['all', '전체']].map(([k, l]) => (
@@ -5325,8 +5377,8 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
         </div>
         )}
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 7 }}>
-          <Btn variant="primary" disabled={!pageCount} onClick={() => window.print()}>
-            {pageCount}장 인쇄
+          <Btn variant="primary" disabled={!pageCount || making} onClick={printNow}>
+            {making ? '준비 중…' : `${pageCount}장 인쇄`}
           </Btn>
           <Btn onClick={onClose}>닫기</Btn>
         </div>
@@ -5367,6 +5419,15 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
           <div style={{ textAlign: 'center', color: C.sub, padding: 40 }}>뽑을 선생님을 골라주세요.</div>
         )}
       </div>
+      {imgs && (
+        <div className="tt-imgs">
+          {imgs.map((u, i) => (
+            <div key={i} className="tt-imgpage">
+              <img src={u} alt="" />
+            </div>
+          ))}
+        </div>
+      )}
     </div>,
     document.body
   )
