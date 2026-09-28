@@ -3109,7 +3109,6 @@ function ReceiptModal({ ym, student, receipt, extra, onClose, onIssue, onUnlock,
   const partial = R.used > 0 && !R.full
   const showDue = R.carry < 0 || partial
   const total = showDue ? R.due : R.net
-  const hasAbsent = student.lines.some((l) => (l.absent_dates || []).length > 0)
 
   return (
     <Modal onClose={onClose} max={430}>
@@ -3150,9 +3149,9 @@ function ReceiptModal({ ym, student, receipt, extra, onClose, onIssue, onUnlock,
                         const dd = d.slice(-2)
                         const isAbsent = absent.has(dd)
                         return (
-                          <span key={k} style={{ marginRight: 5, color: isAbsent ? C.danger : C.sub }}>
+                          // 영수증에는 결강일 표시를 하지 않습니다 (보강은 따로 챙김)
+                          <span key={k} style={{ marginRight: 5, color: C.sub }} data-absent={isAbsent ? '1' : undefined}>
                             {Number(dd)}
-                            {isAbsent ? '*' : ''}
                           </span>
                         )
                       })}
@@ -3215,11 +3214,6 @@ function ReceiptModal({ ym, student, receipt, extra, onClose, onIssue, onUnlock,
           </div>
         )}
 
-        {hasAbsent && (
-          <div style={{ marginTop: 8, fontSize: 11, color: C.sub, lineHeight: 1.6 }}>
-            * 표시는 결강일입니다. 월정액이라 청구에 포함되며 보강해 드립니다.
-          </div>
-        )}
         {student.unmade > 0 && (
           <div
             className="no-print"
@@ -4796,7 +4790,8 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
   if (cur.length) weeks.push(cur)
 
   const iso = (x) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`
-  const days = teacher ? [...new Set(sessions.map((s) => DOW[(new Date(s.d + 'T00:00:00').getDay() + 6) % 7]))] : []
+  // 제목 옆 수업 요일 — 월·화·수·목·금·토 순서로
+  const days = teacher ? DOW.filter((dw, i) => sessions.some((s) => (new Date(s.d + 'T00:00:00').getDay() + 6) % 7 === i)) : []
 
   // 화면 미리보기: 표를 기준 폭(GW)으로 그린 뒤 종이 칸에 맞춰 줄이거나 늘려 보여줍니다.
   // 인쇄: [N장 인쇄]를 누르면 이 표(.tt-gcap)를 그림으로 찍어서 그림을 인쇄합니다.
@@ -5470,7 +5465,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
         <div style={{ fontSize: 15, fontWeight: 700 }}>
           {ym.replace('-', '년 ')}월 시간표 인쇄
           {/* 새 파일이 제대로 올라갔는지 확인용 — 브라우저가 옛 파일을 기억하고 있으면 이 표시가 안 보입니다 */}
-          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-14</span>
+          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-16</span>
           {mode === 'grid' && (
             <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: imgErr ? C.danger : useImgs ? '#1F7A45' : C.mut }}>
               {imgErr ? `그림 실패: ${imgErr.slice(0, 60)}` : useImgs ? `그림 준비됨 ${imgs.length}장` : '그림 만드는 중'}
@@ -6650,14 +6645,13 @@ function Sheet({ ym, s, adjustment, reason, compact, stamp, x }) {
                         <span
                           key={k}
                           style={{
-                            color: d.a ? C.danger : C.ink,
+                            color: C.ink,
                             fontWeight: 600,
                             marginLeft: k > 0 ? (compact ? 5 : 7) : 0,
                           }}
                         >
                           {k > 0 && <span style={{ color: '#C9CCD1', fontWeight: 400, marginRight: compact ? 5 : 7 }}>·</span>}
                           {d.n}
-                          {d.a ? '*' : ''}
                         </span>
                       ))}
                     </div>
