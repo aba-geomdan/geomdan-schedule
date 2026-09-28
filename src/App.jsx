@@ -4770,8 +4770,9 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
 
   // 시간 범위 (시 단위)
   const all = [...sessions, ...outside]
-  const h1 = all.length ? Math.min(...all.map((s) => Number(s.start_time.slice(0, 2)))) : 9
-  const h2 = all.length ? Math.max(...all.map((s) => Math.ceil(ttMin(s.end_time) / 60))) : 19
+  // 모든 선생님 똑같이 9시 ~ 7시 줄(저녁 8시까지). 그보다 이르거나 늦은 일정이 있으면 그만큼만 늘림
+  const h1 = Math.min(9, ...all.map((s) => Number(s.start_time.slice(0, 2))))
+  const h2 = Math.max(20, ...all.map((s) => Math.ceil(ttMin(s.end_time) / 60)))
   const hours = []
   for (let h = h1; h < Math.max(h2, h1 + 4); h++) hours.push(h)
 
@@ -4818,8 +4819,22 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
       setGW(w)
       return
     }
-    // 칸이 좁아 이름 · 시간이 안 들어가는 칸만 글자를 한 단계씩 줄입니다 (잘리지 않게)
-    el.querySelectorAll('.tt-gblk').forEach((blk) => {
+    // 수업 칸 글자 크기는 표 전체가 똑같게: 한 칸이라도 안 들어가면 전체를 한 단계씩 줄입니다
+    const LV = ['tt-fsm', 'tt-fxs', 'tt-fxxs']
+    el.classList.remove(...LV)
+    const overAny = () =>
+      [...el.querySelectorAll('.tt-gblk:not(.tt-gout):not(.tt-glane):not(.tt-gmk)')].some((blk) => {
+        const bb = blk.querySelector('b')
+        return blk.scrollWidth > blk.clientWidth + 1 || blk.scrollHeight > blk.clientHeight + 1 ||
+          (bb && bb.scrollWidth > bb.clientWidth + 1)
+      })
+    for (const lv of LV) {
+      if (!overAny()) break
+      el.classList.remove(...LV)
+      el.classList.add(lv)
+    }
+    // 외부 일정(검은 칸) · 시간이 겹쳐 반쪽이 된 칸 · '보강' 딱지가 붙은 칸은 안 들어갈 때만 그 칸을 따로 줄입니다
+    el.querySelectorAll('.tt-gblk.tt-gout, .tt-gblk.tt-glane, .tt-gblk.tt-gmk').forEach((blk) => {
       blk.classList.remove('tt-gsm', 'tt-gxs', 'tt-g2t')
       const over = () => {
         const bb = blk.querySelector('b')
@@ -4848,9 +4863,8 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
   const GH = 26
   // 이 달 내내 일정이 한 건도 없는 시간 줄은 얇게 접어서, 그만큼 표 전체(글자)를 크게 씁니다.
   //   일정이 있는 시간 줄 안에서는 분 단위 위치 · 길이가 그대로 정확합니다.
-  const busyHour = (h) =>
-    [...sessions, ...outside].some((x) => ttMin(x.start_time) < (h + 1) * 60 && ttMin(x.end_time) > h * 60)
-  const rows = hours.map((h) => ({ h, H: busyHour(h) ? GH : Math.round(GH * 0.38), thin: !busyHour(h) }))
+  // 시간 줄 높이는 모두 같게 (선생님끼리 비교하기 쉽게)
+  const rows = hours.map((h) => ({ h, H: GH, thin: false }))
   const rowTop = []
   rows.reduce((acc, r, i) => ((rowTop[i] = acc), acc + r.H), 0)
   const bodyH = rows.reduce((a, r) => a + r.H, 0)
@@ -4977,7 +4991,7 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
             <div className="tt-gw-body" style={{ height: bodyH }}>
               <div className="tt-gw-axis">
                 {hours.map((h) => (
-                  <div key={h} className={busyHour(h) ? '' : 'tt-gthin'} style={{ height: rows[hours.indexOf(h)].H }}>{hourLabel(h)}</div>
+                  <div key={h} style={{ height: rows[hours.indexOf(h)].H }}>{hourLabel(h)}</div>
                 ))}
               </div>
               {DAYS.map((dw, di) => {
@@ -5011,7 +5025,8 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
                         left: `calc(${(k.lane / k.lanes) * 100}% + 1px)`,
                         width: `calc(${100 / k.lanes}% - 2px)`,
                       }
-                      const one = hgt < 40   // 1시간 20분 미만은 이름 · 시간을 한 줄로 (크게)
+                      // 수업 칸은 길이와 상관없이 모두 '이름 시간' 한 줄 · 같은 글자 크기 (1타임 · 2타임 · 3타임 통일)
+                      const one = k.out ? hgt < 40 : true
                       if (k.out)
                         return (
                           <div key={'o' + k.x.id} className={`tt-gblk tt-gout${one ? ' tt-g1' : ''}`} style={pos}>
@@ -5026,7 +5041,7 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
                       return (
                         <div
                           key={s2.id}
-                          className={`tt-gblk tt-gcell${mk ? ' tt-gmk' : ''}${ab ? ' tt-gab' : ''}${one ? ' tt-g1' : ''}`}
+                          className={`tt-gblk tt-gcell${mk ? ' tt-gmk' : ''}${ab ? ' tt-gab' : ''}${one ? ' tt-g1' : ''}${k.lanes > 1 ? ' tt-glane' : ''}`}
                           style={ab ? pos : { ...pos, background: mk ? '#fff' : c[0], color: mk ? '#8A4B00' : c[1] }}
                         >
                           <b>
@@ -5411,6 +5426,9 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
         .tt-gblk.tt-gxs b { font-size: 12.5px !important; } .tt-gblk.tt-gxs small { font-size: 10.5px !important; }
         .tt-gblk.tt-g2t { display: block !important; padding-top: 1px !important; line-height: 1.02 !important; }
         .tt-gblk.tt-g2t b { font-size: 10px !important; } .tt-gblk.tt-g2t small { font-size: 9px !important; }
+        .tt-gcap.tt-fsm .tt-gblk:not(.tt-gout):not(.tt-gmk):not(.tt-glane) b { font-size: 15px !important; } .tt-gcap.tt-fsm .tt-gblk:not(.tt-gout):not(.tt-gmk):not(.tt-glane) small { font-size: 12.5px !important; }
+        .tt-gcap.tt-fxs .tt-gblk:not(.tt-gout):not(.tt-gmk):not(.tt-glane) b { font-size: 13.5px !important; } .tt-gcap.tt-fxs .tt-gblk:not(.tt-gout):not(.tt-gmk):not(.tt-glane) small { font-size: 11.5px !important; }
+        .tt-gcap.tt-fxxs .tt-gblk:not(.tt-gout):not(.tt-gmk):not(.tt-glane) b { font-size: 12px !important; } .tt-gcap.tt-fxxs .tt-gblk:not(.tt-gout):not(.tt-gmk):not(.tt-glane) small { font-size: 10.5px !important; }
         .tt-gblk.tt-gsm .tt-gtag, .tt-gblk.tt-gxs .tt-gtag, .tt-gblk.tt-g2t .tt-gtag { font-size: 9px !important; padding: 0 2px; margin-right: 2px; }
         .tt-gw-axis > div { font-size: 13px !important; font-weight: 700; }
         .tt-gw-head .tt-gdw { font-size: 13px; } .tt-gw-head .tt-gdt { font-size: 15px; }
@@ -5529,7 +5547,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
         <div style={{ fontSize: 15, fontWeight: 700 }}>
           {ym.replace('-', '년 ')}월 시간표 인쇄
           {/* 새 파일이 제대로 올라갔는지 확인용 — 브라우저가 옛 파일을 기억하고 있으면 이 표시가 안 보입니다 */}
-          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-17</span>
+          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-18</span>
           {mode === 'grid' && (
             <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: imgErr ? C.danger : useImgs ? '#1F7A45' : C.mut }}>
               {imgErr ? `그림 실패: ${imgErr.slice(0, 60)}` : useImgs ? `그림 준비됨 ${imgs.length}장` : '그림 만드는 중'}
