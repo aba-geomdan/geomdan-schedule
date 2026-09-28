@@ -4752,7 +4752,7 @@ const GRID_COLORS = [
   ['#BEE3DC', '#11423B'], ['#F2C9B8', '#5B2716'], ['#CBD5E1', '#1E293B'],
   ['#E7C9F0', '#4A1157'],
 ]
-function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
+function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unmade = [] }) {
   const [y, m] = ym.split('-').map(Number)
   const lastDay = new Date(y, m, 0).getDate()
   const DOW = ['월', '화', '수', '목', '금', '토']
@@ -4891,6 +4891,47 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
     if (group.length) flush()
     return items
   }
+  // 보강 잡아야 할 것 — 아직 보강을 안 잡은 결강을 아이별로 묶어서, 오래된 결강부터
+  //   타임 = 단가 ÷ 80,000원 (1타임 = 40분 수업 + 10분 상담). 단가를 모르면 수업 길이 ÷ 50분
+  const makeupKids = useMemo(() => {
+    const tOf = (u) => {
+      const byPrice = u.unit_price ? Math.round(u.unit_price / 80000) : 0
+      const byMin = Math.round((ttMin(u.end_time) - ttMin(u.start_time)) / 50)
+      return Math.max(1, byPrice || byMin || 1)
+    }
+    const m = {}
+    ;[...unmade].sort((a, b) => a.d.localeCompare(b.d) || a.start_time.localeCompare(b.start_time)).forEach((u) => {
+      const k = u.student_name
+      if (!m[k]) m[k] = { name: k, first: u.d, items: [] }
+      m[k].items.push({ d: u.d, t: tOf(u) })
+    })
+    return Object.values(m).sort((a, b) => a.first.localeCompare(b.first))
+  }, [unmade])
+  const makeupBox =
+    makeupKids.length === 0 ? null : (
+      <div className={`tt-mk${makeupKids.length > 7 ? ' tt-mk2' : ''}`}>
+        <div className="tt-mk-h">
+          보강 잡아야 할 것 {makeupKids.reduce((a, k) => a + k.items.length, 0)}건
+          <span>(모두 {makeupKids.reduce((a, k) => a + k.items.reduce((b, x) => b + x.t, 0), 0)}타임)</span>
+        </div>
+        {makeupKids.map((k) => {   // 보강 남은 아이는 전부 (개수 제한 없음)
+          const tot = k.items.reduce((a, x) => a + x.t, 0)
+          return (
+            <div key={k.name} className="tt-mk-r">
+              <i className="tt-mk-cb" />
+              <b>{k.name}</b>
+              <em className={tot >= 2 ? 'tt-mk-t2' : ''}>{tot}타임</em>
+              <span>
+                {k.items
+                  .map((x) => `${Number(x.d.slice(5, 7))}/${Number(x.d.slice(8, 10))}${x.t > 1 ? `(${x.t})` : ''}`)
+                  .join('  ·  ')}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+    )
+
   // 50분 이상 빈 시간 (그 날 첫 일정과 마지막 일정 사이) — 보강 · 새 수업 넣을 자리 찾기용
   const gapsOf = (items) => {
     const out = []
@@ -5002,9 +5043,13 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
             </div>
           </div>
         ) })}
+        {/* 주가 홀수(5주 등)면 오른쪽 아래 빈 자리에 */}
+        {ci === 1 && weeks.length % 2 === 1 && makeupBox}
         </div>
         ))}
       </div>
+      {/* 주가 짝수면 빈 자리가 없어서 맨 아래 띠로 */}
+      {weeks.length % 2 === 0 && makeupBox && <div className="tt-mk-band">{makeupBox}</div>}
       </div>
       </div>
       </div>
@@ -5180,7 +5225,7 @@ function WeekSheet({ ym, days, weekNo, teachers, sessions, outside, holidays, le
   )
 }
 
-function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHolidays, toneOf, colorOf, onClose, onlyTeacher }) {
+function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerName, loadHolidays, toneOf, colorOf, onClose, onlyTeacher }) {
   const teachers = useMemo(() => staff.filter((x) => x.active), [staff])
   // 시간표 화면에서 선생님을 골라둔 채 인쇄를 누르면 그 선생님만 골라진 상태로 엽니다
   const [picked, setPicked] = useState(() => {
@@ -5195,7 +5240,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
   const [imgs, setImgs] = useState(null)
   const [making, setMaking] = useState(false)
   const [imgErr, setImgErr] = useState('')
-  const snapKey = mode + '|' + [...picked].sort().join(',') + '|' + ym + '|' + sessions.length + '|' + hols.length
+  const snapKey = mode + '|' + [...picked].sort().join(',') + '|' + ym + '|' + sessions.length + '|' + hols.length + '|' + unmade.length
   useEffect(() => {
     if (mode !== 'grid') return
     let on = true
@@ -5325,6 +5370,25 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
         .tt-gw-day { position: relative; border-left: 0.6px solid #9AA0A6; border-top: 0.6px solid #9AA0A6;
           }
         .tt-glines { position: absolute; inset: 0; pointer-events: none; }
+        /* 보강 잡아야 할 것 */
+        .tt-mk { border: 3px solid #D93025; border-radius: 6px; background: #fff; padding: 10px 14px 12px; }
+        .tt-mk-band { margin-top: 2mm; }
+        /* 보강 남은 아이가 8명 이상이면 두 줄로 (표가 작아지지 않게) */
+        .tt-mk.tt-mk2 { display: grid; grid-template-columns: 1fr 1fr; column-gap: 20px; }
+        .tt-mk.tt-mk2 .tt-mk-h { grid-column: 1 / -1; }
+        .tt-mk.tt-mk2 .tt-mk-r b { min-width: 0; }
+        .tt-mk-band .tt-mk { display: grid; grid-template-columns: 1fr 1fr; column-gap: 24px; }
+        .tt-mk-band .tt-mk-h, .tt-mk-band .tt-mk-more { grid-column: 1 / -1; }
+        .tt-mk-h { font-size: 22px; font-weight: 800; color: #B3261E; margin-bottom: 6px; }
+        .tt-mk-h span { font-size: 17px; margin-left: 10px; }
+        .tt-mk-r { display: flex; align-items: center; gap: 10px; padding: 3px 0; white-space: nowrap; overflow: hidden; }
+        .tt-mk-cb { flex: none; width: 16px; height: 16px; border: 2.5px solid #1D2023; border-radius: 2px; }
+        .tt-mk-r b { flex: none; font-size: 18px; font-weight: 800; color: #1D2023; min-width: 64px; }
+        .tt-mk-r em { flex: none; font-style: normal; font-size: 13.5px; font-weight: 800; border-radius: 5px; padding: 1px 7px;
+          background: #E6E9ED; color: #1D2023; }
+        .tt-mk-r em.tt-mk-t2 { background: #D93025; color: #fff; }
+        .tt-mk-r span { font-size: 16px; color: #1D2023; overflow: hidden; text-overflow: ellipsis; }
+        .tt-mk-more { font-size: 14px; color: #6B7079; margin-top: 4px; }
         /* 50분 이상 빈 시간 — 칸 왼쪽에 주황 세로줄만 */
         .tt-ggap { position: absolute; left: 2px; width: 5px; box-sizing: border-box; background: #F07C1B; border-radius: 3px; }
         .tt-gcap .tt-gh .tt-glg { margin-left: auto; font-size: 15px; color: #B85A0C; display: inline-flex; align-items: center; gap: 6px; }
@@ -5465,7 +5529,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
         <div style={{ fontSize: 15, fontWeight: 700 }}>
           {ym.replace('-', '년 ')}월 시간표 인쇄
           {/* 새 파일이 제대로 올라갔는지 확인용 — 브라우저가 옛 파일을 기억하고 있으면 이 표시가 안 보입니다 */}
-          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-16</span>
+          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-17</span>
           {mode === 'grid' && (
             <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: imgErr ? C.danger : useImgs ? '#1F7A45' : C.mut }}>
               {imgErr ? `그림 실패: ${imgErr.slice(0, 60)}` : useImgs ? `그림 준비됨 ${imgs.length}장` : '그림 만드는 중'}
@@ -5556,6 +5620,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
             holidays={holFor(t)}
             sessions={sessions.filter((s) => s.staff_name === t.name && s.status !== '취소')}
             outside={t.name === ownerName ? outside.filter((e) => e.d.slice(0, 7) === ym) : []}
+            unmade={unmade.filter((u) => u.staff_name === t.name)}
           />
         ))}
         {mode === 'grid' && !shown.length && (
@@ -8234,6 +8299,7 @@ function App() {
           toneOf={toneOf}
           colorOf={colorOf}
           onlyTeacher={filter}
+          unmade={unmadeUp}
           onClose={() => setTtPrint(false)}
         />
       )}
