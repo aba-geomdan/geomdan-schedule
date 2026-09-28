@@ -4971,10 +4971,10 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
         <span className="tt-glg"><i />50분 이상 빈 시간</span>
       </div>
       <div className="tt-gwrap">
-        {/* 왼쪽 · 오른쪽 두 줄 — 인쇄할 때 칸이 엉뚱하게 나뉘지 않도록 직접 나눕니다 */}
-        {[weeks.slice(0, Math.ceil(weeks.length / 2)), weeks.slice(Math.ceil(weeks.length / 2))].map((col, ci) => (
+        {/* 날짜 순서대로 왼쪽 → 오른쪽, 다음 줄: 1주 | 2주 / 3주 | 4주 / 5주 | (보강) */}
+        {[weeks.filter((_, i) => i % 2 === 0), weeks.filter((_, i) => i % 2 === 1)].map((col, ci) => (
         <div key={ci} className="tt-gcol">
-        {col.map((wk, wj) => { const wi = ci * Math.ceil(weeks.length / 2) + wj; return (
+        {col.map((wk, wj) => { const wi = wj * 2 + ci; return (
           <div key={wi} className="tt-gw" style={{ '--H': `${GH}px`, '--ND': DAYS.length }}>
             <div className="tt-gw-head">
               <div />
@@ -5547,7 +5547,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
         <div style={{ fontSize: 15, fontWeight: 700 }}>
           {ym.replace('-', '년 ')}월 시간표 인쇄
           {/* 새 파일이 제대로 올라갔는지 확인용 — 브라우저가 옛 파일을 기억하고 있으면 이 표시가 안 보입니다 */}
-          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-20</span>
+          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-21</span>
           {mode === 'grid' && (
             <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: imgErr ? C.danger : useImgs ? '#1F7A45' : C.mut }}>
               {imgErr ? `그림 실패: ${imgErr.slice(0, 60)}` : useImgs ? `그림 준비됨 ${imgs.length}장` : '그림 만드는 중'}
