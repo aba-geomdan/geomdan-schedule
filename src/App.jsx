@@ -4896,6 +4896,16 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
     if (group.length) flush()
     return items
   }
+  // 50분 이상 빈 시간 (그 날 첫 일정과 마지막 일정 사이) — 보강 · 새 수업 넣을 자리 찾기용
+  const gapsOf = (items) => {
+    const out = []
+    let end = null
+    ;[...items].sort((p, q) => p.a - q.a).forEach((k) => {
+      if (end != null && k.a - end >= 50) out.push([end, k.a])
+      end = end == null ? k.b : Math.max(end, k.b)
+    })
+    return out
+  }
 
   return (
     <div className="tt-page tt-grid-page">
@@ -4908,6 +4918,7 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
           {y}년 {m}월 시간표
         </span>
         {days.length > 0 && <span className="tt-gd">({days.join('·')})</span>}
+        <span className="tt-glg"><i />50분 이상 빈 시간</span>
       </div>
       <div className="tt-gwrap">
         {/* 왼쪽 · 오른쪽 두 줄 — 인쇄할 때 칸이 엉뚱하게 나뉘지 않도록 직접 나눕니다 */}
@@ -4949,6 +4960,13 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
                     <div className="tt-glines">
                       {rows.map((r) => <div key={r.h} style={{ height: r.H }} />)}
                     </div>
+                    {gapsOf(blocksOf(dIso)).map(([g0, g1]) => {
+                      const top = yOf(g0) + 1
+                      const hh = Math.max(yOf(g1) - yOf(g0) - 2, 4)
+                      return (
+                        <div key={'g' + g0} className="tt-ggap" style={{ top, height: hh }} />
+                      )
+                    })}
                     {blocksOf(dIso).map((k) => {
                       const top = yOf(k.a)
                       const hgt = Math.max(yOf(k.b) - top - 1, 8)
@@ -5312,6 +5330,10 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
         .tt-gw-day { position: relative; border-left: 0.6px solid #9AA0A6; border-top: 0.6px solid #9AA0A6;
           }
         .tt-glines { position: absolute; inset: 0; pointer-events: none; }
+        /* 50분 이상 빈 시간 — 칸 왼쪽에 주황 세로줄만 */
+        .tt-ggap { position: absolute; left: 2px; width: 5px; box-sizing: border-box; background: #F07C1B; border-radius: 3px; }
+        .tt-gcap .tt-gh .tt-glg { margin-left: auto; font-size: 15px; color: #B85A0C; display: inline-flex; align-items: center; gap: 6px; }
+        .tt-glg i { display: inline-block; width: 5px; height: 18px; background: #F07C1B; border-radius: 3px; }
         .tt-glines > div { box-sizing: border-box; border-bottom: 0.6px solid #DADDE1; }
         .tt-gw-axis > div.tt-gthin { font-size: 8.5px !important; padding-top: 0; line-height: 1; color: #9AA0A6; }
         .tt-gw-day.tt-ghol { display: flex; align-items: center; justify-content: center; background: #E9A9A2; }
@@ -5444,7 +5466,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
         <div style={{ fontSize: 15, fontWeight: 700 }}>
           {ym.replace('-', '년 ')}월 시간표 인쇄
           {/* 새 파일이 제대로 올라갔는지 확인용 — 브라우저가 옛 파일을 기억하고 있으면 이 표시가 안 보입니다 */}
-          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-12</span>
+          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-13</span>
           {mode === 'grid' && (
             <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: imgErr ? C.danger : useImgs ? '#1F7A45' : C.mut }}>
               {imgErr ? `그림 실패: ${imgErr.slice(0, 60)}` : useImgs ? `그림 준비됨 ${imgs.length}장` : '그림 만드는 중'}
