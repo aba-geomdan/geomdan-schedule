@@ -4991,13 +4991,13 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
                         <div
                           key={s2.id}
                           className={`tt-gblk tt-gcell${mk ? ' tt-gmk' : ''}${ab ? ' tt-gab' : ''}${one ? ' tt-g1' : ''}`}
-                          style={{ ...pos, background: mk ? '#fff' : c[0], color: mk ? '#8A4B00' : c[1] }}
+                          style={ab ? pos : { ...pos, background: mk ? '#fff' : c[0], color: mk ? '#8A4B00' : c[1] }}
                         >
                           <b>
                             {mk && <span className="tt-gtag">보강</span>}
                             {s2.student_name}
                           </b>
-                          <small>{clock(s2.start_time)}~{clock(s2.end_time)}</small>
+                          <small>{ab ? '결강' : `${clock(s2.start_time)}~${clock(s2.end_time)}`}</small>
                         </div>
                       )
                     })}
@@ -5373,6 +5373,10 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
         .tt-gtag { font-size: 8px; background: #E07B00; color: #fff; border-radius: 2px;
           padding: 0 3px; margin-right: 3px; vertical-align: 1px; }
         .tt-gab { text-decoration: line-through; opacity: .55; }
+        /* 표 모양 결강: 빨간 테두리 + 빗금, 시간 대신 '결강' */
+        .tt-gblk.tt-gab { text-decoration: none; opacity: 1; border: 2px solid #D93025 !important; color: #B3261E !important;
+          background: repeating-linear-gradient(135deg, #FDE3E0 0, #FDE3E0 6px, #fff 6px, #fff 12px) !important; }
+        .tt-gblk.tt-gab small { font-weight: 800; opacity: 1 !important; }
         .tt-gout { background: #3F4652; color: #fff; border-radius: 2px; padding: 2px 3px; margin-bottom: 1px; line-height: 1.15; }
         .tt-gout b { display: block; font-size: 8.5px; } .tt-gout small { font-size: 7.5px; opacity: .9; }
         .tt-page { width: 297mm; height: 210mm; margin: 0 auto 10mm; background: #fff; padding: 6mm 8mm;
@@ -5466,7 +5470,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
         <div style={{ fontSize: 15, fontWeight: 700 }}>
           {ym.replace('-', '년 ')}월 시간표 인쇄
           {/* 새 파일이 제대로 올라갔는지 확인용 — 브라우저가 옛 파일을 기억하고 있으면 이 표시가 안 보입니다 */}
-          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-13</span>
+          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-14</span>
           {mode === 'grid' && (
             <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: imgErr ? C.danger : useImgs ? '#1F7A45' : C.mut }}>
               {imgErr ? `그림 실패: ${imgErr.slice(0, 60)}` : useImgs ? `그림 준비됨 ${imgs.length}장` : '그림 만드는 중'}
