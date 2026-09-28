@@ -4769,10 +4769,10 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
   }, [sessions])
 
   // 시간 범위 (시 단위)
-  const all = [...sessions, ...outside]
-  // 모든 선생님 똑같이 9시 ~ 7시 줄(저녁 8시까지). 그보다 이르거나 늦은 일정이 있으면 그만큼만 늘림
-  const h1 = Math.min(9, ...all.map((s) => Number(s.start_time.slice(0, 2))))
-  const h2 = Math.max(20, ...all.map((s) => Math.ceil(ttMin(s.end_time) / 60)))
+  // 모든 선생님 항상 똑같이 9시 ~ 6시 줄(아침 9시 ~ 저녁 7시).
+  //   7시를 넘겨 끝나는 수업은 칸 맨 아래에 붙여 그리고, 글씨에는 실제 시간(예: 5:30~7:10)이 그대로 나옵니다.
+  const h1 = 9
+  const h2 = 19
   const hours = []
   for (let h = h1; h < Math.max(h2, h1 + 4); h++) hours.push(h)
 
@@ -4880,8 +4880,8 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
       ...sessions.filter((x) => x.d === dIso).map((x) => ({ x, out: false })),
     ]
       .map((k) => {
-        const a = Math.max(ttMin(k.x.start_time), h1 * 60)
-        const b = Math.max(ttMin(k.x.end_time), a + 10)
+        const a = Math.min(Math.max(ttMin(k.x.start_time), h1 * 60), h2 * 60 - 15)
+        const b = Math.min(Math.max(ttMin(k.x.end_time), a + 10), h2 * 60)
         return { ...k, a, b }
       })
       .sort((p, q) => p.a - q.a || q.b - p.b)
@@ -5424,8 +5424,8 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
         .tt-gblk.tt-gout b { font-size: 14.5px !important; } .tt-gblk.tt-gout small { font-size: 12.5px !important; }
         .tt-gblk.tt-gsm b { font-size: 14.5px !important; } .tt-gblk.tt-gsm small { font-size: 12px !important; }
         .tt-gblk.tt-gxs b { font-size: 12.5px !important; } .tt-gblk.tt-gxs small { font-size: 10.5px !important; }
-        .tt-gblk.tt-g2t { display: block !important; padding-top: 1px !important; line-height: 1.02 !important; }
-        .tt-gblk.tt-g2t b { font-size: 10px !important; } .tt-gblk.tt-g2t small { font-size: 9px !important; }
+        .tt-gblk.tt-g2t { display: block !important; padding-top: 0 !important; line-height: 1 !important; }
+        .tt-gblk.tt-g2t b { font-size: 9.5px !important; } .tt-gblk.tt-g2t small { font-size: 8.5px !important; }
         .tt-gcap.tt-fsm .tt-gblk:not(.tt-gout):not(.tt-gmk):not(.tt-glane) b { font-size: 15px !important; } .tt-gcap.tt-fsm .tt-gblk:not(.tt-gout):not(.tt-gmk):not(.tt-glane) small { font-size: 12.5px !important; }
         .tt-gcap.tt-fxs .tt-gblk:not(.tt-gout):not(.tt-gmk):not(.tt-glane) b { font-size: 13.5px !important; } .tt-gcap.tt-fxs .tt-gblk:not(.tt-gout):not(.tt-gmk):not(.tt-glane) small { font-size: 11.5px !important; }
         .tt-gcap.tt-fxxs .tt-gblk:not(.tt-gout):not(.tt-gmk):not(.tt-glane) b { font-size: 12px !important; } .tt-gcap.tt-fxxs .tt-gblk:not(.tt-gout):not(.tt-gmk):not(.tt-glane) small { font-size: 10.5px !important; }
@@ -5547,7 +5547,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
         <div style={{ fontSize: 15, fontWeight: 700 }}>
           {ym.replace('-', '년 ')}월 시간표 인쇄
           {/* 새 파일이 제대로 올라갔는지 확인용 — 브라우저가 옛 파일을 기억하고 있으면 이 표시가 안 보입니다 */}
-          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-18</span>
+          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-20</span>
           {mode === 'grid' && (
             <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: imgErr ? C.danger : useImgs ? '#1F7A45' : C.mut }}>
               {imgErr ? `그림 실패: ${imgErr.slice(0, 60)}` : useImgs ? `그림 준비됨 ${imgs.length}장` : '그림 만드는 중'}
