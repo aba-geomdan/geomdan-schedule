@@ -4439,7 +4439,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
 const ADD_DOW = ['일', '월', '화', '수', '목', '금', '토']
 
 /* ================= 보강 (선생님별 → 달별) ================= */
-function MakeupLog({ rows, staffOrder = [], ownerName, toneOf, busy, isAdmin, unmade = [], onMakeup, onAdd }) {
+function MakeupLog({ rows, staffOrder = [], ownerName, toneOf, busy, isAdmin, unmade = [], onMakeup, onAdd, needSql }) {
   const rank = (n) => (n === ownerName ? -1 : staffOrder.indexOf(n) < 0 ? 99 : staffOrder.indexOf(n))
   const md = (d) => (d ? d.slice(5).replace('-', '/') : '')
   const hm2 = (t) => (t ? t.slice(0, 5) : '')
@@ -4531,6 +4531,13 @@ function MakeupLog({ rows, staffOrder = [], ownerName, toneOf, busy, isAdmin, un
         </div>
       </div>
 
+      {needSql && (
+        <Card style={{ padding: '10px 14px', marginBottom: 12, background: '#FEF6E7', border: '1px solid #F3D9A6' }}>
+          <div style={{ fontSize: 12.5, color: '#8A5A00', lineHeight: 1.6 }}>
+            보강 기록(언제 보강했는지)은 <b>schema_v2.sql</b>을 실행해야 보입니다. 지금은 보강해야 할 수업만 보여드려요.
+          </div>
+        </Card>
+      )}
       {rows.length === 0 ? (
         <Empty>결강 기록이 없습니다.</Empty>
       ) : (
@@ -5951,12 +5958,12 @@ function App() {
       isAdmin ? Promise.resolve(null) : loadMyClosing(closeYm),
       isAdmin ? loadReceiptExtras(ym).catch(() => []) : Promise.resolve([]),
       loadPayrollHistory().catch(() => []),
-      loadMakeupLog(null).catch(() => []),
+      loadMakeupLog(null).catch(() => 'ERR'),
     ])
     setBilling(b)
     setReceiptExtras(rx || [])
     setPayHistory(ph || [])
-    setMakeupLog(ml || [])
+    setMakeupLog(ml === 'ERR' ? 'ERR' : ml || [])
     setByStaff(bs)
     setClosings(cl)
     setReceipts(r)
@@ -6552,7 +6559,26 @@ function App() {
 
         {!loading && tab === 'month' && schedView === 'makeup' && (
           <MakeupLog
-            rows={makeupLog}
+            rows={
+              makeupLog === 'ERR'
+                ? // DB(schema_v2.sql)를 아직 안 올리셨을 때 — 보강해야 할 수업만이라도 보여줍니다
+                  unmadeUp.map((x) => ({
+                    absent_id: x.id,
+                    ym: x.d.slice(0, 7),
+                    absent_d: x.d,
+                    absent_start: x.start_time,
+                    student_name: x.student_name,
+                    staff_name: x.staff_name,
+                    program_label: x.program_label,
+                    makeup_d: null,
+                    makeup_start: null,
+                    makeup_staff: null,
+                    by_other: false,
+                    note: null,
+                  }))
+                : makeupLog
+            }
+            needSql={makeupLog === 'ERR'}
             staffOrder={staff.map((x) => x.name)}
             ownerName={staff.find((x) => x.role === 'admin')?.name}
             toneOf={toneOf}
