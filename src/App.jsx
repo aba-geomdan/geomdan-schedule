@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef } from 'react'
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import ReactDOM from 'react-dom/client'
 import { createPortal } from 'react-dom'
 import { createClient } from '@supabase/supabase-js'
@@ -68,17 +68,7 @@ const ymOf = (d) =>
 const isoOf = (d) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 
-const hhmm = (t) => (t || '').slice(0, 5)   // 입력칸 · 내부 비교용 (24시간 그대로)
-
-// 화면 · 인쇄용 12시간 표기 (새벽 수업이 없어 오전/오후는 안 붙입니다)
-//   13 → 1시,  14:30 → 2:30
-const h12 = (h) => ((Math.floor(Number(h)) + 11) % 12) + 1
-const hourLabel = (h) => `${h12(h)}시`
-const clock = (t) => {
-  if (!t) return ''
-  const [H, M] = String(t).slice(0, 5).split(':')
-  return `${h12(H)}:${M}`
-}
+const hhmm = (t) => (t || '').slice(0, 5)
 
 const minutesBetween = (a, b) => {
   const [h1, m1] = a.split(':').map(Number)
@@ -157,23 +147,13 @@ async function loadRevenue() {
   return ok(await supabase.rpc('monthly_revenue'))
 }
 
-async function addDeposit(studentId, { amount, date, method, memo, voucherKind, forYm }) {
+async function addDeposit(studentId, { amount, date, method, memo }) {
   return ok(
     await supabase.rpc('add_deposit', {
       p_student: studentId, p_amount: amount,
       p_date: date, p_method: method ?? null, p_memo: memo ?? null,
-      p_voucher_kind: method === '바우처' ? voucherKind ?? null : null,
-      p_for_ym: method === '바우처' ? forYm ?? null : null,
     })
   )
-}
-
-// 본인부담금 (연말정산 서류) · 달별 매출
-async function loadCopayYear(year) {
-  return ok(await supabase.rpc('copay_year', { p_year: year }))
-}
-async function loadRevenueByMonth() {
-  return ok(await supabase.rpc('revenue_by_month'))
 }
 
 async function addRefund(studentId, { amount, date, method, memo }) {
@@ -356,17 +336,6 @@ async function loadPayrollHistory(from, to) {
 }
 async function markPayrollPaid(ym, staffId, on, memo) {
   return ok(await supabase.rpc('mark_payroll_paid', { p_ym: ym, p_staff: staffId, p_on: on ?? null, p_memo: memo ?? null }))
-}
-// 급여 추가지급 · 공제 (그 달 그 선생님)
-async function setPayrollExtras(ym, staffId, items) {
-  return ok(await supabase.rpc('set_payroll_extras', { p_ym: ym, p_staff: staffId, p_items: items }))
-}
-// 급여 직접 입력 · 지우기 (수업 없는 분 · 앱 쓰기 전 달)
-async function savePayrollManual(ym, staffId, pay, items, memo) {
-  return ok(await supabase.rpc('save_payroll_manual', { p_ym: ym, p_staff: staffId, p_pay: pay, p_items: items, p_memo: memo || null }))
-}
-async function deletePayrollManual(ym, staffId) {
-  return ok(await supabase.rpc('delete_payroll_manual', { p_ym: ym, p_staff: staffId }))
 }
 
 // 아동 상태 바꾸기 (퇴소·휴원은 '언제부터'를 같이 보냅니다)
@@ -784,7 +753,7 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                 color: '#B4B8BD',
               }}
             >
-              {hourLabel(Math.floor(m / 60))}
+              {String(Math.floor(m / 60)).padStart(2, '0')}:00
             </div>
           ))}
         </div>
@@ -871,7 +840,7 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                     </div>
                     {eh > 44 && n < 3 && (
                       <div style={{ fontSize: 9.5, color: OUTSIDE.tag, marginTop: 1 }}>
-                        {clock(e.start_time)}~{clock(e.end_time)}
+                        {hhmm(e.start_time)}~{hhmm(e.end_time)}
                       </div>
                     )}
                   </div>
@@ -891,7 +860,7 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                   <button
                     key={s.id}
                     onClick={() => onPick(s)}
-                    title={`${s.student_name} · ${s.staff_name} · ${clock(s.start_time)}-${clock(s.end_time)}`}
+                    title={`${s.student_name} · ${s.staff_name} · ${hhmm(s.start_time)}-${hhmm(s.end_time)}`}
                     style={{
                       position: 'absolute',
                       top: (toMin(s.start_time) - DAY_START) * PX,
@@ -940,7 +909,7 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                     </div>
                     {h > 44 && !narrow && (
                       <div style={{ fontSize: 10, color: tone.fg, opacity: 0.75 }}>
-                        {clock(s.start_time)}
+                        {hhmm(s.start_time)}
                       </div>
                     )}
                     {h > 40 && narrow && cols <= 2 && (
@@ -1212,7 +1181,7 @@ function MonthView({
                           <button
                             key={s.id}
                             disabled={busy}
-                            title={`${s.d.slice(5)} (${s.weekday}) ${clock(s.start_time)} · ${s.status}`}
+                            title={`${s.d.slice(5)} (${s.weekday}) ${hhmm(s.start_time)} · ${s.status}`}
                             onClick={() => onMark(s.id, s.status === '결강' ? '진행' : '결강')}
                             style={{
                               width: 34, height: 34, borderRadius: 8,
@@ -1286,7 +1255,7 @@ function TodayView({ today, weekMinutes, onMark, busy }) {
               <div key={s.id} style={{ padding: '13px 15px', borderBottom: `1px solid ${C.line2}` }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                   <div style={{ fontSize: 12.5, color: C.sub, minWidth: 44, fontWeight: 600 }}>
-                    {clock(s.start_time)}
+                    {hhmm(s.start_time)}
                   </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 16, fontWeight: 700 }}>{s.student_name}</div>
@@ -1448,517 +1417,56 @@ function MyClosingView({ ym, summary, closing, onSubmit, onPrevYm, onNextYm, bus
 /* ═════════════════ AdminViews.jsx ═════════════════ */
 
 /* ---------------- 정산 ---------------- */
-/* ================= 급여 세금 계산 (DB의 pay_tax 와 같은 규칙) =================
-   소득세 = 과세금액 × 3%  (10원 미만 버림)
-   지방세 = 소득세 × 10%   (10원 미만 버림)
-   실지급 = 수업분 + 추가지급 − 소득세 − 지방세 − 공제
-   추가지급은 항목마다 '세금 포함' 여부, 공제(주차료 등)는 세금과 무관 */
-function payTax(pay, items = []) {
-  const list = Array.isArray(items) ? items : []
-  const amt = (x) => Math.max(0, Math.round(Number(x.amount) || 0))
-  const adds = list.filter((x) => x.kind === 'add').reduce((a, x) => a + amt(x), 0)
-  const addsTaxed = list.filter((x) => x.kind === 'add' && x.taxed !== false).reduce((a, x) => a + amt(x), 0)
-  const deducts = list.filter((x) => x.kind === 'deduct').reduce((a, x) => a + amt(x), 0)
-  const p = Math.round(Number(pay) || 0)
-  const gross = p + adds
-  const base = p + addsTaxed
-  const incomeTax = Math.floor((base * 3) / 1000) * 10
-  const localTax = Math.floor(incomeTax / 100) * 10
-  return { gross, base, incomeTax, localTax, deducts, net: gross - incomeTax - localTax - deducts }
-}
-
-// 항목 한 줄 요약: "주차료 −60,000 · 추가지급 +100,000(세금 없이)"
-const itemsText = (items) =>
-  (Array.isArray(items) ? items : [])
-    .map((x) =>
-      x.kind === 'deduct'
-        ? `${x.label} −${won(x.amount)}`
-        : `${x.label} +${won(x.amount)}${x.taxed === false ? '(세금 없이)' : ''}`
-    )
-    .join(' · ')
-
-/* 추가지급 · 공제 입력칸 (이 달 화면 · 직접 입력 둘 다 씀) */
-function ExtrasEditor({ items, setItems }) {
-  const inp = { fontSize: 13, padding: '7px 9px', border: '1px solid #DEE0E3', borderRadius: 7, minWidth: 0 }
-  const upd = (i, patch) => setItems(items.map((x, j) => (j === i ? { ...x, ...patch } : x)))
-  return (
-    <div>
-      {items.length === 0 && (
-        <div style={{ fontSize: 12.5, color: C.mut, padding: '4px 0 8px' }}>추가지급 · 공제가 없습니다.</div>
-      )}
-      {items.map((x, i) => (
-        <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 7, flexWrap: 'wrap' }}>
-          <span
-            style={{
-              fontSize: 11.5, fontWeight: 700, borderRadius: 99, padding: '3px 8px', whiteSpace: 'nowrap',
-              background: x.kind === 'deduct' ? '#F2F3F5' : '#EEF3FD',
-              color: x.kind === 'deduct' ? C.sub : '#254B8C',
-            }}
-          >
-            {x.kind === 'deduct' ? '− 공제' : '+ 추가'}
-          </span>
-          <input
-            value={x.label}
-            onChange={(e) => upd(i, { label: e.target.value })}
-            placeholder={x.kind === 'deduct' ? '주차료' : '추가지급'}
-            style={{ ...inp, flex: '1 1 90px' }}
-          />
-          <input
-            type="number"
-            inputMode="numeric"
-            min="0"
-            step="1"
-            value={x.amount}
-            onChange={(e) => upd(i, { amount: e.target.value })}
-            placeholder="금액"
-            style={{ ...inp, width: 110, textAlign: 'right' }}
-          />
-          {x.kind === 'add' ? (
-            <label style={{ fontSize: 12, color: C.sub, display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
-              <input type="checkbox" checked={x.taxed !== false} onChange={(e) => upd(i, { taxed: e.target.checked })} />
-              세금 포함
-            </label>
-          ) : (
-            <span style={{ fontSize: 12, color: C.mut, whiteSpace: 'nowrap' }}>세금 무관</span>
-          )}
-          <Btn variant="ghost" onClick={() => setItems(items.filter((_, j) => j !== i))} style={{ padding: '4px 8px', fontSize: 12 }}>
-            빼기
-          </Btn>
-        </div>
-      ))}
-      <div style={{ display: 'flex', gap: 6 }}>
-        <Btn onClick={() => setItems([...items, { kind: 'add', label: '추가지급', amount: '', taxed: true }])} style={{ padding: '5px 11px', fontSize: 12 }}>
-          + 추가지급
-        </Btn>
-        <Btn onClick={() => setItems([...items, { kind: 'deduct', label: '주차료', amount: '' }])} style={{ padding: '5px 11px', fontSize: 12 }}>
-          − 공제
-        </Btn>
-      </div>
-    </div>
-  )
-}
-
-// 저장 전에 항목 정리 · 확인 (문제 있으면 문구를 돌려줌)
-function cleanItems(items) {
-  const out = []
-  for (const x of items) {
-    const label = String(x.label || '').trim()
-    const amount = Math.round(Number(x.amount))
-    if (!label && !x.amount) continue
-    if (!label) return { error: '항목 이름을 적어주세요.' }
-    if (!(amount > 0)) return { error: `${label} — 금액을 넣어주세요.` }
-    out.push(x.kind === 'deduct' ? { kind: 'deduct', label, amount } : { kind: 'add', label, amount, taxed: x.taxed !== false })
-  }
-  return { items: out }
-}
-
-// 금액 · 소득세 · 지방세 · 실지급 네 칸
-function TaxLine({ gross, incomeTax, localTax, taxTotal, net, method, deducts }) {
-  const cell = (label, v, strong) => (label === '' ? <div /> :
-    <div style={{ textAlign: 'right', minWidth: 0 }}>
-      <div style={{ fontSize: 11, color: C.sub }}>{label}</div>
-      <div style={{ fontSize: strong ? 14.5 : 13, fontWeight: strong ? 700 : 500, color: strong ? C.pkd : C.ink }}>{won(v)}</div>
-    </div>
-  )
-  return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 8 }}>
-      {cell('금액', gross)}
-      {method === '3.3%' ? (
-        <>
-          {cell('세금 3.3% (일괄)', taxTotal)}
-          {cell(deducts ? '공제' : '', deducts ? -deducts : '')}
-        </>
-      ) : (
-        <>
-          {cell('소득세 3%', incomeTax)}
-          {cell('지방세 10%', localTax)}
-        </>
-      )}
-      {cell('실지급액', net, true)}
-    </div>
-  )
-}
-
-/* 이 달 추가지급 · 공제 넣기 */
-function ExtrasModal({ ym, row, busy, onClose, onSave }) {
-  const [items, setItems] = useState(() => (row.extra_items || []).map((x) => ({ ...x })))
-  const [err, setErr] = useState('')
-  const t = payTax(row.pay || 0, items)
-  return (
-    <Modal onClose={onClose} max={520}>
-      <div style={{ padding: '16px 18px', borderBottom: `1px solid ${C.line2}` }}>
-        <div style={{ fontSize: 17, fontWeight: 700 }}>{row.staff_name} 추가지급 · 공제</div>
-        <div style={{ fontSize: 12.5, color: C.sub, marginTop: 3 }}>
-          {ym.replace('-', '년 ')}월 · 수업분 {won(row.pay || 0)}원
-        </div>
-      </div>
-      <div style={{ padding: 18 }}>
-        <ExtrasEditor items={items} setItems={(v) => { setItems(v); setErr('') }} />
-        <div style={{ marginTop: 16, padding: 12, background: '#FAFAFB', borderRadius: 10 }}>
-          <TaxLine gross={t.gross} incomeTax={t.incomeTax} localTax={t.localTax} net={t.net} />
-          {t.deducts > 0 && (
-            <div style={{ fontSize: 11.5, color: C.sub, marginTop: 6, textAlign: 'right' }}>공제 {won(t.deducts)}원 뺀 금액</div>
-          )}
-        </div>
-        {err && <div style={{ color: C.danger, fontSize: 12.5, marginTop: 10 }}>{err}</div>}
-        <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
-          <Btn onClick={onClose} style={{ flex: 1 }}>닫기</Btn>
-          <Btn
-            variant="primary"
-            disabled={busy}
-            style={{ flex: 2 }}
-            onClick={async () => {
-              const c = cleanItems(items)
-              if (c.error) return setErr(c.error)
-              if (await onSave(c.items)) onClose()
-            }}
-          >
-            저장
-          </Btn>
-        </div>
-      </div>
-    </Modal>
-  )
-}
-
-/* 급여 직접 입력 (수업이 없는 분 · 앱 쓰기 전 달) */
-function ManualPayModal({ staff, rec, busy, onClose, onSave, onDelete }) {
-  const inp = { width: '100%', fontSize: 14, padding: '9px 11px', border: '1px solid #DEE0E3', borderRadius: 8, boxSizing: 'border-box' }
-  const [staffId, setStaffId] = useState(rec?.staff_id || staff[0]?.id || '')
-  const [ym, setYm] = useState(rec?.ym || ymOf(new Date()))
-  const [pay, setPay] = useState(rec ? String(rec.pay) : '')
-  const [items, setItems] = useState(() => (rec?.extra_items || []).map((x) => ({ ...x })))
-  const [memo, setMemo] = useState(rec?.memo || '')
-  const [err, setErr] = useState('')
-  const t = payTax(Number(pay) || 0, items)
-  return (
-    <Modal onClose={onClose} max={520}>
-      <div style={{ padding: '16px 18px', borderBottom: `1px solid ${C.line2}` }}>
-        <div style={{ fontSize: 17, fontWeight: 700 }}>{rec ? '급여 기록 고치기' : '급여 직접 입력'}</div>
-        <div style={{ fontSize: 12.5, color: C.sub, marginTop: 3, lineHeight: 1.6 }}>
-          수업 기록이 없는 달이나 실장님처럼 수업이 없는 분 급여를 넣습니다. 세금은 3% + 지방세 10%로 자동 계산돼요.
-        </div>
-      </div>
-      <div style={{ padding: 18, display: 'grid', gap: 12 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-          <label style={{ fontSize: 12, color: C.sub }}>
-            이름
-            <select value={staffId} disabled={!!rec} onChange={(e) => setStaffId(e.target.value)} style={{ ...inp, marginTop: 4 }}>
-              {staff.map((s) => (
-                <option key={s.id} value={s.id}>{s.name}</option>
-              ))}
-            </select>
-          </label>
-          <label style={{ fontSize: 12, color: C.sub }}>
-            몇 월분
-            <input type="month" value={ym} disabled={!!rec} onChange={(e) => setYm(e.target.value)} style={{ ...inp, marginTop: 4 }} />
-          </label>
-        </div>
-        <label style={{ fontSize: 12, color: C.sub }}>
-          금액 (세금 떼기 전)
-          <input
-            type="number" inputMode="numeric" min="0" step="1" value={pay}
-            onChange={(e) => { setPay(e.target.value); setErr('') }}
-            placeholder="3000000" style={{ ...inp, marginTop: 4, textAlign: 'right' }}
-          />
-        </label>
-        <div>
-          <div style={{ fontSize: 12, color: C.sub, marginBottom: 6 }}>추가지급 · 공제</div>
-          <ExtrasEditor items={items} setItems={(v) => { setItems(v); setErr('') }} />
-        </div>
-        <label style={{ fontSize: 12, color: C.sub }}>
-          메모
-          <input value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="실장님" style={{ ...inp, marginTop: 4 }} />
-        </label>
-        <div style={{ padding: 12, background: '#FAFAFB', borderRadius: 10 }}>
-          <TaxLine gross={t.gross} incomeTax={t.incomeTax} localTax={t.localTax} net={t.net} />
-        </div>
-        {err && <div style={{ color: C.danger, fontSize: 12.5 }}>{err}</div>}
-        <div style={{ display: 'flex', gap: 8 }}>
-          {rec && (
-            <Btn variant="danger" disabled={busy} onClick={async () => { if (await onDelete(rec)) onClose() }}>
-              지우기
-            </Btn>
-          )}
-          <Btn onClick={onClose} style={{ flex: 1 }}>닫기</Btn>
-          <Btn
-            variant="primary"
-            disabled={busy}
-            style={{ flex: 2 }}
-            onClick={async () => {
-              if (!staffId) return setErr('이름을 골라주세요.')
-              if (!/^\d{4}-\d{2}$/.test(ym)) return setErr('몇 월분인지 골라주세요.')
-              const p = Math.round(Number(pay))
-              if (pay === '' || !(p >= 0)) return setErr('금액을 넣어주세요.')
-              const c = cleanItems(items)
-              if (c.error) return setErr(c.error)
-              if (await onSave({ ym, staffId, pay: p, items: c.items, memo })) onClose()
-            }}
-          >
-            저장
-          </Btn>
-        </div>
-      </div>
-    </Modal>
-  )
-}
-
-/* 연도별 합계 인쇄 */
-function YearPrint({ year, rows, onClose }) {
-  return createPortal(
-    <div className="yp-root">
-      <style>{`
-        .yp-root { position: fixed; inset: 0; z-index: 90; background: #fff; overflow: auto; }
-        .yp-sheet { max-width: 760px; margin: 0 auto; padding: 24px 20px; font-family: inherit; color: #1D2023; }
-        .yp-sheet table { width: 100%; border-collapse: collapse; font-size: 13px; }
-        .yp-sheet th, .yp-sheet td { border: 1px solid #C9CCD1; padding: 7px 9px; }
-        .yp-sheet th { background: #F4F5F7; font-weight: 700; }
-        .yp-sheet td.n { text-align: right; white-space: nowrap; }
-        @media print {
-          @page { size: A4 portrait; margin: 14mm; }
-          html, body { height: auto !important; overflow: visible !important; background: #fff !important; }
-          body > *:not(.yp-root) { display: none !important; }
-          .yp-root { position: static !important; overflow: visible !important; }
-          .yp-bar { display: none !important; }
-          .yp-sheet { padding: 0; max-width: none; }
-        }
-      `}</style>
-      <div className="yp-bar" style={{ position: 'sticky', top: 0, background: '#fff', borderBottom: `1px solid ${C.line}`, padding: '12px 16px', display: 'flex', gap: 8, alignItems: 'center' }}>
-        <div style={{ fontSize: 15, fontWeight: 700 }}>{year}년 급여 합계 인쇄</div>
-        <Btn onClick={onClose} style={{ marginLeft: 'auto' }}>닫기</Btn>
-        <Btn variant="primary" onClick={() => window.print()}>인쇄</Btn>
-      </div>
-      <div className="yp-sheet">
-        <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>검단ABA언어행동연구소 {year}년 급여 합계</div>
-        <div style={{ fontSize: 12, color: '#6B7079', marginBottom: 14 }}>
-          근무월 기준 (12월분은 그해에 포함) · 세금 = 소득세 + 지방세 (3.3% 일괄 달은 기록된 3.3%)
-        </div>
-        <YearTable rows={rows} print />
-      </div>
-    </div>,
-    document.body
-  )
-}
-
-function YearTable({ rows, print }) {
-  const tot = rows.reduce(
-    (a, r) => ({ months: a.months + r.months, gross: a.gross + r.gross, it: a.it + r.it, lt: a.lt + r.lt, flat: a.flat + r.flat, tax: a.tax + r.tax, net: a.net + r.net }),
-    { months: 0, gross: 0, it: 0, lt: 0, flat: 0, tax: 0, net: 0 }
-  )
-  const taxSub = (r) =>
-    [r.flat ? `3.3% ${won(r.flat)}` : '', r.it ? `소득세 ${won(r.it)}` : '', r.lt ? `지방세 ${won(r.lt)}` : '']
-      .filter(Boolean)
-      .join(' · ')
-  const td = print ? {} : { padding: '8px 10px', textAlign: 'right', whiteSpace: 'nowrap' }
-  return (
-    <table style={print ? undefined : { width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 520 }}>
-      <thead>
-        <tr style={print ? undefined : { background: '#FBFBFC', color: C.sub }}>
-          {['이름', '개월', '금액', '세금', '실지급액'].map((h, i) => (
-            <th key={h} style={print ? { textAlign: i ? 'right' : 'left' } : { padding: '8px 10px', textAlign: i ? 'right' : 'left', fontWeight: 600, borderBottom: `1px solid ${C.line}` }}>
-              {h}
-            </th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((r) => (
-          <tr key={r.name} style={print ? undefined : { borderBottom: `1px solid ${C.line2}` }}>
-            <td style={print ? undefined : { padding: '8px 10px', fontWeight: 700 }}>{r.name}</td>
-            <td className="n" style={td}>{r.months}</td>
-            <td className="n" style={td}>{won(r.gross)}</td>
-            <td className="n" style={td}>
-              {won(r.tax)}
-              <div style={{ fontSize: 10.5, color: '#8A8F97', fontWeight: 400 }}>{taxSub(r)}</div>
-            </td>
-            <td className="n" style={{ ...td, fontWeight: 700 }}>{won(r.net)}</td>
-          </tr>
-        ))}
-      </tbody>
-      <tfoot>
-        <tr style={print ? { fontWeight: 700 } : { background: C.pkl, fontWeight: 700 }}>
-          <td style={print ? undefined : { padding: '9px 10px' }}>합계</td>
-          <td className="n" style={td}>{tot.months}</td>
-          <td className="n" style={td}>{won(tot.gross)}</td>
-          <td className="n" style={td}>
-            {won(tot.tax)}
-            <div style={{ fontSize: 10.5, color: '#8A8F97', fontWeight: 400 }}>{taxSub(tot)}</div>
-          </td>
-          <td className="n" style={{ ...td, color: print ? undefined : C.pkd }}>{won(tot.net)}</td>
-        </tr>
-      </tfoot>
-    </table>
-  )
-}
-
-// 기록 한 줄의 숫자 (예전 기록에 세금 칸이 비어 있으면 그 자리에서 계산)
-function recNums(r) {
-  if (r.net_pay != null) {
-    const ded = (r.extra_items || []).filter((x) => x.kind === 'deduct').reduce((a, x) => a + (Number(x.amount) || 0), 0)
-    return {
-      gross: r.gross ?? r.pay ?? 0,
-      it: r.income_tax || 0,
-      lt: r.local_tax || 0,
-      tax: r.tax_total ?? (r.income_tax || 0) + (r.local_tax || 0),
-      net: r.net_pay,
-      ded,
-    }
-  }
-  const t = payTax(r.pay || 0, r.extra_items || [])
-  return { gross: t.gross, it: t.incomeTax, lt: t.localTax, tax: t.incomeTax + t.localTax, net: t.net, ded: t.deducts }
-}
-
-/* ================= 급여 기록 (마감 · 직접 입력 · 엑셀에서 옮긴 것) ================= */
-function PayrollHistory({ rows, staffOrder = [], ownerName, toneOf, busy, onPaid, allStaff = [], onSaveManual, onDeleteManual }) {
+/* ================= 급여 기록 (마감 승인할 때 저장된 것) ================= */
+function PayrollHistory({ rows, staffOrder = [], ownerName, toneOf, busy, onPaid }) {
   const rank = (n) => (n === ownerName ? -1 : staffOrder.indexOf(n) < 0 ? 99 : staffOrder.indexOf(n))
-  const [view, setView] = useState('month')
-  const [manual, setManual] = useState(null) // null | 'new' | 기록
-  const [printYear, setPrintYear] = useState(null)
-  const [showAll, setShowAll] = useState(false)
+  const [openYm, setOpenYm] = useState(null)
 
-  const isLegacy = (r) => r.source === '엑셀'
   const months = useMemo(() => {
     const m = {}
     rows.forEach((r) => {
-      if (!m[r.ym]) m[r.ym] = { ym: r.ym, list: [], total: 0, unpaid: 0, legacy: true }
-      const n = recNums(r)
+      if (!m[r.ym]) m[r.ym] = { ym: r.ym, list: [], total: 0, unpaid: 0 }
       m[r.ym].list.push(r)
-      m[r.ym].total += n.net
-      if (!isLegacy(r)) m[r.ym].legacy = false
-      if (!r.paid_on && !isLegacy(r)) m[r.ym].unpaid += n.net
+      m[r.ym].total += r.pay || 0
+      if (!r.paid_on) m[r.ym].unpaid += r.pay || 0
     })
     return Object.values(m)
-      .map((g) => ({ ...g, list: g.list.sort((a, b) => rank(a.staff_name) - rank(b.staff_name) || a.staff_name.localeCompare(b.staff_name, 'ko')) }))
+      .map((g) => ({ ...g, list: g.list.sort((a, b) => rank(a.staff_name) - rank(b.staff_name)) }))
       .sort((a, b) => b.ym.localeCompare(a.ym))
   }, [rows, staffOrder, ownerName])
 
-  // 연도별 · 사람별 합계 (근무월 기준)
-  const years = useMemo(() => {
-    const y = {}
+  const byStaffTotal = useMemo(() => {
+    const m = {}
     rows.forEach((r) => {
-      const yr = r.ym.slice(0, 4)
-      if (!y[yr]) y[yr] = {}
-      if (!y[yr][r.staff_name]) y[yr][r.staff_name] = { name: r.staff_name, months: 0, gross: 0, it: 0, lt: 0, flat: 0, tax: 0, net: 0 }
-      const a = y[yr][r.staff_name]
-      const n = recNums(r)
-      a.months += 1
-      a.gross += n.gross
-      a.net += n.net
-      a.tax += n.tax
-      if (r.tax_method === '3.3%') a.flat += n.tax
-      else {
-        a.it += n.it
-        a.lt += n.lt
-      }
+      if (!m[r.staff_name]) m[r.staff_name] = 0
+      m[r.staff_name] += r.pay || 0
     })
-    return Object.keys(y)
-      .sort((a, b) => b.localeCompare(a))
-      .map((yr) => ({
-        year: yr,
-        rows: Object.values(y[yr]).sort((a, b) => rank(a.name) - rank(b.name) || a.name.localeCompare(b.name, 'ko')),
-      }))
+    return Object.entries(m).sort((a, b) => rank(a[0]) - rank(b[0]))
   }, [rows, staffOrder, ownerName])
-  const [year, setYear] = useState(null)
-  const curYear = years.find((x) => x.year === year) || years[0]
 
-  const unpaid = months.reduce((a, g) => a + g.unpaid, 0)
-  const shownMonths = showAll ? months : months.slice(0, 6)
-
-  const header = (
-    <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
-      <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 8 }}>
-        {[['month', '달별'], ['year', '연도별 합계']].map(([k, label]) => (
-          <button
-            key={k}
-            onClick={() => setView(k)}
-            style={{
-              border: 'none', cursor: 'pointer', padding: '5px 12px', borderRadius: 6, fontSize: 12.5, fontWeight: 600,
-              background: view === k ? '#fff' : 'transparent', color: view === k ? C.ink : C.sub,
-              boxShadow: view === k ? '0 1px 2px rgba(0,0,0,.06)' : 'none',
-            }}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-      <Btn onClick={() => setManual('new')} disabled={busy} style={{ marginLeft: 'auto', padding: '6px 12px', fontSize: 12.5 }}>
-        + 직접 입력
-      </Btn>
-    </div>
-  )
-
-  const modal = manual && (
-    <ManualPayModal
-      staff={allStaff}
-      rec={manual === 'new' ? null : manual}
-      busy={busy}
-      onClose={() => setManual(null)}
-      onSave={onSaveManual}
-      onDelete={onDeleteManual}
-    />
-  )
+  const grand = rows.reduce((a, b) => a + (b.pay || 0), 0)
+  const unpaid = rows.filter((r) => !r.paid_on).reduce((a, b) => a + (b.pay || 0), 0)
 
   if (!rows.length)
     return (
-      <div>
-        {header}
-        <Empty>
-          아직 급여 기록이 없습니다. 마감을 <b>승인</b>하면 그 달 급여가 금액까지 여기에 저장됩니다.
-        </Empty>
-        {modal}
-      </div>
-    )
-
-  if (view === 'year')
-    return (
-      <div>
-        {header}
-        <div style={{ display: 'flex', gap: 6, marginBottom: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-          {years.map((y) => (
-            <button
-              key={y.year}
-              onClick={() => setYear(y.year)}
-              style={{
-                border: `1px solid ${curYear?.year === y.year ? C.pkd : '#DEE0E3'}`, borderRadius: 99, cursor: 'pointer',
-                padding: '4px 12px', fontSize: 12.5, fontWeight: 700,
-                background: curYear?.year === y.year ? C.pkl : '#fff', color: curYear?.year === y.year ? C.pkd : C.sub,
-              }}
-            >
-              {y.year}
-            </button>
-          ))}
-          <Btn onClick={() => setPrintYear(curYear?.year)} style={{ marginLeft: 'auto', padding: '6px 12px', fontSize: 12.5 }}>
-            인쇄
-          </Btn>
-        </div>
-        {curYear && (
-          <Card style={{ overflow: 'auto' }}>
-            <YearTable rows={curYear.rows} />
-          </Card>
-        )}
-        <div style={{ fontSize: 12, color: C.sub, marginTop: 8, lineHeight: 1.7 }}>
-          근무월 기준이에요 (12월분은 그해에 들어갑니다). 금액은 세금 떼기 전, 실지급액은 세금·공제를 뺀 금액입니다.
-          그만둔 선생님 기록도 함께 나옵니다.
-        </div>
-        {printYear && curYear && <YearPrint year={curYear.year} rows={curYear.rows} onClose={() => setPrintYear(null)} />}
-        {modal}
-      </div>
+      <Empty>
+        아직 급여 기록이 없습니다. 마감을 <b>승인</b>하면 그 달 급여가 금액까지 여기에 저장됩니다.
+      </Empty>
     )
 
   return (
     <div>
-      {header}
       <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
-        <Stat label={`기록된 달 ${months.length}개월`} value={`${won(months.reduce((a, g) => a + g.total, 0))}원`} />
-        <Stat label="아직 이체 안 함 (실지급)" value={`${won(unpaid)}원`} tone={unpaid > 0 ? C.danger : C.mut} />
+        <Stat label={`기록된 급여 (${months.length}개월)`} value={`${won(grand)}원`} />
+        <Stat label="아직 이체 안 함" value={`${won(unpaid)}원`} tone={unpaid > 0 ? C.danger : C.mut} />
       </div>
 
       <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.75, marginBottom: 12 }}>
-        마감하면 그 달 급여가 세금까지 계산돼 저장됩니다. 이체하신 뒤 <b>이체함</b>을 누르면 날짜가 남아요.
-        <b> 엑셀</b> 표시는 예전 엑셀에서 옮긴 기록입니다.
+        마감을 <b>승인</b>할 때 그 달 급여가 그대로 저장됩니다. 나중에 단가나 출결을 고쳐도 이 금액은 바뀌지 않아요.
+        이체하신 뒤 <b>이체함</b>을 누르면 날짜가 남습니다.
       </div>
 
-      {shownMonths.map((g) => (
+      {months.map((g) => (
         <Card key={g.ym} style={{ marginBottom: 12, overflow: 'hidden' }}>
           <div
             style={{
@@ -1968,680 +1476,79 @@ function PayrollHistory({ rows, staffOrder = [], ownerName, toneOf, busy, onPaid
           >
             <div style={{ fontSize: 14, fontWeight: 700 }}>{g.ym.replace('-', '년 ')}월분</div>
             <span style={{ fontSize: 12, color: C.sub }}>{g.list.length}명</span>
-            {g.legacy ? (
-              <Pill tone="gray">엑셀 기록</Pill>
-            ) : g.unpaid > 0 ? (
+            {g.unpaid > 0 ? (
               <Pill tone="pink">이체 전 {won(g.unpaid)}원</Pill>
             ) : (
               <Pill tone="green">이체 완료</Pill>
             )}
-            <div style={{ marginLeft: 'auto', fontSize: 16, fontWeight: 700 }}>
-              {won(g.total)}원
-              <span style={{ fontSize: 11, color: C.sub, fontWeight: 500, marginLeft: 4 }}>실지급</span>
-            </div>
+            <div style={{ marginLeft: 'auto', fontSize: 16, fontWeight: 700 }}>{won(g.total)}원</div>
           </div>
-          {g.list.map((r) => {
-            const n = recNums(r)
-            const extra = itemsText(r.extra_items)
-            const sessions = r.source === '앱' ? `회차 ${r.lesson_count}${r.makeup_count > 0 ? ` (보강 ${r.makeup_count})` : ''}` : r.sessions_text ? `회기 ${r.sessions_text}` : ''
-            return (
-              <div key={r.staff_id} style={{ padding: '10px 14px', borderBottom: `1px solid ${C.line2}` }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 7 }}>
-                  <span style={{ fontWeight: 700, fontSize: 13.5, color: toneOf ? toneOf(r.staff_name).fg : C.ink }}>{r.staff_name}</span>
-                  {sessions && <span style={{ fontSize: 12, color: C.sub }}>{sessions}</span>}
-                  {r.source === '엑셀' && <Pill tone="gray">엑셀</Pill>}
-                  {r.source === '직접' && <Pill tone="blue">직접 입력</Pill>}
-                  <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <tbody>
+              {g.list.map((r) => (
+                <tr key={r.staff_id} style={{ borderBottom: `1px solid ${C.line2}` }}>
+                  <td style={{ padding: '9px 14px', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                    <span style={{ color: toneOf ? toneOf(r.staff_name).fg : C.ink }}>{r.staff_name}</span>
+                  </td>
+                  <td style={{ padding: '9px 8px', color: C.sub, whiteSpace: 'nowrap' }}>
+                    회차 {r.lesson_count}
+                    {r.makeup_count > 0 && ` (보강 ${r.makeup_count})`}
+                  </td>
+                  <td style={{ padding: '9px 8px', color: C.sub, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    수강료 {won(r.tuition)}
+                  </td>
+                  <td style={{ padding: '9px 8px', textAlign: 'right', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                    {won(r.pay)}원
+                  </td>
+                  <td style={{ padding: '9px 8px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    {r.paid_on ? (
+                      <span style={{ fontSize: 12, color: '#1F5B3A' }}>{r.paid_on.slice(5).replace('-', '/')} 이체</span>
+                    ) : (
+                      <span style={{ fontSize: 12, color: C.mut }}>—</span>
+                    )}
+                  </td>
+                  <td style={{ padding: '9px 14px', textAlign: 'right', whiteSpace: 'nowrap' }}>
                     {r.pay_now != null && r.pay_now !== r.pay && (
                       <span
-                        title={`지금 다시 계산하면 수업분 ${won(r.pay_now)}원 (기록은 마감 당시 금액)`}
-                        style={{ fontSize: 11, color: '#8A5A00', background: '#FEF6E7', borderRadius: 99, padding: '2px 8px', whiteSpace: 'nowrap' }}
+                        title={`지금 다시 계산하면 ${won(r.pay_now)}원 (기록은 승인 당시 금액)`}
+                        style={{
+                          fontSize: 11, color: '#8A5A00', background: '#FEF6E7',
+                          borderRadius: 99, padding: '2px 8px', marginRight: 7, whiteSpace: 'nowrap',
+                        }}
                       >
                         지금 {won(r.pay_now)}
                       </span>
                     )}
-                    {r.source === '직접' && !r.paid_on && (
-                      <Btn disabled={busy} onClick={() => setManual(r)} style={{ padding: '4px 10px', fontSize: 12 }}>
-                        고치기
-                      </Btn>
-                    )}
-                    {r.source !== '엑셀' &&
-                      (r.paid_on ? (
-                        <>
-                          <span style={{ fontSize: 12, color: '#1F5B3A' }}>{r.paid_on.slice(5).replace('-', '/')} 이체</span>
-                          <Btn disabled={busy} onClick={() => onPaid(r.ym, r.staff_id, null)} style={{ padding: '4px 10px', fontSize: 12 }}>
-                            이체 취소
-                          </Btn>
-                        </>
-                      ) : (
-                        <Btn variant="ok" disabled={busy} onClick={() => onPaid(r.ym, r.staff_id, undefined)} style={{ padding: '4px 10px', fontSize: 12 }}>
-                          이체함
-                        </Btn>
-                      ))}
-                  </span>
-                </div>
-                <TaxLine
-                  gross={n.gross}
-                  incomeTax={n.it}
-                  localTax={n.lt}
-                  taxTotal={n.tax}
-                  net={n.net}
-                  method={r.tax_method}
-                  deducts={n.ded}
-                />
-                {(extra || r.memo) && (
-                  <div style={{ fontSize: 11.5, color: C.sub, marginTop: 6, lineHeight: 1.6 }}>
-                    {extra}
-                    {extra && r.memo ? ' · ' : ''}
-                    {r.memo}
-                  </div>
-                )}
-              </div>
-            )
-          })}
-        </Card>
-      ))}
-
-      {months.length > 6 && (
-        <Btn onClick={() => setShowAll(!showAll)} style={{ width: '100%', marginBottom: 12 }}>
-          {showAll ? '최근 6개월만 보기' : `지난 기록 ${months.length - 6}개월 더 보기`}
-        </Btn>
-      )}
-      {modal}
-    </div>
-  )
-}
-
-/* ================= 연말정산 · 본인부담금 ================= */
-// 본인부담금 = 그 달 수강료 − 그 달분 바우처. 앱으로 영수증을 발행하기 전 달은 엑셀 기록지에서 옮긴 값.
-const CENTER = {
-  name: '검단ABA언어행동연구소',
-  addr: '인천 검단구 이음1로 377 눈담봄 905호',
-  head: '대표 민 다 혜',
-}
-const ymLabel = (ym) => `${Number(ym.slice(5))}월`
-const ymLong = (ym) => `${ym.slice(0, 4)}년 ${Number(ym.slice(5))}월`
-const sessLabel = (r) => (r.sessions != null ? `${Number(r.sessions)}회` : r.sessions_text || '')
-
-function CopayView({ loadCopay, say }) {
-  const thisYear = new Date().getFullYear()
-  const years = useMemo(() => {
-    const out = []
-    for (let y = thisYear; y >= 2023; y--) out.push(y)
-    return out
-  }, [thisYear])
-  const [year, setYear] = useState(thisYear)
-  const [rows, setRows] = useState(null)
-  const [q, setQ] = useState('')
-  const [cert, setCert] = useState(null) // 아동 이름
-  const [printAll, setPrintAll] = useState(false)
-
-  useEffect(() => {
-    let on = true
-    setRows(null)
-    loadCopay(year)
-      .then((r) => on && setRows(r || []))
-      .catch(() => on && setRows([]))
-    return () => { on = false }
-  }, [year])
-
-  const kids = useMemo(() => {
-    const m = {}
-    ;(rows || []).forEach((r) => {
-      if (!m[r.child_name]) m[r.child_name] = { name: r.child_name, months: {}, total: 0, voucher: 0 }
-      m[r.child_name].months[r.ym] = r
-      m[r.child_name].total += r.copay
-      m[r.child_name].voucher += r.voucher || 0
-    })
-    return Object.values(m).sort((a, b) => a.name.localeCompare(b.name, 'ko'))
-  }, [rows])
-  const shown = q.trim() ? kids.filter((k) => k.name.includes(q.trim())) : kids
-  const monthsInYear = Array.from({ length: 12 }, (_, i) => `${year}-${String(i + 1).padStart(2, '0')}`)
-  const usedMonths = monthsInYear.filter((m) => (rows || []).some((r) => r.ym === m))
-  const grand = kids.reduce((a, k) => a + k.total, 0)
-
-  return (
-    <div>
-      <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.75, marginBottom: 12 }}>
-        엄마들이 연말정산 서류를 달라고 하시면 아이 이름 옆 <b>증명서</b>를 누르세요. 기간을 골라 인쇄하거나 이미지로 저장할 수 있어요.
-        <br />
-        금액은 <b>본인부담금</b>(수강료에서 바우처로 받은 금액을 뺀 것)입니다. 바우처는 입금 기록할 때 '바우처'로 적으면 자동으로 빠져요.
-      </div>
-
-      <div style={{ display: 'flex', gap: 6, marginBottom: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-        {years.map((y) => (
-          <button
-            key={y}
-            onClick={() => setYear(y)}
-            style={{
-              border: `1px solid ${year === y ? C.pkd : '#DEE0E3'}`, borderRadius: 99, cursor: 'pointer',
-              padding: '4px 12px', fontSize: 12.5, fontWeight: 700,
-              background: year === y ? C.pkl : '#fff', color: year === y ? C.pkd : C.sub,
-            }}
-          >
-            {y}
-          </button>
-        ))}
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="이름 찾기"
-          style={{ fontSize: 13, padding: '6px 10px', border: '1px solid #DEE0E3', borderRadius: 8, width: 110, marginLeft: 'auto' }}
-        />
-        <Btn onClick={() => setPrintAll(true)} disabled={!kids.length} style={{ padding: '6px 12px', fontSize: 12.5 }}>
-          전체 인쇄
-        </Btn>
-      </div>
-
-      {rows === null ? (
-        <Loading />
-      ) : kids.length === 0 ? (
-        <Empty>{year}년 기록이 없습니다.</Empty>
-      ) : (
-        <Card style={{ overflow: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, minWidth: 180 + usedMonths.length * 78 }}>
-            <thead>
-              <tr style={{ background: '#FBFBFC', color: C.sub }}>
-                <th style={{ padding: '8px 10px', textAlign: 'left', fontWeight: 600, position: 'sticky', left: 0, background: '#FBFBFC' }}>아동</th>
-                {usedMonths.map((m) => (
-                  <th key={m} style={{ padding: '8px 6px', textAlign: 'right', fontWeight: 600 }}>{ymLabel(m)}</th>
-                ))}
-                <th style={{ padding: '8px 10px', textAlign: 'right', fontWeight: 600 }}>합계</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {shown.map((k) => (
-                <tr key={k.name} style={{ borderTop: `1px solid ${C.line2}` }}>
-                  <td style={{ padding: '7px 10px', fontWeight: 700, whiteSpace: 'nowrap', position: 'sticky', left: 0, background: '#fff' }}>{k.name}</td>
-                  {usedMonths.map((m) => {
-                    const r = k.months[m]
-                    return (
-                      <td key={m} style={{ padding: '7px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>
-                        {r ? (
-                          <>
-                            {won(r.copay)}
-                            <div style={{ fontSize: 10.5, color: C.mut }}>
-                              {sessLabel(r)}
-                              {r.voucher > 0 && <span style={{ color: '#254B8C' }}> · 바우처 −{won(r.voucher)}</span>}
-                            </div>
-                          </>
-                        ) : (
-                          <span style={{ color: '#D0D3D8' }}>—</span>
-                        )}
-                      </td>
-                    )
-                  })}
-                  <td style={{ padding: '7px 10px', textAlign: 'right', fontWeight: 700, whiteSpace: 'nowrap' }}>{won(k.total)}</td>
-                  <td style={{ padding: '7px 10px', textAlign: 'right' }}>
-                    <Btn onClick={() => setCert(k.name)} style={{ padding: '4px 10px', fontSize: 12 }}>
-                      증명서
+                    <Btn
+                      variant={r.paid_on ? 'default' : 'ok'}
+                      disabled={busy}
+                      onClick={() => onPaid(r.ym, r.staff_id, r.paid_on ? null : undefined)}
+                      style={{ padding: '5px 11px', fontSize: 12 }}
+                    >
+                      {r.paid_on ? '이체 취소' : '이체함'}
                     </Btn>
                   </td>
                 </tr>
               ))}
             </tbody>
-            <tfoot>
-              <tr style={{ background: C.pkl, fontWeight: 700 }}>
-                <td style={{ padding: '9px 10px', position: 'sticky', left: 0, background: C.pkl }}>합계 {kids.length}명</td>
-                {usedMonths.map((m) => (
-                  <td key={m} style={{ padding: '9px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>
-                    {won((rows || []).filter((r) => r.ym === m).reduce((a, r) => a + r.copay, 0))}
-                  </td>
-                ))}
-                <td style={{ padding: '9px 10px', textAlign: 'right', color: C.pkd, whiteSpace: 'nowrap' }}>{won(grand)}</td>
-                <td />
-              </tr>
-            </tfoot>
           </table>
         </Card>
-      )}
+      ))}
 
-      {cert && (
-        <CertificatePrint
-          name={cert}
-          year={year}
-          rows={(rows || []).filter((r) => r.child_name === cert)}
-          loadCopay={loadCopay}
-          say={say}
-          onClose={() => setCert(null)}
-        />
-      )}
-      {printAll && (
-        <CopayYearPrint year={year} kids={kids} months={usedMonths} rows={rows || []} onClose={() => setPrintAll(false)} />
-      )}
+      <Card style={{ padding: 14 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>선생님별 합계</div>
+        {byStaffTotal.map(([n, v]) => (
+          <div key={n} style={{ display: 'flex', fontSize: 13, padding: '4px 0' }}>
+            <span style={{ color: toneOf ? toneOf(n).fg : C.ink, fontWeight: 600 }}>{n}</span>
+            <span style={{ marginLeft: 'auto', fontWeight: 700 }}>{won(v)}원</span>
+          </div>
+        ))}
+      </Card>
     </div>
   )
 }
 
-/* 교육비 납입 증명서 (아동 한 명, 기간 선택)
-   · 보호자 성명 · 주민번호, 금액 · 횟수는 증명서 위에서 바로 고칠 수 있습니다 (인쇄용, DB에는 저장 안 함)
-   · 보호자 성명만 이 컴퓨터에 기억해 둡니다. 주민번호는 어디에도 저장하지 않습니다. */
-const guardianKey = (name) => `copay-guardian:${name}`
-const fmtRrn = (v) => {
-  const d = String(v || '').replace(/\D/g, '').slice(0, 13)
-  return d.length > 6 ? `${d.slice(0, 6)}-${d.slice(6)}` : d
-}
-
-function CertificatePrint({ name, year, rows: yearRows, loadCopay, say, onClose }) {
-  const today = isoOf(new Date())
-  const [mode, setMode] = useState('year') // year | recent2 | custom
-  const [from, setFrom] = useState(`${year}-01`)
-  const [to, setTo] = useState(`${year}-12`)
-  const [issued, setIssued] = useState(today)
-  const [pool, setPool] = useState(yearRows) // 최근 2개월 · 기간 직접일 때 다른 해도 불러옴
-  const [guardian, setGuardian] = useState(() => {
-    try {
-      return window.localStorage.getItem(guardianKey(name)) || ''
-    } catch (e) {
-      return ''
-    }
-  })
-  const [kidRrn, setKidRrn] = useState('')
-  const [guardRrn, setGuardRrn] = useState('')
-  const [edits, setEdits] = useState({}) // { ym: { amt, sess } } — 증명서에서 고친 값
-  const sheetRef = useRef(null)
-
-  useEffect(() => {
-    try {
-      if (guardian.trim()) window.localStorage.setItem(guardianKey(name), guardian.trim())
-    } catch (e) {
-      /* 저장 안 돼도 괜찮음 */
-    }
-  }, [guardian, name])
-
-  // 기간 직접: 걸친 해를 모두 불러옵니다 / 최근 2개월: 해가 바뀐 1월에도 되도록 작년까지
-  useEffect(() => {
-    if (mode === 'year') return
-    const y1 = mode === 'recent2' ? year - 1 : Number(from.slice(0, 4))
-    const y2 = mode === 'recent2' ? year : Number(to.slice(0, 4))
-    if (!(y1 >= 2000 && y2 >= y1 && y2 - y1 < 6)) return
-    let on = true
-    Promise.all(Array.from({ length: y2 - y1 + 1 }, (_, i) => loadCopay(y1 + i)))
-      .then((all) => {
-        if (!on) return
-        const seen = new Set()
-        setPool(all.flat().filter((r) => r.child_name === name && !seen.has(r.ym) && seen.add(r.ym)))
-      })
-      .catch(() => {})
-    return () => { on = false }
-  }, [mode, from, to, name, year])
-
-  const list = useMemo(() => {
-    const src = mode === 'year' ? yearRows : pool
-    const sorted = [...src].sort((a, b) => a.ym.localeCompare(b.ym))
-    if (mode === 'year') return sorted
-    if (mode === 'recent2') return sorted.filter((r) => r.ym <= ymOf(new Date())).slice(-2)
-    return sorted.filter((r) => r.ym >= from && r.ym <= to)
-  }, [mode, pool, yearRows, from, to])
-
-  // 고친 값 반영
-  const amtOf = (r) => (edits[r.ym]?.amt != null ? edits[r.ym].amt : r.copay)
-  const sessOf = (r) => (edits[r.ym]?.sess != null ? edits[r.ym].sess : sessLabel(r))
-  const setEdit = (ym, patch) => setEdits((e) => ({ ...e, [ym]: { ...(e[ym] || {}), ...patch } }))
-  const edited = Object.keys(edits).length > 0
-
-  const period =
-    list.length === 0
-      ? ''
-      : mode === 'year'
-      ? `${year}년 1월 ~ ${year}년 12월`
-      : `${ymLong(list[0].ym)} ~ ${ymLong(list[list.length - 1].ym)}`
-  const total = list.reduce((a, r) => a + (Number(amtOf(r)) || 0), 0)
-  const sessNums = list.map((r) => String(sessOf(r) || '').match(/^\s*(\d+(?:\.\d+)?)\s*회?\s*$/))
-  const sessKnown = list.length > 0 && sessNums.every(Boolean)
-  const sessTotal = sessKnown ? sessNums.reduce((a, m) => a + Number(m[1]), 0) : 0
-  const [iy, im, idd] = issued.split('-')
-
-  const doPrint = () => {
-    document.activeElement && document.activeElement.blur && document.activeElement.blur()
-    setTimeout(() => window.print(), 50)
-  }
-  const savePdf = () => {
-    say && say("인쇄 창에서 프린터(대상)를 'PDF로 저장'으로 고르세요")
-    document.activeElement && document.activeElement.blur && document.activeElement.blur()
-    setTimeout(() => window.print(), 400)
-  }
-
-  const chip = (k, label) => (
-    <button
-      key={k}
-      onClick={() => setMode(k)}
-      style={{
-        border: `1px solid ${mode === k ? C.pkd : '#DEE0E3'}`, borderRadius: 99, cursor: 'pointer',
-        padding: '4px 11px', fontSize: 12.5, fontWeight: 600,
-        background: mode === k ? C.pkl : '#fff', color: mode === k ? C.pkd : C.sub,
-      }}
-    >
-      {label}
-    </button>
-  )
-  const th = { border: '1px solid #9AA0A6', padding: '6px 8px', background: '#F4F5F7', fontWeight: 700 }
-  const td = { border: '1px solid #9AA0A6', padding: '6px 8px' }
-  const tdIn = { border: '1px solid #9AA0A6', padding: '2px 4px' }
-
-  return createPortal(
-    <div className="cert-root">
-      <style>{`
-        @page certpage { size: A4 portrait; margin: 0; }
-        .cert-root { position: fixed; inset: 0; z-index: 95; background: #E9EAEC; overflow: auto; }
-        .cert-sheet { width: 210mm; min-height: 297mm; margin: 12px auto 30px; background: #fff; padding: 22mm 20mm;
-          box-sizing: border-box; color: #1D2023; box-shadow: 0 1px 4px rgba(0,0,0,.12); page: certpage; }
-        .cert-in { width: 100%; box-sizing: border-box; border: none; border-bottom: 1px dashed #C8324F; background: #FFF7F9;
-          font: inherit; color: inherit; padding: 4px 4px; outline: none; }
-        .cert-in:focus { background: #FFEDF2; }
-        .cert-in.r { text-align: right; } .cert-in.c { text-align: center; }
-        .cert-in::placeholder { color: #C9A3AE; }
-        @media print {
-          @page { size: A4 portrait; margin: 0; }
-          html, body { height: auto !important; overflow: visible !important; background: #fff !important; }
-          body > *:not(.cert-root) { display: none !important; }
-          .cert-root { position: static !important; overflow: visible !important; background: #fff; }
-          .cert-bar { display: none !important; }
-          .cert-sheet { margin: 0; box-shadow: none; min-height: 0; height: 296mm; overflow: hidden; }
-          .cert-in { border: none !important; background: transparent !important; padding: 0 !important; }
-          .cert-in::placeholder { color: transparent !important; }
-        }
-      `}</style>
-      <div className="cert-bar" style={{ position: 'sticky', top: 0, zIndex: 2, background: '#fff', borderBottom: `1px solid ${C.line}`, padding: '10px 14px' }}>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <div style={{ fontSize: 15, fontWeight: 700 }}>{name} 납입증명서</div>
-          {chip('year', `${year}년 전체 (연말정산)`)}
-          {chip('recent2', '최근 2개월')}
-          {chip('custom', '기간 직접')}
-          {mode === 'custom' && (
-            <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center', fontSize: 12.5 }}>
-              <input type="month" value={from} onChange={(e) => setFrom(e.target.value)} style={{ fontSize: 12.5, padding: '4px 6px', border: '1px solid #DEE0E3', borderRadius: 6 }} />
-              ~
-              <input type="month" value={to} onChange={(e) => setTo(e.target.value)} style={{ fontSize: 12.5, padding: '4px 6px', border: '1px solid #DEE0E3', borderRadius: 6 }} />
-            </span>
-          )}
-          <label style={{ fontSize: 12.5, color: C.sub, display: 'inline-flex', gap: 4, alignItems: 'center' }}>
-            발급일
-            <input type="date" value={issued} onChange={(e) => setIssued(e.target.value || today)} style={{ fontSize: 12.5, padding: '4px 6px', border: '1px solid #DEE0E3', borderRadius: 6 }} />
-          </label>
-          <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6, flexWrap: 'wrap' }}>
-            <Btn onClick={onClose}>닫기</Btn>
-            <Btn onClick={savePdf} disabled={!list.length}>PDF 저장</Btn>
-            <Btn variant="primary" onClick={doPrint} disabled={!list.length}>인쇄</Btn>
-          </span>
-        </div>
-        <div style={{ fontSize: 12, color: C.sub, marginTop: 6, lineHeight: 1.6 }}>
-          분홍 칸은 눌러서 바로 적거나 고칠 수 있어요 (인쇄에는 글자만 나옵니다). 주민번호는 저장하지 않으니 매번 적어주세요.
-          {edited && (
-            <>
-              {' '}금액·횟수를 고친 곳이 있어요 —{' '}
-              <button onClick={() => setEdits({})} style={{ border: 'none', background: 'none', color: C.pkd, cursor: 'pointer', padding: 0, fontSize: 12, fontWeight: 700 }}>
-                원래대로
-              </button>
-            </>
-          )}
-        </div>
-      </div>
-
-      <div className="cert-sheet" ref={sheetRef}>
-        <div style={{ textAlign: 'center', fontSize: 26, fontWeight: 700, letterSpacing: 10, marginBottom: 26 }}>교육비 납입 증명서</div>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13.5, marginBottom: 14, tableLayout: 'fixed' }}>
-          <tbody>
-            <tr>
-              <td style={{ ...th, width: '19%' }}>아 동 명</td>
-              <td style={{ ...td, width: '31%' }}>{name}</td>
-              <td style={{ ...th, width: '19%' }}>주민등록번호</td>
-              <td style={tdIn}>
-                <input className="cert-in" value={kidRrn} onChange={(e) => setKidRrn(fmtRrn(e.target.value))} placeholder="아동 주민번호" inputMode="numeric" autoComplete="off" />
-              </td>
-            </tr>
-            <tr>
-              <td style={th}>보호자 성명</td>
-              <td style={tdIn}>
-                <input className="cert-in" value={guardian} onChange={(e) => setGuardian(e.target.value)} placeholder="보호자 이름" autoComplete="off" />
-              </td>
-              <td style={th}>주민등록번호</td>
-              <td style={tdIn}>
-                <input className="cert-in" value={guardRrn} onChange={(e) => setGuardRrn(fmtRrn(e.target.value))} placeholder="보호자 주민번호" inputMode="numeric" autoComplete="off" />
-              </td>
-            </tr>
-            <tr>
-              <td style={th}>기 간</td>
-              <td style={td} colSpan={3}>{period || '—'}</td>
-            </tr>
-          </tbody>
-        </table>
-
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13.5, tableLayout: 'fixed' }}>
-          <thead>
-            <tr>
-              <th style={{ ...th, textAlign: 'center' }}>납 입 월</th>
-              <th style={{ ...th, textAlign: 'center', width: '22%' }}>수업 횟수</th>
-              <th style={{ ...th, textAlign: 'center', width: '34%' }}>금 액 (원)</th>
-            </tr>
-          </thead>
-          <tbody>
-            {list.map((r) => (
-              <tr key={r.ym}>
-                <td style={{ ...td, textAlign: 'center' }}>{ymLong(r.ym)}</td>
-                <td style={tdIn}>
-                  <input className="cert-in c" value={sessOf(r) || ''} onChange={(e) => setEdit(r.ym, { sess: e.target.value })} autoComplete="off" />
-                </td>
-                <td style={tdIn}>
-                  <input
-                    className="cert-in r"
-                    inputMode="numeric"
-                    autoComplete="off"
-                    value={won(Number(amtOf(r)) || 0)}
-                    onChange={(e) => setEdit(r.ym, { amt: Number(e.target.value.replace(/\D/g, '')) || 0 })}
-                  />
-                </td>
-              </tr>
-            ))}
-            {list.length === 0 && (
-              <tr>
-                <td style={{ ...td, textAlign: 'center', color: '#8A8F97' }} colSpan={3}>이 기간 기록이 없습니다</td>
-              </tr>
-            )}
-          </tbody>
-          <tfoot>
-            <tr>
-              <td style={{ ...th, textAlign: 'center' }}>합 계</td>
-              <td style={{ ...th, textAlign: 'center' }}>{sessKnown ? `${sessTotal}회` : ''}</td>
-              <td style={{ ...th, textAlign: 'right' }}>{won(total)}</td>
-            </tr>
-          </tfoot>
-        </table>
-
-        <div style={{ textAlign: 'center', fontSize: 15, marginTop: 34, lineHeight: 2 }}>
-          위 금액을 교육비로 납입하였음을 증명합니다.
-          <div style={{ marginTop: 18 }}>{iy}년 {Number(im)}월 {Number(idd)}일</div>
-        </div>
-
-        <div style={{ textAlign: 'center', marginTop: 34, lineHeight: 1.9 }}>
-          <div style={{ fontSize: 17, fontWeight: 700 }}>{CENTER.name}</div>
-          <div style={{ fontSize: 12.5, color: '#4B5057' }}>{CENTER.addr}</div>
-          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 10, marginTop: 4 }}>
-            <span style={{ fontSize: 15, fontWeight: 700 }}>{CENTER.head}</span>
-            <Stamp size={52} />
-          </div>
-        </div>
-      </div>
-    </div>,
-    document.body
-  )
-}
-
-/* 한 해 전체 표 인쇄 (엑셀 기록지 모양) */
-function CopayYearPrint({ year, kids, months, rows, onClose }) {
-  return createPortal(
-    <div className="cyp-root">
-      <style>{`
-        .cyp-root { position: fixed; inset: 0; z-index: 95; background: #fff; overflow: auto; }
-        .cyp-sheet { padding: 14px 16px; color: #1D2023; }
-        .cyp-sheet table { width: 100%; border-collapse: collapse; font-size: 10.5px; table-layout: fixed; }
-        .cyp-sheet th, .cyp-sheet td { border: 0.6px solid #9AA0A6; padding: 3px 4px; text-align: right; }
-        .cyp-sheet th { background: #F4F5F7; text-align: center; }
-        .cyp-sheet td.n { text-align: left; font-weight: 700; white-space: nowrap; overflow: hidden; }
-        .cyp-sheet small { display: block; color: #6B7079; font-size: 9px; }
-        @media print {
-          @page { size: A4 landscape; margin: 8mm; }
-          html, body { height: auto !important; overflow: visible !important; background: #fff !important; }
-          body > *:not(.cyp-root) { display: none !important; }
-          .cyp-root { position: static !important; overflow: visible !important; }
-          .cyp-bar { display: none !important; }
-          .cyp-sheet { padding: 0; }
-          .cyp-sheet tr { break-inside: avoid; }
-        }
-      `}</style>
-      <div className="cyp-bar" style={{ position: 'sticky', top: 0, background: '#fff', borderBottom: `1px solid ${C.line}`, padding: '10px 14px', display: 'flex', gap: 8, alignItems: 'center' }}>
-        <div style={{ fontSize: 15, fontWeight: 700 }}>{year}년 본인부담금 기록 인쇄</div>
-        <Btn onClick={onClose} style={{ marginLeft: 'auto' }}>닫기</Btn>
-        <Btn variant="primary" onClick={() => window.print()}>인쇄</Btn>
-      </div>
-      <div className="cyp-sheet">
-        <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>({year}년) 본인 부담금 확인 기록지</div>
-        <table>
-          <thead>
-            <tr>
-              <th style={{ width: 62 }}>아동명</th>
-              {months.map((m) => <th key={m}>{ymLabel(m)}</th>)}
-              <th style={{ width: 78 }}>합계</th>
-            </tr>
-          </thead>
-          <tbody>
-            {kids.map((k) => (
-              <tr key={k.name}>
-                <td className="n">{k.name}</td>
-                {months.map((m) => {
-                  const r = k.months[m]
-                  return (
-                    <td key={m}>
-                      {r ? won(r.copay) : ''}
-                      {r && sessLabel(r) && <small>{sessLabel(r)}</small>}
-                    </td>
-                  )
-                })}
-                <td style={{ fontWeight: 700 }}>{won(k.total)}</td>
-              </tr>
-            ))}
-          </tbody>
-          <tfoot>
-            <tr>
-              <th>합계</th>
-              {months.map((m) => (
-                <th key={m} style={{ textAlign: 'right' }}>{won(rows.filter((r) => r.ym === m).reduce((a, r) => a + r.copay, 0))}</th>
-              ))}
-              <th style={{ textAlign: 'right' }}>{won(kids.reduce((a, k) => a + k.total, 0))}</th>
-            </tr>
-          </tfoot>
-        </table>
-      </div>
-    </div>,
-    document.body
-  )
-}
-
-/* 영수증 화면 오른쪽 위 금액 — 눌러서 달별 · 연도별 매출 보기 */
-function RevenueMenu({ total, loadRevenueList }) {
-  const [open, setOpen] = useState(false)
-  const [view, setView] = useState('month')
-  const [list, setList] = useState(null)
-  const boxRef = useRef(null)
-
-  useEffect(() => {
-    if (!open) return
-    let on = true
-    setList(null)
-    loadRevenueList()
-      .then((r) => on && setList(r || []))
-      .catch(() => on && setList([]))
-    const close = (e) => {
-      if (boxRef.current && !boxRef.current.contains(e.target)) setOpen(false)
-    }
-    document.addEventListener('mousedown', close)
-    document.addEventListener('touchstart', close)
-    return () => {
-      on = false
-      document.removeEventListener('mousedown', close)
-      document.removeEventListener('touchstart', close)
-    }
-  }, [open])
-
-  const years = useMemo(() => {
-    const m = {}
-    ;(list || []).forEach((r) => {
-      const y = r.ym.slice(0, 4)
-      if (!m[y]) m[y] = { y, amount: 0, months: 0 }
-      m[y].amount += r.amount || 0
-      m[y].months += 1
-    })
-    return Object.values(m).sort((a, b) => b.y.localeCompare(a.y))
-  }, [list])
-
-  return (
-    <div ref={boxRef} style={{ position: 'relative' }}>
-      <button
-        onClick={() => setOpen(!open)}
-        title="달별 · 연도별 매출 보기"
-        style={{
-          border: 'none', background: 'transparent', cursor: 'pointer', padding: 0,
-          fontSize: 20, fontWeight: 700, color: C.pkd, display: 'inline-flex', alignItems: 'center', gap: 4,
-        }}
-      >
-        {won(total)}원
-        <span style={{ fontSize: 12, color: C.sub }}>{open ? '▲' : '▼'}</span>
-      </button>
-      {open && (
-        <div
-          style={{
-            position: 'absolute', right: 0, top: 'calc(100% + 6px)', zIndex: 30, width: 300, maxWidth: '86vw',
-            background: '#fff', border: `1px solid ${C.line}`, borderRadius: 12, boxShadow: '0 8px 24px rgba(0,0,0,.12)',
-          }}
-        >
-          <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 8, margin: 10 }}>
-            {[['month', '월별'], ['year', '연도별']].map(([k, l]) => (
-              <button
-                key={k}
-                onClick={() => setView(k)}
-                style={{
-                  flex: 1, border: 'none', cursor: 'pointer', padding: '5px 0', borderRadius: 6, fontSize: 12.5, fontWeight: 600,
-                  background: view === k ? '#fff' : 'transparent', color: view === k ? C.ink : C.sub,
-                }}
-              >
-                {l}
-              </button>
-            ))}
-          </div>
-          <div style={{ maxHeight: 320, overflow: 'auto', padding: '0 12px 10px' }}>
-            {list === null ? (
-              <div style={{ fontSize: 12.5, color: C.mut, padding: 10 }}>불러오는 중…</div>
-            ) : list.length === 0 ? (
-              <div style={{ fontSize: 12.5, color: C.mut, padding: 10 }}>기록이 없습니다.</div>
-            ) : view === 'month' ? (
-              list.map((r) => (
-                <div key={r.ym} style={{ display: 'flex', alignItems: 'baseline', gap: 6, padding: '6px 0', borderBottom: `1px solid ${C.line2}`, fontSize: 13 }}>
-                  <span style={{ fontWeight: 600, minWidth: 82 }}>{ymLong(r.ym)}</span>
-                  <span style={{ fontSize: 11, color: C.mut }}>{r.students}명{r.source !== '앱' ? ` · ${r.source}` : ''}</span>
-                  <span style={{ marginLeft: 'auto', fontWeight: 700 }}>{won(r.amount)}</span>
-                </div>
-              ))
-            ) : (
-              years.map((y) => (
-                <div key={y.y} style={{ display: 'flex', alignItems: 'baseline', gap: 6, padding: '8px 0', borderBottom: `1px solid ${C.line2}`, fontSize: 13.5 }}>
-                  <span style={{ fontWeight: 700, minWidth: 60 }}>{y.y}년</span>
-                  <span style={{ fontSize: 11, color: C.mut }}>{y.months}개월</span>
-                  <span style={{ marginLeft: 'auto', fontWeight: 700, color: C.pkd }}>{won(y.amount)}원</span>
-                </div>
-              ))
-            )}
-            <div style={{ fontSize: 11, color: C.mut, marginTop: 8, lineHeight: 1.6 }}>
-              영수증 발행 금액 기준. '엑셀' 표시는 본인부담금 기록지에서 옮긴 금액이 들어간 달이에요.
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onPrintAll, onSetRate, onDetail, busy, closing, closings = [], onClose, staffOrder = [], ownerName, payHistory = [], onPayrollPaid, toneOf, allStaff = [], onSaveExtras, onSaveManual, onDeleteManual, loadCopay, loadRevenueList, say }) {
+function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onPrintAll, onSetRate, onDetail, busy, closing, closings = [], onClose, staffOrder = [], ownerName, payHistory = [], onPayrollPaid, toneOf }) {
   // 이 달 마감한 선생님
   const closedSet = useMemo(() => new Set((closings || []).filter((c) => c.status === '승인').map((c) => c.staff_name)), [closings])
   // 정산 화면 선생님 순서: 원장님은 맨 위 고정, 나머지는 등록 순서 (금액과 상관없이 늘 같은 자리)
@@ -2656,12 +1563,6 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
   const receiptShown = useMemo(() => new Set(), [byStaff, group])
   const [detailFor, setDetailFor] = useState(null)
   const [detail, setDetail] = useState(null)
-  const [extrasFor, setExtrasFor] = useState(null)
-  // 이 달 급여가 이미 이체 표시된 선생님 (추가지급 · 공제를 못 고침)
-  const paidSet = useMemo(
-    () => new Set((payHistory || []).filter((r) => r.ym === ym && r.paid_on).map((r) => r.staff_id)),
-    [payHistory, ym]
-  )
 
   const openDetail = async (r) => {
     setDetailFor(r)
@@ -2728,7 +1629,7 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
         <div style={{ fontSize: 15, fontWeight: 700 }}>{ym.replace('-', '년 ')}월 정산</div>
         <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 8 }}>
-          {[['staff', '영수증'], ['payroll', '급여'], ['copay', '연말정산']].map(([k, label]) => (
+          {[['staff', '영수증'], ['payroll', '급여']].map(([k, label]) => (
             <button
               key={k}
               onClick={() => setGroup(k)}
@@ -2744,19 +1645,17 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
             </button>
           ))}
         </div>
-        {group !== 'copay' && (
+        {true && (
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
             <Btn onClick={() => onPrintAll(printOrder)} disabled={printOrder.length === 0}>
               영수증 {printOrder.length}장 인쇄
             </Btn>
-            <RevenueMenu total={total} loadRevenueList={loadRevenueList} />
+            <div style={{ fontSize: 20, fontWeight: 700, color: C.pkd }}>{won(total)}원</div>
           </div>
         )}
       </div>
 
-      {group === 'copay' ? (
-        <CopayView loadCopay={loadCopay} say={say} />
-      ) : group === 'payroll' ? (
+      {group === 'payroll' ? (
         <div>
           <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 8, width: 'fit-content', marginBottom: 12 }}>
             {[['now', '이 달'], ['hist', '기록']].map(([k, label]) => (
@@ -2783,9 +1682,6 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
               toneOf={toneOf}
               busy={busy}
               onPaid={onPayrollPaid}
-              allStaff={allStaff}
-              onSaveManual={onSaveManual}
-              onDeleteManual={onDeleteManual}
             />
           ) : (
         <div>
@@ -2799,7 +1695,7 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 660 }}>
               <thead>
                 <tr style={{ background: '#FBFBFC', color: C.sub }}>
-                  {['선생님', '비율', '회차', '보강', '시수', '수강료', '수업분', '미보강', '', ''].map((h, i) => (
+                  {['선생님', '비율', '회차', '보강', '시수', '수강료', '급여', '미보강', ''].map((h, i) => (
                     <th
                       key={i}
                       style={{
@@ -2818,14 +1714,13 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
               <tbody>
                 {(payroll || []).length === 0 && (
                   <tr>
-                    <td colSpan={10}>
+                    <td colSpan={9}>
                       <Empty>이 달 수업 기록이 없습니다.</Empty>
                     </td>
                   </tr>
                 )}
                 {[...(payroll || [])].sort((a, b) => moneyOrder(a.staff_name, a.pay ?? a.tuition, b.staff_name, b.pay ?? b.tuition)).map((r) => (
-                  <React.Fragment key={r.staff_id}>
-                  <tr>
+                  <tr key={r.staff_id} style={{ borderBottom: `1px solid ${C.line2}` }}>
                     <td style={{ padding: '9px 12px', fontWeight: 700 }}>{r.staff_name}</td>
                     <td style={{ padding: '9px 12px' }}>
                       <input
@@ -2887,34 +1782,6 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
                       </Btn>
                     </td>
                   </tr>
-                  <tr style={{ borderBottom: `1px solid ${C.line2}` }}>
-                    <td colSpan={10} style={{ padding: '0 12px 10px' }}>
-                      <div style={{ background: '#FAFAFB', borderRadius: 9, padding: '9px 12px' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 7 }}>
-                          <span style={{ fontSize: 12, color: C.sub }}>
-                            {(r.extra_items || []).length ? itemsText(r.extra_items) : '추가지급 · 공제 없음'}
-                          </span>
-                          {paidSet.has(r.staff_id) ? (
-                            <span style={{ marginLeft: 'auto', fontSize: 11.5, color: C.mut }}>이체 표시한 달 — 고치려면 이체 취소</span>
-                          ) : (
-                            <Btn
-                              disabled={busy}
-                              onClick={() => setExtrasFor(r)}
-                              style={{ marginLeft: 'auto', padding: '4px 10px', fontSize: 12 }}
-                            >
-                              추가지급 · 공제
-                            </Btn>
-                          )}
-                        </div>
-                        {r.pay == null ? (
-                          <div style={{ fontSize: 12, color: C.mut }}>비율을 넣으면 세금이 계산됩니다.</div>
-                        ) : (
-                          <TaxLine gross={r.gross} incomeTax={r.income_tax} localTax={r.local_tax} net={r.net_pay} />
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                  </React.Fragment>
                 ))}
               </tbody>
               {(payroll || []).length > 0 && (
@@ -2937,38 +1804,15 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
                     <td style={{ padding: '10px 12px', textAlign: 'right', color: C.pkd }}>
                       {won(payroll.reduce((a, b) => a + (b.pay || 0), 0))}원
                     </td>
-                    <td colSpan={3} />
-                  </tr>
-                  <tr style={{ background: C.pkl }}>
-                    <td colSpan={10} style={{ padding: '4px 12px 12px' }}>
-                      {(() => {
-                        const ok = payroll.filter((b) => b.pay != null)
-                        const sum = (k) => ok.reduce((a, b) => a + (b[k] || 0), 0)
-                        return (
-                          <TaxLine gross={sum('gross')} incomeTax={sum('income_tax')} localTax={sum('local_tax')} net={sum('net_pay')} />
-                        )
-                      })()}
-                    </td>
+                    <td colSpan={2} />
                   </tr>
                 </tfoot>
               )}
             </table>
           </Card>
-          <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.7 }}>
+          <div style={{ fontSize: 12, color: C.sub }}>
             비율 칸에 숫자를 넣고 다른 곳을 누르면 저장됩니다. 60이면 60%예요.
-            <br />
-            세금: 소득세 = 금액 × 3%, 지방세 = 소득세 × 10% (둘 다 10원 미만 버림). 공제(주차료 등)는 세금과 상관없이 실지급에서만 빠집니다.
           </div>
-
-          {extrasFor && (
-            <ExtrasModal
-              ym={ym}
-              row={extrasFor}
-              busy={busy}
-              onClose={() => setExtrasFor(null)}
-              onSave={(items) => onSaveExtras(extrasFor.staff_id, items)}
-            />
-          )}
 
           {detailFor && (
             <Modal onClose={() => setDetailFor(null)} max={420}>
@@ -3109,6 +1953,7 @@ function ReceiptModal({ ym, student, receipt, extra, onClose, onIssue, onUnlock,
   const partial = R.used > 0 && !R.full
   const showDue = R.carry < 0 || partial
   const total = showDue ? R.due : R.net
+  const hasAbsent = student.lines.some((l) => (l.absent_dates || []).length > 0)
 
   return (
     <Modal onClose={onClose} max={430}>
@@ -3149,9 +1994,9 @@ function ReceiptModal({ ym, student, receipt, extra, onClose, onIssue, onUnlock,
                         const dd = d.slice(-2)
                         const isAbsent = absent.has(dd)
                         return (
-                          // 영수증에는 결강일 표시를 하지 않습니다 (보강은 따로 챙김)
-                          <span key={k} style={{ marginRight: 5, color: C.sub }} data-absent={isAbsent ? '1' : undefined}>
+                          <span key={k} style={{ marginRight: 5, color: isAbsent ? C.danger : C.sub }}>
                             {Number(dd)}
+                            {isAbsent ? '*' : ''}
                           </span>
                         )
                       })}
@@ -3214,6 +2059,11 @@ function ReceiptModal({ ym, student, receipt, extra, onClose, onIssue, onUnlock,
           </div>
         )}
 
+        {hasAbsent && (
+          <div style={{ marginTop: 8, fontSize: 11, color: C.sub, lineHeight: 1.6 }}>
+            * 표시는 결강일입니다. 월정액이라 청구에 포함되며 보강해 드립니다.
+          </div>
+        )}
         {student.unmade > 0 && (
           <div
             className="no-print"
@@ -3583,7 +2433,7 @@ function StudentModal({ student, staff, onClose, onSave, onRemove, busy }) {
         </Field>
         <Field label="담당 선생님">
           <select value={main} onChange={(e) => setMain(e.target.value)} style={inp}>
-            {staff.filter((s) => s.active || s.id === main).map((s) => (
+            {staff.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name}
               </option>
@@ -3814,7 +2664,7 @@ function MonthOnlyCard({ ym, leaves, outside, staff, busy, onAddLeave, onRemoveL
           </div>
           {r.kind === 'out' && (
             <div style={{ fontSize: 12.5, color: C.sub, minWidth: 92 }}>
-              {clock(r.start_time)}~{clock(r.end_time)}
+              {hhmm(r.start_time)}~{hhmm(r.end_time)}
             </div>
           )}
           <div style={{ flex: 1, fontSize: 13.5, minWidth: 110 }}>
@@ -4132,11 +2982,11 @@ function PlanView({
             <div key={i} style={{ fontSize: 12.5, color: '#8A3550', lineHeight: 1.75 }}>
               {c.staff_name} {PLAN_DOW[c.weekday]}요일 —{' '}
               <b>
-                {c.a_student} {clock(c.a_start)}~{clock(c.a_end)}
+                {c.a_student} {c.a_start.slice(0, 5)}~{c.a_end.slice(0, 5)}
               </b>{' '}
               와{' '}
               <b>
-                {c.b_student} {clock(c.b_start)}~{clock(c.b_end)}
+                {c.b_student} {c.b_start.slice(0, 5)}~{c.b_end.slice(0, 5)}
               </b>
             </div>
           ))}
@@ -4297,7 +3147,7 @@ function PlanView({
                       onChange={(e) => set(r.uid, { start_time: e.target.value })}
                       style={{ ...planSel, width: 132 }}
                     />
-                    <span style={{ fontSize: 11.5, color: C.mut, minWidth: 38 }}>~{clock(endOf(r))}</span>
+                    <span style={{ fontSize: 11.5, color: C.mut, minWidth: 38 }}>~{endOf(r)}</span>
                     <select
                       value={r.program_code}
                       disabled={r.removed}
@@ -4697,7 +3547,7 @@ function MarkView({ onLoad, onMark, busy, say }) {
               >
                 <div style={{ fontSize: 14, fontWeight: 700, minWidth: 62 }}>{r.student_name}</div>
                 <div style={{ fontSize: 12.5, color: C.sub }}>
-                  {clock(r.start_time)} · {r.staff_name}
+                  {hhmm(r.start_time)} · {r.staff_name}
                 </div>
                 {off && (
                   <div style={{ fontSize: 12, fontWeight: 700, color: C.danger }}>
@@ -4752,13 +3602,10 @@ const GRID_COLORS = [
   ['#BEE3DC', '#11423B'], ['#F2C9B8', '#5B2716'], ['#CBD5E1', '#1E293B'],
   ['#E7C9F0', '#4A1157'],
 ]
-function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unmade = [] }) {
+function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
   const [y, m] = ym.split('-').map(Number)
   const lastDay = new Date(y, m, 0).getDate()
   const DOW = ['월', '화', '수', '목', '금', '토']
-  // 토요일 일정이 한 건도 없으면 토요일 칸을 빼서 나머지 칸 · 글자를 더 크게
-  const hasSat = [...sessions, ...outside].some((x) => new Date(x.d + 'T00:00:00').getDay() === 6)
-  const DAYS = hasSat ? DOW : DOW.slice(0, 5)
 
   // 아이마다 색 (엑셀에서 쓰시던 것처럼)
   const kidColor = useMemo(() => {
@@ -4769,10 +3616,9 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
   }, [sessions])
 
   // 시간 범위 (시 단위)
-  // 모든 선생님 항상 똑같이 9시 ~ 6시 줄(아침 9시 ~ 저녁 7시).
-  //   7시를 넘겨 끝나는 수업은 칸 맨 아래에 붙여 그리고, 글씨에는 실제 시간(예: 5:30~7:10)이 그대로 나옵니다.
-  const h1 = 9
-  const h2 = 19
+  const all = [...sessions, ...outside]
+  const h1 = all.length ? Math.min(...all.map((s) => Number(s.start_time.slice(0, 2)))) : 9
+  const h2 = all.length ? Math.max(...all.map((s) => Math.ceil(ttMin(s.end_time) / 60))) : 19
   const hours = []
   for (let h = h1; h < Math.max(h2, h1 + 4); h++) hours.push(h)
 
@@ -4791,286 +3637,281 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
   if (cur.length) weeks.push(cur)
 
   const iso = (x) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`
-  // 제목 옆 수업 요일 — 월·화·수·목·금·토 순서로
-  const days = teacher ? DOW.filter((dw, i) => sessions.some((s) => (new Date(s.d + 'T00:00:00').getDay() + 6) % 7 === i)) : []
+  const days = teacher ? [...new Set(sessions.map((s) => DOW[(new Date(s.d + 'T00:00:00').getDay() + 6) % 7]))] : []
 
-  // 화면 미리보기: 표를 기준 폭(GW)으로 그린 뒤 종이 칸에 맞춰 줄이거나 늘려 보여줍니다.
-  // 인쇄: [N장 인쇄]를 누르면 이 표(.tt-gcap)를 그림으로 찍어서 그림을 인쇄합니다.
-  //   그림은 어떤 브라우저 · 종이 방향에서도 종이 폭에 맞춰 줄어들 뿐 잘리지 않습니다.
-  const fitRef = useRef(null)
-  const capRef = useRef(null)
-  const [GW, setGW] = useState(1070)
-  const [fit, setFit] = useState({ z: 1, x: 0 })
-  const tries = useRef(0)
-  useEffect(() => {
-    tries.current = 0
-  }, [sessions, holidays, ym])
-  useLayoutEffect(() => {
-    const el = capRef.current
-    const box = fitRef.current
-    if (!el || !box) return
-    const h = el.offsetHeight
-    const bw = box.clientWidth
-    const bh = box.clientHeight
-    if (!(h > 0 && bw > 0 && bh > 0)) return
-    const w = Math.max(900, Math.min(2400, Math.round((h * bw) / bh)))
-    if (Math.abs(w - GW) > 6 && tries.current < 6) {
-      tries.current += 1
-      setGW(w)
-      return
-    }
-    // 수업 칸 글자 크기는 표 전체가 똑같게: 한 칸이라도 안 들어가면 전체를 한 단계씩 줄입니다
-    const LV = ['tt-fsm', 'tt-fxs', 'tt-fxxs']
-    el.classList.remove(...LV)
-    const overAny = () =>
-      [...el.querySelectorAll('.tt-gblk:not(.tt-gout):not(.tt-glane):not(.tt-gmk)')].some((blk) => {
-        const bb = blk.querySelector('b')
-        return blk.scrollWidth > blk.clientWidth + 1 || blk.scrollHeight > blk.clientHeight + 1 ||
-          (bb && bb.scrollWidth > bb.clientWidth + 1)
-      })
-    for (const lv of LV) {
-      if (!overAny()) break
-      el.classList.remove(...LV)
-      el.classList.add(lv)
-    }
-    // 외부 일정(검은 칸) · 시간이 겹쳐 반쪽이 된 칸 · '보강' 딱지가 붙은 칸은 안 들어갈 때만 그 칸을 따로 줄입니다
-    el.querySelectorAll('.tt-gblk.tt-gout, .tt-gblk.tt-glane, .tt-gblk.tt-gmk').forEach((blk) => {
-      blk.classList.remove('tt-gsm', 'tt-gxs', 'tt-g2t')
-      const over = () => {
-        const bb = blk.querySelector('b')
-        return blk.scrollWidth > blk.clientWidth + 1 || blk.scrollHeight > blk.clientHeight + 1 ||
-          (bb && bb.scrollWidth > bb.clientWidth + 1)
-      }
-      if (over()) {
-        blk.classList.add('tt-gsm')
-        if (over()) {
-          blk.classList.remove('tt-gsm')
-          blk.classList.add('tt-gxs')
-          if (over()) {   // 그래도 안 되면 이름 · 시간을 두 줄로 작게
-            blk.classList.remove('tt-gxs')
-            blk.classList.add('tt-g2t')
-          }
-        }
-      }
-    })
-    const z = Math.min(bw / GW, bh / h)
-    const x = Math.max(0, (bw - GW * z) / 2)
-    if (Math.abs(z - fit.z) > 0.002 || Math.abs(x - fit.x) > 1) setFit({ z, x })
-  })
-
-  // 시간 비례: 한 시간 = GH px. 수업은 시작 분 ~ 끝 분 위치에 그 길이만큼 그립니다.
-  //   같은 시간에 겹치는 일정은 나란히 (겹친 것끼리만 폭을 나눔)
-  const GH = 26
-  // 이 달 내내 일정이 한 건도 없는 시간 줄은 얇게 접어서, 그만큼 표 전체(글자)를 크게 씁니다.
-  //   일정이 있는 시간 줄 안에서는 분 단위 위치 · 길이가 그대로 정확합니다.
-  // 시간 줄 높이는 모두 같게 (선생님끼리 비교하기 쉽게)
-  const rows = hours.map((h) => ({ h, H: GH, thin: false }))
-  const rowTop = []
-  rows.reduce((acc, r, i) => ((rowTop[i] = acc), acc + r.H), 0)
-  const bodyH = rows.reduce((a, r) => a + r.H, 0)
-  const yOf = (min) => {
-    const i = Math.min(Math.max(Math.floor(min / 60) - h1, 0), rows.length - 1)
-    const frac = Math.min(Math.max((min - (h1 + i) * 60) / 60, 0), 1)
-    return rowTop[i] + frac * rows[i].H
-  }
-
-  const blocksOf = (dIso) => {
-    const items = [
-      ...outside.filter((e) => e.d === dIso).map((x) => ({ x, out: true })),
-      ...sessions.filter((x) => x.d === dIso).map((x) => ({ x, out: false })),
-    ]
-      .map((k) => {
-        const a = Math.min(Math.max(ttMin(k.x.start_time), h1 * 60), h2 * 60 - 15)
-        const b = Math.min(Math.max(ttMin(k.x.end_time), a + 10), h2 * 60)
-        return { ...k, a, b }
-      })
-      .sort((p, q) => p.a - q.a || q.b - p.b)
-    // 겹치는 묶음마다 줄(lane) 나누기
-    let group = []
-    let groupEnd = -1
-    const flush = () => {
-      const lanes = Math.max(1, ...group.map((g) => g.lane + 1))
-      group.forEach((g) => (g.lanes = lanes))
-      group = []
-    }
-    for (const k of items) {
-      if (k.a >= groupEnd && group.length) flush()
-      const used = new Set(group.filter((g) => g.b > k.a).map((g) => g.lane))
-      let lane = 0
-      while (used.has(lane)) lane++
-      k.lane = lane
-      group.push(k)
-      groupEnd = Math.max(groupEnd, k.b)
-    }
-    if (group.length) flush()
-    return items
-  }
-  // 보강 잡아야 할 것 — 아직 보강을 안 잡은 결강을 아이별로 묶어서, 오래된 결강부터
-  //   타임 = 단가 ÷ 80,000원 (1타임 = 40분 수업 + 10분 상담). 단가를 모르면 수업 길이 ÷ 50분
-  const makeupKids = useMemo(() => {
-    const tOf = (u) => {
-      const byPrice = u.unit_price ? Math.round(u.unit_price / 80000) : 0
-      const byMin = Math.round((ttMin(u.end_time) - ttMin(u.start_time)) / 50)
-      return Math.max(1, byPrice || byMin || 1)
-    }
-    const m = {}
-    ;[...unmade].sort((a, b) => a.d.localeCompare(b.d) || a.start_time.localeCompare(b.start_time)).forEach((u) => {
-      const k = u.student_name
-      if (!m[k]) m[k] = { name: k, first: u.d, items: [] }
-      m[k].items.push({ d: u.d, t: tOf(u) })
-    })
-    return Object.values(m).sort((a, b) => a.first.localeCompare(b.first))
-  }, [unmade])
-  const makeupBox =
-    makeupKids.length === 0 ? null : (
-      <div className={`tt-mk${makeupKids.length > 7 ? ' tt-mk2' : ''}`}>
-        <div className="tt-mk-h">
-          보강 잡아야 할 것 {makeupKids.reduce((a, k) => a + k.items.length, 0)}건
-          <span>(모두 {makeupKids.reduce((a, k) => a + k.items.reduce((b, x) => b + x.t, 0), 0)}타임)</span>
-        </div>
-        {makeupKids.map((k) => {   // 보강 남은 아이는 전부 (개수 제한 없음)
-          const tot = k.items.reduce((a, x) => a + x.t, 0)
-          return (
-            <div key={k.name} className="tt-mk-r">
-              <i className="tt-mk-cb" />
-              <b>{k.name}</b>
-              <em className={tot >= 2 ? 'tt-mk-t2' : ''}>{tot}타임</em>
-              <span>
-                {k.items
-                  .map((x) => `${Number(x.d.slice(5, 7))}/${Number(x.d.slice(8, 10))}${x.t > 1 ? `(${x.t})` : ''}`)
-                  .join('  ·  ')}
-              </span>
-            </div>
-          )
-        })}
-      </div>
-    )
-
-  // 50분 이상 빈 시간 (그 날 첫 일정과 마지막 일정 사이) — 보강 · 새 수업 넣을 자리 찾기용
-  const gapsOf = (items) => {
-    const out = []
-    let end = null
-    ;[...items].sort((p, q) => p.a - q.a).forEach((k) => {
-      if (end != null && k.a - end >= 50) out.push([end, k.a])
-      end = end == null ? k.b : Math.max(end, k.b)
-    })
-    return out
+  const cellOf = (dIso, hour) => {
+    const list = sessions.filter((s) => s.d === dIso && Number(s.start_time.slice(0, 2)) === hour)
+    const outs = outside.filter((e) => e.d === dIso && Number(e.start_time.slice(0, 2)) === hour)
+    return { list, outs }
   }
 
   return (
     <div className="tt-page tt-grid-page">
-      <div className="tt-gfit" ref={fitRef}>
-      <div className="tt-gscale" style={{ width: GW, transform: `translateX(${fit.x}px) scale(${fit.z})` }}>
-      <div className="tt-gcap" ref={capRef} style={{ width: GW }} data-name={teacher.name}>
       <div className="tt-gh">
         <b>{teacher.name} 선생님</b>
         <span>
           {y}년 {m}월 시간표
         </span>
         {days.length > 0 && <span className="tt-gd">({days.join('·')})</span>}
-        <span className="tt-glg"><i />50분 이상 빈 시간</span>
+        <span className="tt-glg">
+          {Object.entries(kidColor).map(([n, c]) => (
+            <span key={n} style={{ background: c[0], color: c[1] }}>
+              {n}
+            </span>
+          ))}
+        </span>
       </div>
+
       <div className="tt-gwrap">
-        {/* 날짜 순서대로 왼쪽 → 오른쪽, 다음 줄: 1주 | 2주 / 3주 | 4주 / 5주 | (보강) */}
-        {[weeks.filter((_, i) => i % 2 === 0), weeks.filter((_, i) => i % 2 === 1)].map((col, ci) => (
-        <div key={ci} className="tt-gcol">
-        {col.map((wk, wj) => { const wi = wj * 2 + ci; return (
-          <div key={wi} className="tt-gw" style={{ '--H': `${GH}px`, '--ND': DAYS.length }}>
-            <div className="tt-gw-head">
-              <div />
-              {DAYS.map((dw, di) => {
-                const day = wk.find((x) => (x.getDay() + 6) % 7 === di)
-                return (
-                  <div key={dw} className={day && holidays[iso(day)] ? 'tt-ghol' : ''}>
-                    <div className="tt-gdw">{dw}</div>
-                    <div className="tt-gdt">{day ? day.getDate() : ''}</div>
-                  </div>
-                )
-              })}
-            </div>
-            <div className="tt-gw-body" style={{ height: bodyH }}>
-              <div className="tt-gw-axis">
-                {hours.map((h) => (
-                  <div key={h} style={{ height: rows[hours.indexOf(h)].H }}>{hourLabel(h)}</div>
-                ))}
-              </div>
-              {DAYS.map((dw, di) => {
-                const day = wk.find((x) => (x.getDay() + 6) % 7 === di)
-                if (!day) return <div key={dw} className="tt-gw-day tt-gempty" />
-                const dIso = iso(day)
-                const hol = holidays[dIso]
-                if (hol)
+        {weeks.map((wk, wi) => (
+          <table key={wi} className="tt-gtbl">
+            <thead>
+              <tr>
+                <th className="tt-gt" />
+                {DOW.map((dw, di) => {
+                  const day = wk.find((x) => (x.getDay() + 6) % 7 === di)
                   return (
-                    <div key={dw} className="tt-gw-day tt-ghol">
-                      <span>{hol}</span>
-                    </div>
+                    <th key={dw} className={day && holidays[iso(day)] ? 'tt-ghol' : ''}>
+                      <div className="tt-gdw">{dw}</div>
+                      <div className="tt-gdt">{day ? day.getDate() : ''}</div>
+                    </th>
                   )
-                return (
-                  <div key={dw} className="tt-gw-day">
-                    <div className="tt-glines">
-                      {rows.map((r) => <div key={r.h} style={{ height: r.H }} />)}
-                    </div>
-                    {gapsOf(blocksOf(dIso)).map(([g0, g1]) => {
-                      const top = yOf(g0) + 1
-                      const hh = Math.max(yOf(g1) - yOf(g0) - 2, 4)
+                })}
+              </tr>
+            </thead>
+            <tbody>
+              {hours.map((h) => (
+                <tr key={h}>
+                  <td className="tt-gt">
+                    {h}시-{h + 1}시
+                  </td>
+                  {DOW.map((dw, di) => {
+                    const day = wk.find((x) => (x.getDay() + 6) % 7 === di)
+                    if (!day) return <td key={dw} className="tt-gempty" />
+                    const dIso = iso(day)
+                    const hol = holidays[dIso]
+                    if (hol)
                       return (
-                        <div key={'g' + g0} className="tt-ggap" style={{ top, height: hh }} />
+                        <td key={dw} className="tt-ghol">
+                          {h === hours[Math.floor(hours.length / 2)] ? hol : ''}
+                        </td>
                       )
-                    })}
-                    {blocksOf(dIso).map((k) => {
-                      const top = yOf(k.a)
-                      const hgt = Math.max(yOf(k.b) - top - 1, 8)
-                      const pos = {
-                        top, height: hgt,
-                        left: `calc(${(k.lane / k.lanes) * 100}% + 1px)`,
-                        width: `calc(${100 / k.lanes}% - 2px)`,
-                      }
-                      // 수업 칸은 길이와 상관없이 모두 '이름 시간' 한 줄 · 같은 글자 크기 (1타임 · 2타임 · 3타임 통일)
-                      const one = k.out ? hgt < 40 : true
-                      if (k.out)
-                        return (
-                          <div key={'o' + k.x.id} className={`tt-gblk tt-gout${one ? ' tt-g1' : ''}`} style={pos}>
-                            <b>{k.x.label}</b>
-                            <small>{clock(k.x.start_time)}~{clock(k.x.end_time)}</small>
+                    const { list, outs } = cellOf(dIso, h)
+                    return (
+                      <td key={dw}>
+                        {outs.map((e) => (
+                          <div key={e.id} className="tt-gout">
+                            <b>{e.label}</b>
+                            <small>
+                              {hhmm(e.start_time)}~{hhmm(e.end_time)}
+                            </small>
                           </div>
-                        )
-                      const s2 = k.x
-                      const c = kidColor[s2.student_name] || ['#EEE', '#333']
-                      const mk = s2.status === '보강'
-                      const ab = s2.status === '결강'
-                      return (
-                        <div
-                          key={s2.id}
-                          className={`tt-gblk tt-gcell${mk ? ' tt-gmk' : ''}${ab ? ' tt-gab' : ''}${one ? ' tt-g1' : ''}${k.lanes > 1 ? ' tt-glane' : ''}`}
-                          style={ab ? pos : { ...pos, background: mk ? '#fff' : c[0], color: mk ? '#8A4B00' : c[1] }}
-                        >
-                          <b>
-                            {mk && <span className="tt-gtag">보강</span>}
-                            {s2.student_name}
-                          </b>
-                          <small>{ab ? '결강' : `${clock(s2.start_time)}~${clock(s2.end_time)}`}</small>
-                        </div>
-                      )
-                    })}
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-        ) })}
-        {/* 주가 홀수(5주 등)면 오른쪽 아래 빈 자리에 */}
-        {ci === 1 && weeks.length % 2 === 1 && makeupBox}
-        </div>
+                        ))}
+                        {list.map((s) => {
+                          const c = kidColor[s.student_name] || ['#EEE', '#333']
+                          const mk = s.status === '보강'
+                          const ab = s.status === '결강'
+                          return (
+                            <div
+                              key={s.id}
+                              className={`tt-gcell${mk ? ' tt-gmk' : ''}${ab ? ' tt-gab' : ''}`}
+                              style={{ background: mk ? '#fff' : c[0], color: mk ? '#8A4B00' : c[1] }}
+                            >
+                              <b>
+                                {mk && <span className="tt-gtag">보강</span>}
+                                {s.student_name}
+                              </b>
+                              <small>
+                                {hhmm(s.start_time)}~{hhmm(s.end_time)}
+                              </small>
+                            </div>
+                          )
+                        })}
+                      </td>
+                    )
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
         ))}
-      </div>
-      {/* 주가 짝수면 빈 자리가 없어서 맨 아래 띠로 */}
-      {weeks.length % 2 === 0 && makeupBox && <div className="tt-mk-band">{makeupBox}</div>}
-      </div>
-      </div>
       </div>
     </div>
   )
 }
+
+function TeacherSheet({ ym, teacher, sessions, holidays, tone, outside = [] }) {
+  const [y, m] = ym.split('-').map(Number)
+  const lastDay = new Date(y, m, 0).getDate()
+
+  // 이 선생님 수업(원장님은 외부 일정까지)에 맞춰 시간 범위를 잡습니다
+  const mins = [...sessions, ...outside].map((s) => ttMin(s.start_time))
+  const maxs = [...sessions, ...outside].map((s) => ttMin(s.end_time))
+  let st = mins.length ? Math.floor(Math.min(...mins) / 60) * 60 : 13 * 60
+  let en = maxs.length ? Math.ceil(Math.max(...maxs) / 60) * 60 : 19 * 60
+  if (en - st < 240) en = st + 240
+  const span = en - st
+  const pct = (v) => `${(((v - st) / span) * 100).toFixed(3)}%`
+
+  const byDay = {}
+  sessions.forEach((s) => {
+    if (!byDay[s.d]) byDay[s.d] = []
+    byDay[s.d].push(s)
+  })
+  // 원장님 외부 일정도 같은 줄에 (진한 회색)
+  outside.forEach((e) => {
+    if (!byDay[e.d]) byDay[e.d] = []
+    byDay[e.d].push({ ...e, id: 'out-' + e.id, out: true })
+  })
+
+  const rows = []
+  let prevWeek = null
+  for (let d = 1; d <= lastDay; d++) {
+    const x = new Date(y, m - 1, d)
+    const w = x.getDay()
+    if (w === 0) continue
+    const iso = ttIso(x)
+    const mon = new Date(x)
+    mon.setDate(mon.getDate() - ((w + 6) % 7))
+    const wk = ttIso(mon)
+    rows.push({ d, w, iso, newWeek: prevWeek !== null && wk !== prevWeek })
+    prevWeek = wk
+  }
+
+  const ticks = []
+  for (let t = st; t <= en; t += 30) ticks.push(t)
+
+  return (
+    <div className="tt-page">
+      <div className="tt-ph">
+        <b>{teacher.name} 선생님</b>
+        <span>
+          {y}년 {m}월
+        </span>
+        <span className="tt-lg">
+          <span>
+            <i style={{ background: '#E9B93A', height: 3, verticalAlign: 2 }} />
+            50분 이상 빈 시간
+          </span>
+          <span>
+            <i style={{ background: '#fff', border: '1.5px dashed #E07B00', borderLeft: `3px solid ${tone.line}` }} />
+            보강
+          </span>
+          {outside.length > 0 && (
+            <span>
+              <i style={{ background: OUT_TONE.bg }} />
+              외부 일정
+            </span>
+          )}
+        </span>
+      </div>
+
+      <div className="tt-tbl">
+        <div className="tt-axis">
+          <div />
+          <div className="tt-lane">
+            {ticks
+              .filter((t) => t % 60 === 0)
+              .map((t) => (
+                <span key={t} className="tt-tk" style={{ left: pct(t) }}>
+                  {t / 60}시
+                </span>
+              ))}
+          </div>
+        </div>
+
+        {rows.map((r) => {
+          const off = holidays[r.iso]
+          const list = (byDay[r.iso] || [])
+            .map((s) => ({ ...s, s0: ttMin(s.start_time), s1: ttMin(s.end_time) }))
+            .sort((a, b) => a.s0 - b.s0)
+
+          const gaps = []
+          for (let i = 0; i < list.length - 1; i++) {
+            const g0 = list[i].s1
+            const g1 = list[i + 1].s0
+            if (g1 - g0 >= 50) gaps.push([g0, g1])
+          }
+
+          return (
+            <div key={r.iso} className={`tt-row${r.newWeek ? ' tt-wk' : ''}${off ? ' tt-off' : ''}`}>
+              <div className={`tt-dt${r.w === 6 ? ' tt-sat' : ''}`}>
+                {m}/{r.d} <i>{TT_DOW[r.w]}</i>
+              </div>
+              <div className="tt-lane">
+                {ticks.map((t) => (
+                  <div key={t} className={`tt-vl${t % 60 === 0 ? ' tt-h' : ''}`} style={{ left: pct(t) }} />
+                ))}
+                {off ? (
+                  <span className="tt-lbl">{off}</span>
+                ) : (
+                  <>
+                    {gaps.map(([g0, g1]) => (
+                      <div
+                        key={g0}
+                        className="tt-gap"
+                        style={{ left: pct(g0), width: `${(((g1 - g0) / span) * 100).toFixed(3)}%` }}
+                      />
+                    ))}
+                    {list.map((s) => {
+                      const mk = s.status === '보강'
+                      const ab = s.status === '결강'
+                      if (s.out)
+                        return (
+                          <div
+                            key={s.id}
+                            className="tt-ev"
+                            title={s.memo || ''}
+                            style={{
+                              left: pct(s.s0),
+                              width: `calc(${(((s.s1 - s.s0) / span) * 100).toFixed(3)}% - 1px)`,
+                              background: OUT_TONE.bg, borderColor: OUT_TONE.bd, borderLeftColor: OUT_TONE.bd, color: OUT_TONE.fg,
+                            }}
+                          >
+                            <b>{s.label}</b>
+                            <small>
+                              <span className="tt-outtag">외부</span>
+                              {hhmm(s.start_time)}
+                              <span className="tt-end">~{hhmm(s.end_time)}</span>
+                            </small>
+                          </div>
+                        )
+                      return (
+                        <div
+                          key={s.id}
+                          className={`tt-ev${mk ? ' tt-mk' : ''}${ab ? ' tt-ab' : ''}`}
+                          style={{
+                            left: pct(s.s0),
+                            width: `calc(${(((s.s1 - s.s0) / span) * 100).toFixed(3)}% - 1px)`,
+                            background: mk ? '#fff' : tone.bg,
+                            borderColor: tone.bd,
+                            borderLeftColor: tone.line,
+                            color: tone.fg,
+                            '--ln': tone.line,
+                          }}
+                        >
+                          <b>
+                            {mk && <span className="tt-tag">보강</span>}
+                            {s.student_name}
+                          </b>
+                          <small>
+                            {hhmm(s.start_time)}
+                            <span className="tt-end">~{hhmm(s.end_time)}</span>
+                          </small>
+                        </div>
+                      )
+                    })}
+                  </>
+                )}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 
 /* 전체 — 한 주에 한 장, 날짜마다 선생님 줄 */
 const OUT_TONE = { bg: '#3F4652', bd: '#2B3038', fg: '#FFFFFF' }
@@ -5148,7 +3989,7 @@ function WeekSheet({ ym, days, weekNo, teachers, sessions, outside, holidays, le
               .filter((t) => t % 60 === 0)
               .map((t) => (
                 <span key={t} className="tt-tk" style={{ left: pct(t) }}>
-                  {hourLabel(t / 60)}
+                  {t / 60}시
                 </span>
               ))}
           </div>
@@ -5221,8 +4062,8 @@ function WeekSheet({ ym, days, weekNo, teachers, sessions, outside, holidays, le
                               </b>
                               <small>
                                 {s.out && <span className="tt-outtag">외부</span>}
-                                {clock(s.start_time)}
-                                <span className="tt-end">~{clock(s.end_time)}</span>
+                                {hhmm(s.start_time)}
+                                <span className="tt-end">~{hhmm(s.end_time)}</span>
                               </small>
                             </div>
                           )
@@ -5240,7 +4081,7 @@ function WeekSheet({ ym, days, weekNo, teachers, sessions, outside, holidays, le
   )
 }
 
-function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerName, loadHolidays, toneOf, colorOf, onClose, onlyTeacher }) {
+function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHolidays, toneOf, colorOf, onClose, onlyTeacher, say }) {
   const teachers = useMemo(() => staff.filter((x) => x.active), [staff])
   // 시간표 화면에서 선생님을 골라둔 채 인쇄를 누르면 그 선생님만 골라진 상태로 엽니다
   const [picked, setPicked] = useState(() => {
@@ -5248,52 +4089,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
     return new Set(one ? [one.id] : teachers.map((t) => t.id))
   })
   const [hols, setHols] = useState([])
-  const [mode, setMode] = useState('grid')
-  // 선생님별: 표를 미리 그림으로 찍어 두고, 인쇄할 때는 그 그림만 나가게 합니다.
-  //   그림은 어떤 브라우저 · 종이 방향에서도 종이에 맞춰 줄어들 뿐 잘리지 않습니다.
-  //   미리 만들어 두므로 [인쇄] 버튼이든 Ctrl+P 든 똑같이 그림이 인쇄됩니다.
-  const [imgs, setImgs] = useState(null)
-  const [making, setMaking] = useState(false)
-  const [imgErr, setImgErr] = useState('')
-  const snapKey = mode + '|' + [...picked].sort().join(',') + '|' + ym + '|' + sessions.length + '|' + hols.length + '|' + unmade.length
-  useEffect(() => {
-    if (mode !== 'grid') return
-    let on = true
-    setImgs(null)
-    setMaking(true)
-    setImgErr('')
-    const t = setTimeout(async () => {
-      try {
-        const { toPng } = await import('html-to-image')
-        const nodes = [...document.querySelectorAll('.tt-root .tt-gcap')]
-        if (!nodes.length) throw new Error('시간표를 찾지 못함')
-        const out = []
-        for (const n of nodes) {
-          // 12초 안에 못 만들면 멈춘 것으로 보고 알려줍니다
-          const shot = toPng(n, {
-            pixelRatio: 2, backgroundColor: '#ffffff', width: n.offsetWidth, height: n.offsetHeight,
-            skipFonts: true, cacheBust: false, style: { margin: '0', transform: 'none' },
-          })
-          const url = await Promise.race([
-            shot,
-            new Promise((_, rej) => setTimeout(() => rej(new Error('시간 초과')), 12000)),
-          ])
-          if (!url || url.length < 2000) throw new Error('빈 그림')
-          out.push(url)
-        }
-        if (on) setImgs(out)
-      } catch (e) {
-        if (on) setImgErr(String((e && e.message) || e || '알 수 없는 오류'))
-      }
-      if (on) setMaking(false)
-    }, 700)
-    return () => {
-      on = false
-      clearTimeout(t)
-    }
-  }, [snapKey])
-  const useImgs = mode === 'grid' && imgs && imgs.length > 0
-  const printNow = () => window.print()
+  const [mode, setMode] = useState('teacher')
 
   useEffect(() => {
     const [y, m] = ym.split('-').map(Number)
@@ -5350,90 +4146,95 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
 
   const pageCount = mode === 'all' ? weeks.length : shown.length
 
+  // 카톡으로 보내실 수 있게 이미지(PNG)로 저장 — 여러 장이면 압축파일
+  const wrapRef = useRef(null)
+  const [saving, setSaving] = useState(false)
+  const [progress, setProgress] = useState(0)
+
+  const saveImages = async () => {
+    setSaving(true)
+    setProgress(0)
+    try {
+      const [{ toPng }, JSZipMod] = await Promise.all([import('html-to-image'), import('jszip')])
+      const JSZip = JSZipMod.default || JSZipMod
+      wrapRef.current.classList.add('tt-shoot')
+      await new Promise((r) => setTimeout(r, 120))
+      const nodes = [...wrapRef.current.querySelectorAll('.tt-page')]
+      const mLabel = `${ym.slice(0, 4)}년 ${Number(ym.slice(5))}월`
+      const nameOf = (n, i) => {
+        const b = n.querySelector('b')
+        const who = (b?.textContent || `${i + 1}`).replace(/\s*선생님\s*$/, '').trim()
+        return `${who} ${mLabel} 시간표.png`
+      }
+      const opt = (n) => ({
+        pixelRatio: 2,
+        backgroundColor: '#ffffff',
+        width: n.offsetWidth,
+        height: n.offsetHeight,
+        skipFonts: true,
+        cacheBust: false,
+        style: { margin: '0' },
+      })
+
+      if (nodes.length === 1) {
+        const url = await toPng(nodes[0], opt(nodes[0]))
+        const a = document.createElement('a')
+        a.href = url
+        a.download = nameOf(nodes[0], 0)
+        a.click()
+        wrapRef.current.classList.remove('tt-shoot')
+        say?.('저장했습니다')
+        setSaving(false)
+        return
+      }
+
+      const zip = new JSZip()
+      for (let i = 0; i < nodes.length; i++) {
+        const url = await toPng(nodes[i], opt(nodes[i]))
+        zip.file(nameOf(nodes[i], i), url.split(',')[1], { base64: true })
+        setProgress(i + 1)
+      }
+      const blob = await zip.generateAsync({ type: 'blob' })
+      const a = document.createElement('a')
+      a.href = window.URL.createObjectURL(blob)
+      a.download = `${mLabel} 시간표 ${nodes.length}장.zip`
+      a.click()
+      setTimeout(() => window.URL.revokeObjectURL(a.href), 4000)
+      say?.(`${nodes.length}장을 압축파일로 저장했습니다`)
+    } catch (e) {
+      say?.('이미지 저장에 실패했습니다', 'err')
+    }
+    wrapRef.current?.classList.remove('tt-shoot')
+    setSaving(false)
+    setProgress(0)
+  }
+
   return createPortal(
-    <div className={`tt-root${useImgs ? ' tt-hasimgs' : ''}`}>
+    <div className="tt-root">
       <style>{`
         .tt-root { position: fixed; inset: 0; background: #E9EAEC; z-index: 100; overflow: auto; }
+        /* 이미지로 저장할 때는 글자가 잘리지 않게 */
+        .tt-shoot .tt-ev b, .tt-shoot .tt-ev small { overflow: visible !important; text-overflow: clip !important; }
+        .tt-shoot .tt-ev { overflow: visible !important; }
+        .tt-shoot .tt-gcell b, .tt-shoot .tt-gcell small { overflow: visible !important; text-overflow: clip !important; }
+        .tt-shoot .tt-gh b { margin-right: 8px; }
+        .tt-shoot .tt-ph b { margin-right: 8px; }
+        .tt-shoot .tt-ph > span { margin-right: 8px; }
+        .tt-shoot .tt-gh > span { margin-right: 6px; }
+        .tt-shoot .tt-lg span { margin-right: 8px; }
         .tt-bar { position: sticky; top: 0; z-index: 2; background: #fff; border-bottom: 1px solid ${C.line};
           padding: 11px 16px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
         .tt-wrap { padding: 16px 12px 40px; overflow-x: auto; }
-        .tt-grid-page { padding: 7mm; overflow: hidden; }
+        .tt-grid-page { padding: 8mm 7mm; }
         .tt-gh { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 6px;
           border-bottom: 2px solid #1F2328; padding-bottom: 5px; }
-        .tt-gh b { font-size: 15px; } .tt-gh span { font-size: 12px; color: #4A4F57; }
+        .tt-gh b { font-size: 15px; margin-right: 6px; } .tt-gh span { font-size: 12px; color: #4A4F57; }
         .tt-gd { color: #71757C !important; }
+        .tt-glg { margin-left: auto; display: flex; gap: 4px; flex-wrap: wrap; }
+        .tt-glg span { font-size: 9.5px; border-radius: 3px; padding: 1px 5px; }
         /* 한 달이 한 장에 들어오도록 2단으로 */
-        .tt-gwrap { display: flex; gap: 18px; align-items: flex-start; }
-        .tt-gfit { flex: 1; min-height: 0; position: relative; overflow: hidden; }
-        .tt-gscale { position: absolute; top: 0; left: 0; transform-origin: top left; }
-        /* 그림으로 찍을 때 웹글꼴이 빠져도 글자 폭이 같도록 컴퓨터에 있는 글꼴로 고정 */
-        .tt-gcap { background: #fff; font-family: 'Malgun Gothic', '맑은 고딕', 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif; }
-        .tt-gcap .tt-gh b, .tt-gcap .tt-gh span { white-space: nowrap; }
-        .tt-gcap .tt-gh { margin-bottom: 10px; padding-bottom: 8px; border-bottom-width: 3px; }
-        .tt-gcap .tt-gh b { font-size: 26px; } .tt-gcap .tt-gh span { font-size: 18px; }
-        /* 인쇄용 그림 (화면에서는 숨김) */
-        .tt-imgs { display: none; }
-        .tt-gcol { flex: 1 1 0; min-width: 0; }
-        .tt-gw { break-inside: avoid; page-break-inside: avoid; margin-bottom: 3.5mm; border: 0.6px solid #9AA0A6; }
-        .tt-gw-head, .tt-gw-body { display: grid; grid-template-columns: 42px repeat(6, minmax(0, 1fr)); }
-        .tt-gw-head > div { background: #F2E9C9; border-left: 0.6px solid #9AA0A6; text-align: center; padding: 1px 0 2px; }
-        .tt-gw-head > div:first-child { border-left: none; }
-        .tt-gw-head > div.tt-ghol { background: #E9A9A2; color: #5A1410; }
-        .tt-gw-axis { background: #FAFAFB; border-top: 0.6px solid #9AA0A6; }
-        .tt-gw-axis > div { box-sizing: border-box; border-bottom: 0.6px solid #DADDE1; font-size: 7.5px; color: #4A4F57;
-          text-align: center; padding-top: 2px; white-space: nowrap; }
-        .tt-gw-day { position: relative; border-left: 0.6px solid #9AA0A6; border-top: 0.6px solid #9AA0A6;
-          }
-        .tt-glines { position: absolute; inset: 0; pointer-events: none; }
-        /* 보강 잡아야 할 것 */
-        .tt-mk { border: 3px solid #D93025; border-radius: 6px; background: #fff; padding: 10px 14px 12px; }
-        .tt-mk-band { margin-top: 2mm; }
-        /* 보강 남은 아이가 8명 이상이면 두 줄로 (표가 작아지지 않게) */
-        .tt-mk.tt-mk2 { display: grid; grid-template-columns: 1fr 1fr; column-gap: 20px; }
-        .tt-mk.tt-mk2 .tt-mk-h { grid-column: 1 / -1; }
-        .tt-mk.tt-mk2 .tt-mk-r b { min-width: 0; }
-        .tt-mk-band .tt-mk { display: grid; grid-template-columns: 1fr 1fr; column-gap: 24px; }
-        .tt-mk-band .tt-mk-h, .tt-mk-band .tt-mk-more { grid-column: 1 / -1; }
-        .tt-mk-h { font-size: 22px; font-weight: 800; color: #B3261E; margin-bottom: 6px; }
-        .tt-mk-h span { font-size: 17px; margin-left: 10px; }
-        .tt-mk-r { display: flex; align-items: center; gap: 10px; padding: 3px 0; white-space: nowrap; overflow: hidden; }
-        .tt-mk-cb { flex: none; width: 16px; height: 16px; border: 2.5px solid #1D2023; border-radius: 2px; }
-        .tt-mk-r b { flex: none; font-size: 18px; font-weight: 800; color: #1D2023; min-width: 64px; }
-        .tt-mk-r em { flex: none; font-style: normal; font-size: 13.5px; font-weight: 800; border-radius: 5px; padding: 1px 7px;
-          background: #E6E9ED; color: #1D2023; }
-        .tt-mk-r em.tt-mk-t2 { background: #D93025; color: #fff; }
-        .tt-mk-r span { font-size: 16px; color: #1D2023; overflow: hidden; text-overflow: ellipsis; }
-        .tt-mk-more { font-size: 14px; color: #6B7079; margin-top: 4px; }
-        /* 50분 이상 빈 시간 — 칸 왼쪽에 주황 세로줄만 */
-        .tt-ggap { position: absolute; left: 2px; width: 5px; box-sizing: border-box; background: #F07C1B; border-radius: 3px; }
-        .tt-gcap .tt-gh .tt-glg { margin-left: auto; font-size: 15px; color: #B85A0C; display: inline-flex; align-items: center; gap: 6px; }
-        .tt-glg i { display: inline-block; width: 5px; height: 18px; background: #F07C1B; border-radius: 3px; }
-        .tt-glines > div { box-sizing: border-box; border-bottom: 0.6px solid #DADDE1; }
-        .tt-gw-axis > div.tt-gthin { font-size: 8.5px !important; padding-top: 0; line-height: 1; color: #9AA0A6; }
-        .tt-gw-day.tt-ghol { display: flex; align-items: center; justify-content: center; background: #E9A9A2; }
-        .tt-gw-day.tt-gempty { background: #F7F8F9; }
-        .tt-gblk { position: absolute; box-sizing: border-box; overflow: hidden; margin: 0 !important; padding: 1px 3px !important;
-          line-height: 1.08 !important; border-radius: 3px; }
-        /* 표 모양 글자 최대로 — 이름 17px · 시간 14px (칸이 좁으면 그 칸만 한 단계씩 줄임) */
-        .tt-gblk b { display: block; font-size: 17px !important; font-weight: 800; white-space: nowrap; letter-spacing: -0.3px; overflow: hidden; text-overflow: ellipsis; }
-        .tt-gblk small { display: block; font-size: 14px !important; font-weight: 700; opacity: .9 !important; white-space: nowrap; letter-spacing: -0.3px; }
-        .tt-gblk.tt-g1 { display: flex; align-items: center; gap: 4px; padding-top: 0 !important; padding-bottom: 0 !important; }
-        .tt-gblk.tt-g1 b { flex: 0 1 auto; min-width: 0; }
-        .tt-gblk.tt-g1 small { flex: none; }
-        .tt-gblk .tt-gtag { font-size: 10.5px !important; padding: 0 3px; margin-right: 3px; }
-        .tt-gblk.tt-gout b { font-size: 14.5px !important; } .tt-gblk.tt-gout small { font-size: 12.5px !important; }
-        .tt-gblk.tt-gsm b { font-size: 14.5px !important; } .tt-gblk.tt-gsm small { font-size: 12px !important; }
-        .tt-gblk.tt-gxs b { font-size: 12.5px !important; } .tt-gblk.tt-gxs small { font-size: 10.5px !important; }
-        .tt-gblk.tt-g2t { display: block !important; padding-top: 0 !important; line-height: 1 !important; }
-        .tt-gblk.tt-g2t b { font-size: 9.5px !important; } .tt-gblk.tt-g2t small { font-size: 8.5px !important; }
-        .tt-gcap.tt-fsm .tt-gblk:not(.tt-gout):not(.tt-gmk):not(.tt-glane) b { font-size: 15px !important; } .tt-gcap.tt-fsm .tt-gblk:not(.tt-gout):not(.tt-gmk):not(.tt-glane) small { font-size: 12.5px !important; }
-        .tt-gcap.tt-fxs .tt-gblk:not(.tt-gout):not(.tt-gmk):not(.tt-glane) b { font-size: 13.5px !important; } .tt-gcap.tt-fxs .tt-gblk:not(.tt-gout):not(.tt-gmk):not(.tt-glane) small { font-size: 11.5px !important; }
-        .tt-gcap.tt-fxxs .tt-gblk:not(.tt-gout):not(.tt-gmk):not(.tt-glane) b { font-size: 12px !important; } .tt-gcap.tt-fxxs .tt-gblk:not(.tt-gout):not(.tt-gmk):not(.tt-glane) small { font-size: 10.5px !important; }
-        .tt-gblk.tt-gsm .tt-gtag, .tt-gblk.tt-gxs .tt-gtag, .tt-gblk.tt-g2t .tt-gtag { font-size: 9px !important; padding: 0 2px; margin-right: 2px; }
-        .tt-gw-axis > div { font-size: 13px !important; font-weight: 700; }
-        .tt-gw-head .tt-gdw { font-size: 13px; } .tt-gw-head .tt-gdt { font-size: 15px; }
-        .tt-gw-head, .tt-gw-body { grid-template-columns: 48px repeat(var(--ND, 6), minmax(0, 1fr)) !important; }
-        .tt-gw-day.tt-ghol span { font-size: 15px; font-weight: 800; }
+        .tt-gwrap { column-count: 2; column-gap: 5mm; }
+        .tt-gtbl { break-inside: avoid; page-break-inside: avoid; margin-bottom: 3.5mm; }
         .tt-gtbl { width: 100%; border-collapse: collapse; table-layout: fixed; }
         .tt-gtbl th, .tt-gtbl td { border: 0.6px solid #9AA0A6; height: 23px; vertical-align: top; padding: 1px; }
         .tt-gtbl th { background: #F2E9C9; height: 19px; padding: 0; }
@@ -5450,10 +4251,6 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
         .tt-gtag { font-size: 8px; background: #E07B00; color: #fff; border-radius: 2px;
           padding: 0 3px; margin-right: 3px; vertical-align: 1px; }
         .tt-gab { text-decoration: line-through; opacity: .55; }
-        /* 표 모양 결강: 빨간 테두리 + 빗금, 시간 대신 '결강' */
-        .tt-gblk.tt-gab { text-decoration: none; opacity: 1; border: 2px solid #D93025 !important; color: #B3261E !important;
-          background: repeating-linear-gradient(135deg, #FDE3E0 0, #FDE3E0 6px, #fff 6px, #fff 12px) !important; }
-        .tt-gblk.tt-gab small { font-weight: 800; opacity: 1 !important; }
         .tt-gout { background: #3F4652; color: #fff; border-radius: 2px; padding: 2px 3px; margin-bottom: 1px; line-height: 1.15; }
         .tt-gout b { display: block; font-size: 8.5px; } .tt-gout small { font-size: 7.5px; opacity: .9; }
         .tt-page { width: 297mm; height: 210mm; margin: 0 auto 10mm; background: #fff; padding: 6mm 8mm;
@@ -5516,13 +4313,10 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
         .tt-lbl-s { font-size: 10px !important; padding: 0 7px !important; }
         .tt-lbl { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); font-size: 11px; font-weight: 700;
           color: #fff; background: #C8324F; border-radius: 99px; padding: 1px 9px; }
-        /* 이름 붙인 페이지 — 다른 화면의 @page 규칙과 섞이지 않고 무조건 A4 가로 */
-        @page ttland { size: A4 landscape; margin: 7mm; }
         @media print {
           /* 종이 크기에 고정하지 않고, 인쇄 영역 폭에 맞춰 줄어들게 합니다.
              브라우저·프린터마다 여백과 배율 계산이 달라도 잘리지 않습니다. */
           @page { size: A4 landscape; margin: 7mm; }
-          .tt-page { page: ttland; }
           html, body { height: auto !important; overflow: visible !important; background: #fff !important;
             margin: 0 !important; padding: 0 !important; min-width: 0 !important; }
           body > *:not(.tt-root) { display: none !important; }
@@ -5534,29 +4328,13 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
             page-break-after: always; break-after: page; page-break-inside: avoid; break-inside: avoid;
             -webkit-print-color-adjust: exact; print-color-adjust: exact; }
           .tt-page:last-child { page-break-after: auto; break-after: auto; }
-          /* [N장 인쇄]로 만든 그림이 있으면 그림만 인쇄 */
-          .tt-root.tt-hasimgs .tt-wrap { display: none !important; }
-          .tt-root.tt-hasimgs .tt-imgs { display: block !important; }
-          .tt-imgpage { page: ttland; break-after: page; page-break-after: always; break-inside: avoid; }
-          .tt-imgpage:last-child { break-after: auto; page-break-after: auto; }
-          .tt-imgpage img { display: block; width: 100%; height: auto; max-height: 194mm; object-fit: contain; margin: 0 auto; }
         }
       `}</style>
 
       <div className="tt-bar">
-        <div style={{ fontSize: 15, fontWeight: 700 }}>
-          {ym.replace('-', '년 ')}월 시간표 인쇄
-          {/* 새 파일이 제대로 올라갔는지 확인용 — 브라우저가 옛 파일을 기억하고 있으면 이 표시가 안 보입니다 */}
-          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-21</span>
-          {mode === 'grid' && (
-            <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: imgErr ? C.danger : useImgs ? '#1F7A45' : C.mut }}>
-              {imgErr ? `그림 실패: ${imgErr.slice(0, 60)}` : useImgs ? `그림 준비됨 ${imgs.length}장` : '그림 만드는 중'}
-              {' · '}화면 {Math.round((window.devicePixelRatio || 1) * 100)}%
-            </span>
-          )}
-        </div>
+        <div style={{ fontSize: 15, fontWeight: 700 }}>{ym.replace('-', '년 ')}월 시간표 인쇄</div>
         <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 9 }}>
-          {[['grid', '선생님별'], ['all', '전체']].map(([k, l]) => (
+          {[['teacher', '선생님별 (가로형)'], ['grid', '선생님별 (표 모양)'], ['all', '전체']].map(([k, l]) => (
             <button
               key={k}
               onClick={() => setMode(k)}
@@ -5570,7 +4348,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
             </button>
           ))}
         </div>
-        {mode === 'grid' && (
+        {(mode === 'teacher' || mode === 'grid') && (
         <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginLeft: 6 }}>
           {teachers.map((t) => {
             const on = picked.has(t.id)
@@ -5597,19 +4375,17 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
         </div>
         )}
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 7 }}>
-          {mode === 'grid' && imgErr && (
-            <span style={{ fontSize: 12, color: C.danger, alignSelf: 'center' }} title={imgErr}>
-              그림 만들기 실패 — 화면 그대로 인쇄됩니다 ({imgErr.slice(0, 40)})
-            </span>
-          )}
-          <Btn variant="primary" disabled={!pageCount || (mode === 'grid' && making)} onClick={printNow}>
-            {mode === 'grid' && making ? '인쇄 준비 중…' : `${pageCount}장 인쇄`}
+          <Btn disabled={!pageCount || saving} onClick={saveImages}>
+            {saving ? (progress ? `저장 중 ${progress}/${pageCount}` : '저장 중…') : '이미지 저장'}
+          </Btn>
+          <Btn variant="primary" disabled={!pageCount} onClick={() => window.print()}>
+            {pageCount}장 인쇄
           </Btn>
           <Btn onClick={onClose}>닫기</Btn>
         </div>
       </div>
 
-      <div className="tt-wrap">
+      <div className="tt-wrap" ref={wrapRef}>
         {mode === 'all' &&
           weeks.map((days, i) => (
             <WeekSheet
@@ -5638,22 +4414,23 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
             holidays={holFor(t)}
             sessions={sessions.filter((s) => s.staff_name === t.name && s.status !== '취소')}
             outside={t.name === ownerName ? outside.filter((e) => e.d.slice(0, 7) === ym) : []}
-            unmade={unmade.filter((u) => u.staff_name === t.name)}
           />
         ))}
-        {mode === 'grid' && !shown.length && (
+        {mode === 'teacher' && shown.map((t) => (
+          <TeacherSheet
+            key={t.id}
+            ym={ym}
+            teacher={t}
+            tone={{ ...toneOf(t.name), line: colorOf(t.name) }}
+            holidays={holFor(t)}
+            sessions={sessions.filter((s) => s.staff_name === t.name && s.status !== '취소')}
+            outside={t.name === ownerName ? outside.filter((e) => e.d.slice(0, 7) === ym) : []}
+          />
+        ))}
+        {mode === 'teacher' && !shown.length && (
           <div style={{ textAlign: 'center', color: C.sub, padding: 40 }}>뽑을 선생님을 골라주세요.</div>
         )}
       </div>
-      {useImgs && (
-        <div className="tt-imgs">
-          {imgs.map((u, i) => (
-            <div key={i} className="tt-imgpage">
-              <img src={u} alt="" />
-            </div>
-          ))}
-        </div>
-      )}
     </div>,
     document.body
   )
@@ -5668,7 +4445,7 @@ const ADD_DOW = ['일', '월', '화', '수', '목', '금', '토']
 function MakeupLog({ rows, staffOrder = [], ownerName, toneOf, busy, isAdmin, unmade = [], onMakeup, onAdd }) {
   const rank = (n) => (n === ownerName ? -1 : staffOrder.indexOf(n) < 0 ? 99 : staffOrder.indexOf(n))
   const md = (d) => (d ? d.slice(5).replace('-', '/') : '')
-  const hm2 = (t) => clock(t)
+  const hm2 = (t) => (t ? t.slice(0, 5) : '')
   const canBook = useMemo(() => new Set(unmade.map((x) => x.id)), [unmade])
   const [open, setOpen] = useState({})   // 보강 끝난 것은 접어 둡니다
 
@@ -5931,7 +4708,7 @@ function AddSessionModal({ students, staff, programs, absent, pairs = [], onClos
         <AddField label={`시작 시각 (${mins}분 수업)`}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
             <input type="time" step={300} value={start} onChange={(e) => setStart(e.target.value)} style={{ ...addInp, width: 'auto' }} />
-            <span style={{ fontSize: 13, color: C.sub }}>~ {clock(end)}</span>
+            <span style={{ fontSize: 13, color: C.sub }}>~ {end}</span>
           </div>
         </AddField>
 
@@ -6303,7 +5080,6 @@ function PaymentView({
       {depositFor && (
         <DepositModal
           row={depositFor}
-          ym={ym}
           busy={busy}
           onClose={() => setDepositFor(null)}
           onSave={(v) => {
@@ -6338,14 +5114,11 @@ function PaymentView({
   )
 }
 
-function DepositModal({ row, ym, onClose, onSave, busy }) {
+function DepositModal({ row, onClose, onSave, busy }) {
   const [amount, setAmount] = useState(row.balance > 0 ? row.balance : row.billed)
   const [date, setDate] = useState(isoOf(new Date()))
   const [method, setMethod] = useState('계좌이체')
   const [memo, setMemo] = useState('')
-  const [voucherKind, setVoucherKind] = useState('')
-  const [forYm, setForYm] = useState(ym || ymOf(new Date()))
-  const isVoucher = method === '바우처'
 
   const months = row.billed ? (amount / row.billed).toFixed(1) : '0'
 
@@ -6394,45 +5167,18 @@ function DepositModal({ row, ym, onClose, onSave, busy }) {
         />
 
         <div style={{ fontSize: 12, color: C.sub, margin: '13px 0 6px' }}>방법</div>
-        <div style={{ display: 'flex', gap: 5 }}>
-          {['계좌이체', '현금', '카드', '바우처'].map((m) => (
+        <div style={{ display: 'flex', gap: 6 }}>
+          {['계좌이체', '현금', '카드'].map((m) => (
             <Btn
               key={m}
               variant={method === m ? 'primary' : 'default'}
               onClick={() => setMethod(m)}
-              style={{ flex: 1, padding: '9px 0', fontSize: 12.5 }}
+              style={{ flex: 1, padding: '9px 0', fontSize: 13 }}
             >
               {m}
             </Btn>
           ))}
         </div>
-        {isVoucher && (
-          <div style={{ marginTop: 10, padding: '10px 12px', background: '#EEF3FD', borderRadius: 8 }}>
-            <div style={{ fontSize: 12, color: '#254B8C', marginBottom: 6 }}>바우처 종류</div>
-            <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
-              {['심리지원', '방과후카드', '드림스타트'].map((k) => (
-                <Btn
-                  key={k}
-                  variant={voucherKind === k ? 'primary' : 'default'}
-                  onClick={() => setVoucherKind(k)}
-                  style={{ padding: '5px 10px', fontSize: 12 }}
-                >
-                  {k}
-                </Btn>
-              ))}
-            </div>
-            <div style={{ fontSize: 12, color: '#254B8C', margin: '10px 0 6px' }}>몇 월분</div>
-            <input
-              type="month"
-              value={forYm}
-              onChange={(e) => setForYm(e.target.value)}
-              style={{ width: '100%', fontSize: 14, padding: '8px 10px', border: '1px solid #DEE0E3', borderRadius: 8, boxSizing: 'border-box' }}
-            />
-            <div style={{ fontSize: 11.5, color: '#254B8C', marginTop: 7, lineHeight: 1.6 }}>
-              받은 돈으로 똑같이 셉니다. 연말정산 서류(본인부담금)에서만 이 금액이 빠져요.
-            </div>
-          </div>
-        )}
 
         <div style={{ fontSize: 12, color: C.sub, margin: '13px 0 6px' }}>메모 (선택)</div>
         <input
@@ -6445,8 +5191,8 @@ function DepositModal({ row, ym, onClose, onSave, busy }) {
         <div style={{ display: 'flex', gap: 7, marginTop: 16 }}>
           <Btn
             variant="primary"
-            disabled={busy || !amount || (isVoucher && (!voucherKind || !/^\d{4}-\d{2}$/.test(forYm) || amount <= 0))}
-            onClick={() => onSave({ amount, date, method, memo: memo.trim() || null, voucherKind, forYm })}
+            disabled={busy || !amount}
+            onClick={() => onSave({ amount, date, method, memo: memo.trim() || null })}
             style={{ flex: 1, padding: '11px 0' }}
           >
             기록
@@ -6595,7 +5341,7 @@ function HistoryModal({ row, onClose, onRemove, loadHistory, busy }) {
                   {d.amount < 0 ? `환불 ${won(-d.amount)}` : won(d.amount)}원
                 </div>
                 <div style={{ fontSize: 11.5, color: C.mut }}>
-                  {[d.method, d.voucher_kind, d.for_ym ? `${Number(d.for_ym.slice(5))}월분` : null, d.memo].filter(Boolean).join(' · ') || '—'}
+                  {[d.method, d.memo].filter(Boolean).join(' · ') || '—'}
                 </div>
               </div>
               <Btn
@@ -6728,13 +5474,14 @@ function Sheet({ ym, s, adjustment, reason, compact, stamp, x }) {
                         <span
                           key={k}
                           style={{
-                            color: C.ink,
+                            color: d.a ? C.danger : C.ink,
                             fontWeight: 600,
                             marginLeft: k > 0 ? (compact ? 5 : 7) : 0,
                           }}
                         >
                           {k > 0 && <span style={{ color: '#C9CCD1', fontWeight: 400, marginRight: compact ? 5 : 7 }}>·</span>}
                           {d.n}
+                          {d.a ? '*' : ''}
                         </span>
                       ))}
                     </div>
@@ -7361,7 +6108,7 @@ function App() {
 
   // 직접 추가한 수업·보강 지우기
   const doRemoveSession = async (p) => {
-    if (!confirm(`${p.student_name} ${p.d.slice(5).replace('-', '/')} ${clock(p.start_time)} 수업을 지웁니다.\n되돌릴 수 없어요.`)) return
+    if (!confirm(`${p.student_name} ${p.d.slice(5).replace('-', '/')} ${p.start_time.slice(0, 5)} 수업을 지웁니다.\n되돌릴 수 없어요.`)) return
     setBusy(true)
     try {
       const msg = await removeSession(p.id)
@@ -7859,7 +6606,7 @@ function App() {
                 const ok2 = confirm(
                   undo
                     ? `${t} ${ym.slice(5)}월 마감을 취소합니다.\n출결을 다시 고칠 수 있게 됩니다. (급여 기록은 남아 있어요)`
-                    : `${t} ${ym.slice(5)}월을 마감합니다.\n\n· 이 달 급여가 세금(소득세·지방세)까지 계산돼 기록에 저장됩니다\n· 그 달 출결이 잠겨서 더 이상 안 바뀝니다\n\n나중에 취소할 수 있어요.`
+                    : `${t} ${ym.slice(5)}월을 마감합니다.\n\n· 이 달 급여가 기록에 저장됩니다\n· 그 달 출결이 잠겨서 더 이상 안 바뀝니다\n\n나중에 취소할 수 있어요.`
                 )
                 if (!ok2) return
                 setBusy(true)
@@ -7873,53 +6620,6 @@ function App() {
                 setBusy(false)
               }}
               payHistory={payHistory}
-              loadCopay={loadCopayYear}
-              loadRevenueList={loadRevenueByMonth}
-              say={say}
-              allStaff={staff.filter((x) => x.role !== 'admin')}
-              onSaveExtras={async (sid, items) => {
-                setBusy(true)
-                try {
-                  const msg = await setPayrollExtras(ym, sid, items)
-                  say(msg || '저장했습니다')
-                  await reloadMonth()
-                  setBusy(false)
-                  return true
-                } catch (e) {
-                  fail(e)
-                  setBusy(false)
-                  return false
-                }
-              }}
-              onSaveManual={async ({ ym: m, staffId, pay, items, memo }) => {
-                setBusy(true)
-                try {
-                  const msg = await savePayrollManual(m, staffId, pay, items, memo)
-                  say(msg || '저장했습니다')
-                  await reloadMonth()
-                  setBusy(false)
-                  return true
-                } catch (e) {
-                  fail(e)
-                  setBusy(false)
-                  return false
-                }
-              }}
-              onDeleteManual={async (rec) => {
-                if (!confirm(`${rec.staff_name} ${rec.ym.replace('-', '년 ')}월 급여 기록을 지웁니다.\n되돌릴 수 없어요.`)) return false
-                setBusy(true)
-                try {
-                  const msg = await deletePayrollManual(rec.ym, rec.staff_id)
-                  say(msg || '지웠습니다')
-                  await reloadMonth()
-                  setBusy(false)
-                  return true
-                } catch (e) {
-                  fail(e)
-                  setBusy(false)
-                  return false
-                }
-              }}
               onPayrollPaid={async (m, sid, clear) => {
                 setBusy(true)
                 try {
@@ -8182,8 +6882,8 @@ function App() {
           <div style={{ padding: '16px 18px', borderBottom: `1px solid ${C.line2}` }}>
             <div style={{ fontSize: 19, fontWeight: 700 }}>{pick.student_name}</div>
             <div style={{ fontSize: 12.5, color: C.sub, marginTop: 3 }}>
-              {pick.d.slice(5).replace('-', '월 ')}일 ({pick.weekday}) · {clock(pick.start_time)}–
-              {clock(pick.end_time)} · {pick.staff_name}
+              {pick.d.slice(5).replace('-', '월 ')}일 ({pick.weekday}) · {hhmm(pick.start_time)}–
+              {hhmm(pick.end_time)} · {pick.staff_name}
             </div>
             <div style={{ fontSize: 12.5, color: C.sub }}>{pick.program_label}</div>
           </div>
@@ -8309,6 +7009,7 @@ function App() {
       {ttPrint && isAdmin && (
         <TimetablePrint
           ym={ym}
+          say={say}
           staff={staff}
           sessions={monthSessions}
           outside={outside}
@@ -8317,7 +7018,6 @@ function App() {
           toneOf={toneOf}
           colorOf={colorOf}
           onlyTeacher={filter}
-          unmade={unmadeUp}
           onClose={() => setTtPrint(false)}
         />
       )}
