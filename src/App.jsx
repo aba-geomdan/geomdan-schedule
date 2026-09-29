@@ -3602,7 +3602,7 @@ const GRID_COLORS = [
   ['#BEE3DC', '#11423B'], ['#F2C9B8', '#5B2716'], ['#CBD5E1', '#1E293B'],
   ['#E7C9F0', '#4A1157'],
 ]
-function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
+function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], todo = [] }) {
   const [y, m] = ym.split('-').map(Number)
   const lastDay = new Date(y, m, 0).getDate()
   const DOW = ['월', '화', '수', '목', '금', '토']
@@ -3687,6 +3687,22 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
             {days.join(' · ')}
           </span>
         )}
+        <span className="tt-glg2">
+          <span>
+            <i style={{ background: '#fff', border: '1.5px dashed #E07B00' }} /> 보강
+          </span>
+          <span>
+            <i style={{ background: '#E9B93A' }} /> 50분 이상 빈 시간
+          </span>
+          {outside.length > 0 && (
+            <span>
+              <i style={{ background: '#3F4652' }} /> 외부 일정
+            </span>
+          )}
+          <span>
+            <i style={{ background: '#E9A9A2' }} /> 휴무일
+          </span>
+        </span>
       </div>
 
       <div className="tt-gfit" ref={fitRef}>
@@ -3729,8 +3745,18 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
                         </td>
                       )
                     const { list, outs } = cellOf(dIso, h)
+                    // 그날 수업 사이가 50분 이상 비면 그 시간대 칸에 노란 줄 (가로형과 같은 규칙)
+                    const dayList = sessions
+                      .filter((x) => x.d === dIso && x.status !== '취소')
+                      .sort((a, b) => ttMin(a.start_time) - ttMin(b.start_time))
+                    let gap = false
+                    for (let i = 0; i < dayList.length - 1; i++) {
+                      const g0 = ttMin(dayList[i].end_time)
+                      const g1 = ttMin(dayList[i + 1].start_time)
+                      if (g1 - g0 >= 50 && g0 < (h + 1) * 60 && g1 > h * 60) gap = true
+                    }
                     return (
-                      <td key={dw}>
+                      <td key={dw} className={gap && !list.length && !outs.length ? 'tt-ggap' : ''}>
                         {outs.map((e) => (
                           <div key={e.id} className="tt-gout">
                             <b>{e.label}</b>
@@ -3769,6 +3795,19 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
         ))}
       </div>
       </div>
+
+      {todo.length > 0 && (
+        <div className="tt-gtodo">
+          <b>보강해야 할 수업 {todo.length}건</b>
+          <span>
+            {todo
+              .slice()
+              .sort((a, b) => a.d.localeCompare(b.d))
+              .map((x) => `${x.student_name} ${x.d.slice(5).replace('-', '/')} ${hhmm(x.start_time)}`)
+              .join('  ·  ')}
+          </span>
+        </div>
+      )}
     </div>
   )
 }
@@ -4114,7 +4153,7 @@ function WeekSheet({ ym, days, weekNo, teachers, sessions, outside, holidays, le
   )
 }
 
-function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHolidays, toneOf, colorOf, onClose, onlyTeacher, say }) {
+function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerName, loadHolidays, toneOf, colorOf, onClose, onlyTeacher, say }) {
   const teachers = useMemo(() => staff.filter((x) => x.active), [staff])
   // 시간표 화면에서 선생님을 골라둔 채 인쇄를 누르면 그 선생님만 골라진 상태로 엽니다
   const [picked, setPicked] = useState(() => {
@@ -4265,6 +4304,13 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
         .tt-gd { color: #71757C !important; margin-left: 10px; }
         /* 한 달이 한 장에 들어오도록 2단으로 */
         .tt-gfit { flex: 1; min-height: 0; overflow: hidden; }
+        .tt-glg2 { float: right; font-size: 9px; color: #4A4F57; }
+        .tt-glg2 span { margin-left: 9px; white-space: nowrap; }
+        .tt-glg2 i { display: inline-block; width: 11px; height: 8px; border-radius: 2px; vertical-align: 0px; margin-right: 3px; }
+        .tt-ggap { background: repeating-linear-gradient(90deg, #FBF2D6 0px, #FBF2D6 6px, #fff 6px, #fff 12px); }
+        .tt-gtodo { border-top: 1px solid #9AA0A6; margin-top: 2mm; padding-top: 1.5mm; font-size: 9px; line-height: 1.5; }
+        .tt-gtodo b { font-size: 10px; color: #8A5A00; margin-right: 8px; }
+        .tt-gtodo span { color: #4A4F57; }
         .tt-gwrap { column-count: 2; column-gap: 5mm; }
         .tt-gtbl { break-inside: avoid; page-break-inside: avoid; margin-bottom: 3.5mm; }
         .tt-gtbl { width: 100%; border-collapse: collapse; table-layout: fixed; }
@@ -4446,6 +4492,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
             holidays={holFor(t)}
             sessions={sessions.filter((s) => s.staff_name === t.name && s.status !== '취소')}
             outside={t.name === ownerName ? outside.filter((e) => e.d.slice(0, 7) === ym) : []}
+            todo={unmade.filter((x) => x.staff_name === t.name)}
           />
         ))}
         {mode === 'teacher' && shown.map((t) => (
@@ -7068,6 +7115,7 @@ function App() {
         <TimetablePrint
           ym={ym}
           say={say}
+          unmade={unmadeUp}
           staff={staff}
           sessions={monthSessions}
           outside={outside}
