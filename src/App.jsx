@@ -3645,8 +3645,36 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
     return { list, outs }
   }
 
+  // 한 장을 넘치면 자동으로 줄입니다 (A4 한 장에 한 달)
+  const pageRef = useRef(null)
+  const fitRef = useRef(null)
+  const innerRef = useRef(null)
+  const [scale, setScale] = useState(1)
+  useEffect(() => {
+    const fit = () => {
+      const box = fitRef.current
+      const inner = innerRef.current
+      if (!box || !inner) return
+      const prev = inner.style.transform
+      inner.style.transform = 'none'
+      inner.style.width = '100%'
+      const avail = box.clientHeight - 2
+      const need = inner.scrollHeight
+      inner.style.transform = prev
+      const k = need > avail && avail > 0 ? Math.max(avail / need, 0.4) : 1
+      setScale(k)
+    }
+    fit()
+    const t = setTimeout(fit, 300)
+    window.addEventListener('resize', fit)
+    return () => {
+      clearTimeout(t)
+      window.removeEventListener('resize', fit)
+    }
+  }, [sessions, outside, ym])
+
   return (
-    <div className="tt-page tt-grid-page">
+    <div className="tt-page tt-grid-page" ref={pageRef}>
       <div className="tt-gh">
         <b>{teacher.name} 선생님</b>
         <span>{'\u00A0\u00A0'}</span>
@@ -3661,7 +3689,12 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
         )}
       </div>
 
-      <div className="tt-gwrap">
+      <div className="tt-gfit" ref={fitRef}>
+      <div
+        className="tt-gwrap"
+        ref={innerRef}
+        style={ scale < 1 ? { transform: `scale(${scale})`, transformOrigin: 'top left', width: `${(100 / scale).toFixed(2)}%` } : undefined }
+      >
         {weeks.map((wk, wi) => (
           <table key={wi} className="tt-gtbl">
             <thead>
@@ -3734,6 +3767,7 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
             </tbody>
           </table>
         ))}
+      </div>
       </div>
     </div>
   )
@@ -4223,13 +4257,14 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
         .tt-bar { position: sticky; top: 0; z-index: 2; background: #fff; border-bottom: 1px solid ${C.line};
           padding: 11px 16px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
         .tt-wrap { padding: 16px 12px 40px; overflow-x: auto; }
-        .tt-grid-page { padding: 8mm 7mm; }
+        .tt-grid-page { padding: 8mm 7mm; overflow: hidden; }
         .tt-gh { display: block; margin-bottom: 6px; white-space: nowrap;
           border-bottom: 2px solid #1F2328; padding-bottom: 5px; }
         .tt-gh > * { display: inline-block; vertical-align: baseline; }
         .tt-gh b { font-size: 15px; margin-right: 10px; } .tt-gh span { font-size: 12px; color: #4A4F57; }
         .tt-gd { color: #71757C !important; margin-left: 10px; }
         /* 한 달이 한 장에 들어오도록 2단으로 */
+        .tt-gfit { flex: 1; min-height: 0; overflow: hidden; }
         .tt-gwrap { column-count: 2; column-gap: 5mm; }
         .tt-gtbl { break-inside: avoid; page-break-inside: avoid; margin-bottom: 3.5mm; }
         .tt-gtbl { width: 100%; border-collapse: collapse; table-layout: fixed; }
