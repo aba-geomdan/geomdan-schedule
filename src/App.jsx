@@ -3649,17 +3649,16 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [] }) {
     <div className="tt-page tt-grid-page">
       <div className="tt-gh">
         <b>{teacher.name} 선생님</b>
+        <span>{'\u00A0\u00A0'}</span>
         <span>
           {y}년 {m}월 시간표
         </span>
-        {days.length > 0 && <span className="tt-gd">({days.join('·')})</span>}
-        <span className="tt-glg">
-          {Object.entries(kidColor).map(([n, c]) => (
-            <span key={n} style={{ background: c[0], color: c[1] }}>
-              {n}
-            </span>
-          ))}
-        </span>
+        {days.length > 0 && (
+          <span className="tt-gd">
+            {'\u00A0\u00A0'}
+            {days.join(' · ')}
+          </span>
+        )}
       </div>
 
       <div className="tt-gwrap">
@@ -4089,7 +4088,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
     return new Set(one ? [one.id] : teachers.map((t) => t.id))
   })
   const [hols, setHols] = useState([])
-  const [mode, setMode] = useState('teacher')
+  const [mode, setMode] = useState('grid')
 
   useEffect(() => {
     const [y, m] = ym.split('-').map(Number)
@@ -4220,18 +4219,16 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
         .tt-shoot .tt-gh b { margin-right: 8px; }
         .tt-shoot .tt-ph b { margin-right: 8px; }
         .tt-shoot .tt-ph > span { margin-right: 8px; }
-        .tt-shoot .tt-gh > span { margin-right: 6px; }
-        .tt-shoot .tt-lg span { margin-right: 8px; }
+        .tt-shoot .tt-gh > span { margin-right: 10px; }
         .tt-bar { position: sticky; top: 0; z-index: 2; background: #fff; border-bottom: 1px solid ${C.line};
           padding: 11px 16px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
         .tt-wrap { padding: 16px 12px 40px; overflow-x: auto; }
         .tt-grid-page { padding: 8mm 7mm; }
-        .tt-gh { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 6px;
+        .tt-gh { display: block; margin-bottom: 6px; white-space: nowrap;
           border-bottom: 2px solid #1F2328; padding-bottom: 5px; }
-        .tt-gh b { font-size: 15px; margin-right: 6px; } .tt-gh span { font-size: 12px; color: #4A4F57; }
-        .tt-gd { color: #71757C !important; }
-        .tt-glg { margin-left: auto; display: flex; gap: 4px; flex-wrap: wrap; }
-        .tt-glg span { font-size: 9.5px; border-radius: 3px; padding: 1px 5px; }
+        .tt-gh > * { display: inline-block; vertical-align: baseline; }
+        .tt-gh b { font-size: 15px; margin-right: 10px; } .tt-gh span { font-size: 12px; color: #4A4F57; }
+        .tt-gd { color: #71757C !important; margin-left: 10px; }
         /* 한 달이 한 장에 들어오도록 2단으로 */
         .tt-gwrap { column-count: 2; column-gap: 5mm; }
         .tt-gtbl { break-inside: avoid; page-break-inside: avoid; margin-bottom: 3.5mm; }
@@ -4334,7 +4331,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], ownerName, loadHoli
       <div className="tt-bar">
         <div style={{ fontSize: 15, fontWeight: 700 }}>{ym.replace('-', '년 ')}월 시간표 인쇄</div>
         <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 9 }}>
-          {[['teacher', '선생님별 (가로형)'], ['grid', '선생님별 (표 모양)'], ['all', '전체']].map(([k, l]) => (
+          {[['grid', '선생님별'], ['all', '전체']].map(([k, l]) => (
             <button
               key={k}
               onClick={() => setMode(k)}
