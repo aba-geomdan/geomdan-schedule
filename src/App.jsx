@@ -6595,9 +6595,9 @@ function App() {
         {!loading && tab === 'month' && schedView === 'makeup' && (
           <MakeupLog
             rows={
-              makeupLog === 'ERR'
-                ? // DB(schema_v2.sql)를 아직 안 올리셨을 때 — 보강해야 할 수업만이라도 보여줍니다
-                  unmadeUp.map((x) => ({
+              // DB(schema_v2.sql)가 예전 것이면 보강 기록이 비어서 옵니다 → 보강해야 할 수업만이라도 보여줍니다
+              makeupLog === 'ERR' || (makeupLog.length === 0 && unmadeUp.length > 0)
+                ? unmadeUp.map((x) => ({
                     absent_id: x.id,
                     ym: x.d.slice(0, 7),
                     absent_d: x.d,
@@ -6613,7 +6613,7 @@ function App() {
                   }))
                 : makeupLog
             }
-            needSql={makeupLog === 'ERR'}
+            needSql={makeupLog === 'ERR' || (makeupLog.length === 0 && unmadeUp.length > 0)}
             staffOrder={staff.map((x) => x.name)}
             ownerName={staff.find((x) => x.role === 'admin')?.name}
             toneOf={toneOf}
