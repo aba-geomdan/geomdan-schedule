@@ -168,6 +168,11 @@ async function addDeposit(studentId, { amount, date, method, memo, voucherKind, 
   )
 }
 
+// 입금 내역 한 장 인쇄용: 그 달 받은 입금 + 그 달분 바우처
+async function loadDepositsInMonth(ym) {
+  return ok(await supabase.rpc('deposits_in_month', { p_ym: ym }))
+}
+
 // 본인부담금 (연말정산 서류) · 달별 매출
 async function loadCopayYear(year) {
   return ok(await supabase.rpc('copay_year', { p_year: year }))
@@ -5601,7 +5606,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
         <div style={{ fontSize: 15, fontWeight: 700 }}>
           {ym.replace('-', '년 ')}월 시간표 인쇄
           {/* 새 파일이 제대로 올라갔는지 확인용 — 브라우저가 옛 파일을 기억하고 있으면 이 표시가 안 보입니다 */}
-          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-22</span>
+          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-23</span>
           {mode === 'grid' && (
             <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: imgErr ? C.danger : useImgs ? '#1F7A45' : C.mut }}>
               {imgErr ? `그림 실패: ${imgErr.slice(0, 60)}` : useImgs ? `그림 준비됨 ${imgs.length}장` : '그림 만드는 중'}
@@ -6068,11 +6073,154 @@ function AddField({ label, children }) {
 
 /* ═════════════════ PaymentView.jsx ═════════════════ */
 
+/* ================= 입금 내역 한 장 인쇄 (A4 세로) ================= */
+function PayPrint({ ym, rows, teachersOf, rank, loadMonthDeposits, onClose }) {
+  const [deps, setDeps] = useState(null)
+  const [fs, setFs] = useState(12)
+  const sheetRef = useRef(null)
+  useEffect(() => {
+    let on = true
+    ;(loadMonthDeposits ? loadMonthDeposits(ym) : Promise.resolve([]))
+      .then((r) => on && setDeps(r || []))
+      .catch(() => on && setDeps([]))
+    return () => { on = false }
+  }, [ym])
+
+  // 모든 아이, 선생님별 묶음 (입금 화면과 같은 순서)
+  const groups = useMemo(() => {
+    const g = {}
+    rows.forEach((r) => {
+      const home = teachersOf[r.student_id]?.[0] || r.staff_name || '담당 미지정'
+      if (!g[home]) g[home] = []
+      g[home].push(r)
+    })
+    return Object.entries(g)
+      .sort((a, b) => rank(a[0]) - rank(b[0]))
+      .map(([name, list]) => ({ name, list: [...list].sort((a, b) => a.student_name.localeCompare(b.student_name, 'ko')) }))
+  }, [rows, teachersOf])
+
+  const depOf = useMemo(() => {
+    const m = {}
+    ;(deps || []).forEach((d) => {
+      if (!m[d.student_id]) m[d.student_id] = []
+      m[d.student_id].push(d)
+    })
+    return m
+  }, [deps])
+  const md = (d) => `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}`
+  const detail = (r) => {
+    const list = depOf[r.student_id] || []
+    const parts = list.map((d) =>
+      `${md(d.received_on)} ${d.method === '바우처' ? `바우처${d.voucher_kind ? `(${d.voucher_kind})` : ''}` : d.method === '계좌이체' ? '계좌' : d.method || '입금'} ${won(d.amount)}`
+    )
+    // 이 달에 받은 돈보다 충당된 돈이 많으면, 그 차이는 전에 받아둔 선입금에서 나간 것
+    const thisMonth = list.filter((d) => d.amount > 0).reduce((a, d) => a + d.amount, 0)
+    if (r.allocated > thisMonth) parts.push(`선입금 ${won(r.allocated - thisMonth)} 충당`)
+    return parts.join(' · ')
+  }
+
+  const tot = rows.reduce((a, r) => ({ b: a.b + r.billed, a: a.a + r.allocated, u: a.u + Math.max(r.balance, 0) }), { b: 0, a: 0, u: 0 })
+  const unpaidN = rows.filter((r) => r.balance > 0).length
+  const today = isoOf(new Date())
+
+  // 한 장에 들어갈 때까지 글자를 한 단계씩 줄입니다 (A4 세로 인쇄 영역 약 273mm)
+  useLayoutEffect(() => {
+    const el = sheetRef.current
+    if (!el || deps === null) return
+    const limit = (273 * 96) / 25.4
+    if (el.scrollHeight > limit && fs > 7.5) setFs((v) => Math.round((v - 0.5) * 10) / 10)
+  })
+
+  return createPortal(
+    <div className="pp-root">
+      <style>{`
+        @page payport { size: A4 portrait; margin: 12mm; }
+        .pp-root { position: fixed; inset: 0; z-index: 95; background: #E9EAEC; overflow: auto; }
+        .pp-sheet { width: 186mm; margin: 12px auto 30px; background: #fff; padding: 10mm 12mm; box-sizing: content-box;
+          color: #1D2023; box-shadow: 0 1px 4px rgba(0,0,0,.12); page: payport; }
+        .pp-sheet h1 { font-size: calc(var(--fs) * 1.7); margin: 0 0 2px; }
+        .pp-sub { font-size: calc(var(--fs) * 0.9); color: #6B7079; margin-bottom: 8px; }
+        .pp-sum { display: flex; gap: 6px; margin-bottom: 8px; }
+        .pp-sum div { flex: 1; border: 1px solid #C9CCD1; border-radius: 4px; padding: 4px 7px; font-size: calc(var(--fs) * 0.9); color: #4A4F57; }
+        .pp-sum b { display: block; font-size: calc(var(--fs) * 1.25); color: #1D2023; }
+        .pp-sheet table { width: 100%; border-collapse: collapse; font-size: var(--fs); table-layout: fixed; }
+        .pp-sheet th, .pp-sheet td { border: 0.6px solid #B9BDC3; padding: 2px 5px; line-height: 1.25; }
+        .pp-sheet th { background: #F2E9C9; font-weight: 700; }
+        .pp-sheet td.n { text-align: right; white-space: nowrap; }
+        .pp-sheet tr.g td { background: #F4F5F7; font-weight: 800; }
+        .pp-sheet tr.u td { background: #FDE3E0; }
+        .pp-sheet .red { color: #B3261E; font-weight: 800; }
+        .pp-sheet td.d { font-size: calc(var(--fs) * 0.88); color: #3A3F46; }
+        @media print {
+          html, body { height: auto !important; overflow: visible !important; background: #fff !important; }
+          body > *:not(.pp-root) { display: none !important; }
+          .pp-root { position: static !important; overflow: visible !important; background: #fff; }
+          .pp-bar { display: none !important; }
+          .pp-sheet { margin: 0; box-shadow: none; padding: 0; }
+          .pp-sheet tr.u td, .pp-sheet th, .pp-sheet tr.g td { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        }
+      `}</style>
+      <div className="pp-bar" style={{ position: 'sticky', top: 0, zIndex: 2, background: '#fff', borderBottom: `1px solid ${C.line}`, padding: '10px 14px', display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div style={{ fontSize: 15, fontWeight: 700 }}>{ym.replace('-', '년 ')}월 입금 내역 인쇄</div>
+        <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6 }}>
+          <Btn onClick={onClose}>닫기</Btn>
+          <Btn variant="primary" disabled={deps === null} onClick={() => window.print()}>
+            {deps === null ? '불러오는 중…' : '인쇄'}
+          </Btn>
+        </span>
+      </div>
+      <div className="pp-sheet" ref={sheetRef} style={{ '--fs': `${fs}px` }}>
+        <h1>{ym.replace('-', '년 ')}월 입금 내역</h1>
+        <div className="pp-sub">검단ABA언어행동연구소 · {today} 인쇄 · 모든 아동 (빨간 줄 = 미수)</div>
+        <div className="pp-sum">
+          <div>이 달 청구<b>{won(tot.b)}원</b></div>
+          <div>받은 돈(충당)<b>{won(tot.a)}원</b></div>
+          <div>미수 {unpaidN}명<b className="red">{won(tot.u)}원</b></div>
+          <div>아동 수<b>{rows.length}명</b></div>
+        </div>
+        <table>
+          <colgroup>
+            <col style={{ width: '12%' }} /><col style={{ width: '11%' }} /><col style={{ width: '11%' }} /><col style={{ width: '11%' }} /><col />
+          </colgroup>
+          <thead>
+            <tr><th>아동</th><th>청구</th><th>받은 돈</th><th>미수</th><th>입금 내역 (날짜 · 방법 · 금액)</th></tr>
+          </thead>
+          <tbody>
+            {groups.map((g) => (
+              <React.Fragment key={g.name}>
+                <tr className="g"><td colSpan={5}>{g.name} 선생님 · {g.list.length}명</td></tr>
+                {g.list.map((r) => (
+                  <tr key={r.student_id} className={r.balance > 0 ? 'u' : ''}>
+                    <td>{r.student_name}</td>
+                    <td className="n">{won(r.billed)}</td>
+                    <td className="n">{r.allocated > 0 ? won(r.allocated) : ''}</td>
+                    <td className={`n${r.balance > 0 ? ' red' : ''}`}>{r.balance > 0 ? won(r.balance) : ''}</td>
+                    <td className="d">{deps === null ? '' : detail(r)}</td>
+                  </tr>
+                ))}
+              </React.Fragment>
+            ))}
+            <tr className="g">
+              <td>합계</td>
+              <td className="n">{won(tot.b)}</td>
+              <td className="n">{won(tot.a)}</td>
+              <td className="n red">{tot.u ? won(tot.u) : ''}</td>
+              <td />
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>,
+    document.body
+  )
+}
+
 function PaymentView({
   ym, rows, revenue, busy, onDeposit, onRefund, onRemoveDeposit, loadHistory, say,
-  byStaff = [], staffOrder = [], ownerName, toneOf,
+  byStaff = [], staffOrder = [], ownerName, toneOf, loadMonthDeposits,
 }) {
   const [filter, setFilter] = useState('unpaid')
+  const [printOpen, setPrintOpen] = useState(false)
   const [depositFor, setDepositFor] = useState(null)
   const [refundFor, setRefundFor] = useState(null)
   const [historyFor, setHistoryFor] = useState(null)
@@ -6184,7 +6332,20 @@ function PaymentView({
         <Btn onClick={copyUnpaid} style={{ marginLeft: 'auto' }}>
           미납 안내 문구 복사
         </Btn>
+        <Btn onClick={() => setPrintOpen(true)} disabled={!rows.length}>
+          한 장 인쇄
+        </Btn>
       </div>
+      {printOpen && (
+        <PayPrint
+          ym={ym}
+          rows={rows}
+          teachersOf={teachersOf}
+          rank={rank}
+          loadMonthDeposits={loadMonthDeposits}
+          onClose={() => setPrintOpen(false)}
+        />
+      )}
 
       <Card style={{ overflow: 'auto', marginBottom: 16 }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 660 }}>
@@ -8063,6 +8224,7 @@ function App() {
               busy={busy}
               say={say}
               loadHistory={depositHistory}
+              loadMonthDeposits={loadDepositsInMonth}
               onDeposit={async (sid, v) => {
                 setBusy(true)
                 try {
