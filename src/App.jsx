@@ -1062,8 +1062,9 @@ function MonthView({
             .filter((x) => x.status === '진행' || x.status === '보강')
             .reduce((a, b) => a + minutesBetween(b.start_time, b.end_time), 0),
           total: list.filter((x) => x.status !== '취소').length,
-          // 원래 잡혀 있던 수업 (정상 + 결강) = 엄마께 청구되는 횟수, 보강은 따로
-          lessons: list.filter((x) => x.status === '진행' || x.status === '결강').length,
+          // 실제로 한 수업 · 결강 · 보강을 따로 셉니다
+          lessons: list.filter((x) => x.status === '진행').length,
+          absents: list.filter((x) => x.status === '결강').length,
           makeups: list.filter((x) => x.status === '보강').length,
           // 어느 결강의 보강인지 연결이 안 된 보강 (급여에 한 회로 들어가서 확인이 필요)
           loose: list.filter((x) => x.status === '보강' && !x.makeup_for).length,
@@ -1147,7 +1148,7 @@ function MonthView({
           {Array.from({ length: weeks }, (_, i) => (
             <span key={i} style={{ width: colW, textAlign: 'center' }}>{i + 1}주</span>
           ))}
-          <span style={{ width: 118, textAlign: 'right' }}>수업 · 보강</span>
+          <span style={{ width: 170, textAlign: 'right' }}>수업 · 결강 · 보강</span>
         </div>
 
         {rows.length === 0 ? (
@@ -1182,9 +1183,9 @@ function MonthView({
                     )}
                   </span>
                   {g.byWeek.map((w, i) => {
-                    const n = w.filter((x) => x.status === '진행' || x.status === '결강').length
+                    const n = w.filter((x) => x.status === '진행').length
                     const bad = w.some((x) => x.status === '결강')
-                    if (!n) return <span key={i} style={{ width: colW, textAlign: 'center', color: '#C9CCD1' }}>—</span>
+                    if (!n && !bad) return <span key={i} style={{ width: colW, textAlign: 'center', color: '#C9CCD1' }}>—</span>
                     return (
                       <span key={i} style={{ width: colW, textAlign: 'center' }}>
                         <span
@@ -1201,10 +1202,15 @@ function MonthView({
                       </span>
                     )
                   })}
-                  <span style={{ width: 118, display: 'inline-flex', justifyContent: 'flex-end', gap: 4 }}>
+                  <span style={{ width: 170, display: 'inline-flex', justifyContent: 'flex-end', gap: 4 }}>
                     <span style={{ fontSize: 11.5, fontWeight: 700, borderRadius: 99, padding: '2px 8px', background: DOT.진행.bg, color: DOT.진행.fg, whiteSpace: 'nowrap' }}>
                       수업 {g.lessons}
                     </span>
+                    {g.absents > 0 && (
+                      <span style={{ fontSize: 11.5, fontWeight: 700, borderRadius: 99, padding: '2px 8px', background: DOT.미보강.bg, color: DOT.미보강.fg, whiteSpace: 'nowrap' }}>
+                        결강 {g.absents}
+                      </span>
+                    )}
                     {g.makeups > 0 && (
                       <span style={{ fontSize: 11.5, fontWeight: 700, borderRadius: 99, padding: '2px 8px', background: g.loose ? '#FDE3E0' : DOT.보강.bg, color: g.loose ? '#B3261E' : DOT.보강.fg, whiteSpace: 'nowrap' }}>
                         보강 {g.makeups}{g.loose ? ' !' : ''}
@@ -1483,6 +1489,12 @@ function MyClosingView({ ym, summary, closing, onSubmit, onPrevYm, onNextYm, bus
 /* ═════════════════ AdminViews.jsx ═════════════════ */
 
 /* ---------------- 정산 ---------------- */
+// 타임 수 표시: 정수면 그대로, 나눠 보강으로 소수가 생기면 소수 첫째 자리까지
+const fmtUnits = (u) => {
+  const n = Number(u) || 0
+  return Number.isInteger(n) ? String(n) : String(Math.round(n * 10) / 10)
+}
+
 /* ================= 급여 세금 계산 (DB의 pay_tax 와 같은 규칙) =================
    소득세 = 과세금액 × 3%  (10원 미만 버림)
    지방세 = 소득세 × 10%   (10원 미만 버림)
@@ -2018,7 +2030,11 @@ function PayrollHistory({ rows, staffOrder = [], ownerName, toneOf, busy, onPaid
           {g.list.map((r) => {
             const n = recNums(r)
             const extra = itemsText(r.extra_items)
-            const sessions = r.source === '앱' ? `회차 ${r.lesson_count}${r.makeup_count > 0 ? ` (보강 ${r.makeup_count})` : ''}` : r.sessions_text ? `회기 ${r.sessions_text}` : ''
+            const sessions = r.source === '앱'
+              ? r.units != null
+                ? `${fmtUnits(r.units)}타임`
+                : `회차 ${r.lesson_count}${r.makeup_count > 0 ? ` (보강 ${r.makeup_count})` : ''}`
+              : r.sessions_text ? `회기 ${r.sessions_text}` : ''
             return (
               <div key={r.staff_id} style={{ padding: '10px 14px', borderBottom: `1px solid ${C.line2}` }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 7 }}>
@@ -2825,7 +2841,7 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
           ) : (
         <div>
           <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.75, marginBottom: 12 }}>
-            급여 = <b>(진행 + 보강)</b> 회차의 수강료 합계 × 선생님 비율. 결강은 보강해야 집계됩니다.
+            급여 = <b>(진행 + 보강)</b> 수강료 합계 × 선생님 비율. 타임 = 50분 1타임 (100분 = 2, 150분 = 3). 결강은 보강해야 집계됩니다.
             보강은 <b>보강한 달</b>에 잡혀요.
             <br />
             수강료 청구는 (진행 + 결강) 기준이라 아래 <b>수강료</b> 금액과 정산 탭의 금액이 다를 수 있습니다.
@@ -2834,12 +2850,12 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 660 }}>
               <thead>
                 <tr style={{ background: '#FBFBFC', color: C.sub }}>
-                  {['선생님', '비율', '회차', '보강', '시수', '수강료', '수업분', '미보강', '', ''].map((h, i) => (
+                  {['선생님', '비율', '타임', '보강', '수강료', '수업분', '미보강', '', ''].map((h, i) => (
                     <th
                       key={i}
                       style={{
                         padding: '9px 12px',
-                        textAlign: i >= 2 && i <= 7 ? 'right' : 'left',
+                        textAlign: i >= 2 && i <= 6 ? 'right' : 'left',
                         fontWeight: 600,
                         borderBottom: `1px solid ${C.line}`,
                         whiteSpace: 'nowrap',
@@ -2853,7 +2869,7 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
               <tbody>
                 {(payroll || []).length === 0 && (
                   <tr>
-                    <td colSpan={10}>
+                    <td colSpan={9}>
                       <Empty>이 달 수업 기록이 없습니다.</Empty>
                     </td>
                   </tr>
@@ -2879,12 +2895,9 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
                       />
                       <span style={{ fontSize: 12, color: C.sub, marginLeft: 3 }}>%</span>
                     </td>
-                    <td style={{ padding: '9px 12px', textAlign: 'right' }}>{r.lesson_count}</td>
-                    <td style={{ padding: '9px 12px', textAlign: 'right', color: r.makeup_count ? '#254B8C' : '#C9CCD1' }}>
-                      {r.makeup_count || '—'}
-                    </td>
-                    <td style={{ padding: '9px 12px', textAlign: 'right', color: C.sub }}>
-                      {(r.minutes / 60).toFixed(1)}h
+                    <td style={{ padding: '9px 12px', textAlign: 'right' }}>{fmtUnits(r.units)}</td>
+                    <td style={{ padding: '9px 12px', textAlign: 'right', color: Number(r.makeup_units) ? '#254B8C' : '#C9CCD1' }}>
+                      {Number(r.makeup_units) ? fmtUnits(r.makeup_units) : '—'}
                     </td>
                     <td style={{ padding: '9px 12px', textAlign: 'right', color: C.sub }}>{won(r.tuition)}</td>
                     <td style={{ padding: '9px 12px', textAlign: 'right', fontWeight: 700, fontSize: 14, color: r.pay != null ? C.pkd : C.mut }}>
@@ -2923,7 +2936,7 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
                     </td>
                   </tr>
                   <tr style={{ borderBottom: `1px solid ${C.line2}` }}>
-                    <td colSpan={10} style={{ padding: '0 12px 10px' }}>
+                    <td colSpan={9} style={{ padding: '0 12px 10px' }}>
                       <div style={{ background: '#FAFAFB', borderRadius: 9, padding: '9px 12px' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 7 }}>
                           <span style={{ fontSize: 12, color: C.sub }}>
@@ -2958,13 +2971,10 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
                     <td style={{ padding: '10px 12px' }}>합계</td>
                     <td />
                     <td style={{ padding: '10px 12px', textAlign: 'right' }}>
-                      {payroll.reduce((a, b) => a + b.lesson_count, 0)}
+                      {fmtUnits(payroll.reduce((a, b) => a + Number(b.units || 0), 0))}
                     </td>
                     <td style={{ padding: '10px 12px', textAlign: 'right' }}>
-                      {payroll.reduce((a, b) => a + b.makeup_count, 0) || '—'}
-                    </td>
-                    <td style={{ padding: '10px 12px', textAlign: 'right' }}>
-                      {(payroll.reduce((a, b) => a + b.minutes, 0) / 60).toFixed(1)}h
+                      {payroll.reduce((a, b) => a + Number(b.makeup_units || 0), 0) ? fmtUnits(payroll.reduce((a, b) => a + Number(b.makeup_units || 0), 0)) : '—'}
                     </td>
                     <td style={{ padding: '10px 12px', textAlign: 'right' }}>
                       {won(payroll.reduce((a, b) => a + b.tuition, 0))}
@@ -2975,7 +2985,7 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
                     <td colSpan={3} />
                   </tr>
                   <tr style={{ background: C.pkl }}>
-                    <td colSpan={10} style={{ padding: '4px 12px 12px' }}>
+                    <td colSpan={9} style={{ padding: '4px 12px 12px' }}>
                       {(() => {
                         const ok = payroll.filter((b) => b.pay != null)
                         const sum = (k) => ok.reduce((a, b) => a + (b[k] || 0), 0)
@@ -3025,7 +3035,7 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
                     <thead>
                       <tr style={{ color: C.mut, fontSize: 11.5 }}>
                         <th style={{ textAlign: 'left', padding: '8px 16px', fontWeight: 600 }}>아동</th>
-                        <th style={{ textAlign: 'right', padding: '8px 8px', fontWeight: 600 }}>회차</th>
+                        <th style={{ textAlign: 'right', padding: '8px 8px', fontWeight: 600 }}>타임</th>
                         <th style={{ textAlign: 'right', padding: '8px 16px', fontWeight: 600 }}>수강료</th>
                       </tr>
                     </thead>
@@ -3036,11 +3046,11 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
                             {d.student_name}
                             <div style={{ fontSize: 11, color: C.mut }}>
                               {d.program_label}
-                              {d.makeup_count > 0 && ` · 보강 ${d.makeup_count}`}
+                              {Number(d.makeup_units) > 0 && ` · 보강 ${fmtUnits(d.makeup_units)}타임`}
                             </div>
                           </td>
                           <td style={{ padding: '8px 8px', textAlign: 'right', verticalAlign: 'top' }}>
-                            {d.lesson_count}
+                            {fmtUnits(d.units)}
                           </td>
                           <td style={{ padding: '8px 16px', textAlign: 'right', fontWeight: 600, verticalAlign: 'top' }}>
                             {won(d.tuition)}
@@ -5640,7 +5650,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
         <div style={{ fontSize: 15, fontWeight: 700 }}>
           {ym.replace('-', '년 ')}월 시간표 인쇄
           {/* 새 파일이 제대로 올라갔는지 확인용 — 브라우저가 옛 파일을 기억하고 있으면 이 표시가 안 보입니다 */}
-          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-27</span>
+          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-29</span>
           {mode === 'grid' && (
             <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: imgErr ? C.danger : useImgs ? '#1F7A45' : C.mut }}>
               {imgErr ? `그림 실패: ${imgErr.slice(0, 60)}` : useImgs ? `그림 준비됨 ${imgs.length}장` : '그림 만드는 중'}
