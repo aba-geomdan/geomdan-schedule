@@ -1062,6 +1062,11 @@ function MonthView({
             .filter((x) => x.status === '진행' || x.status === '보강')
             .reduce((a, b) => a + minutesBetween(b.start_time, b.end_time), 0),
           total: list.filter((x) => x.status !== '취소').length,
+          // 원래 잡혀 있던 수업 (정상 + 결강) = 엄마께 청구되는 횟수, 보강은 따로
+          lessons: list.filter((x) => x.status === '진행' || x.status === '결강').length,
+          makeups: list.filter((x) => x.status === '보강').length,
+          // 어느 결강의 보강인지 연결이 안 된 보강 (급여에 한 회로 들어가서 확인이 필요)
+          loose: list.filter((x) => x.status === '보강' && !x.makeup_for).length,
         }
       })
       .sort((a, b) => a.name.localeCompare(b.name, 'ko'))
@@ -1142,7 +1147,7 @@ function MonthView({
           {Array.from({ length: weeks }, (_, i) => (
             <span key={i} style={{ width: colW, textAlign: 'center' }}>{i + 1}주</span>
           ))}
-          <span style={{ width: 30, textAlign: 'right' }}>계</span>
+          <span style={{ width: 118, textAlign: 'right' }}>수업 · 보강</span>
         </div>
 
         {rows.length === 0 ? (
@@ -1177,7 +1182,7 @@ function MonthView({
                     )}
                   </span>
                   {g.byWeek.map((w, i) => {
-                    const n = w.filter((x) => x.status !== '취소').length
+                    const n = w.filter((x) => x.status === '진행' || x.status === '결강').length
                     const bad = w.some((x) => x.status === '결강')
                     if (!n) return <span key={i} style={{ width: colW, textAlign: 'center', color: '#C9CCD1' }}>—</span>
                     return (
@@ -1196,8 +1201,15 @@ function MonthView({
                       </span>
                     )
                   })}
-                  <span style={{ width: 30, textAlign: 'right', color: C.ink, fontWeight: 700 }}>
-                    {g.total}
+                  <span style={{ width: 118, display: 'inline-flex', justifyContent: 'flex-end', gap: 4 }}>
+                    <span style={{ fontSize: 11.5, fontWeight: 700, borderRadius: 99, padding: '2px 8px', background: DOT.진행.bg, color: DOT.진행.fg, whiteSpace: 'nowrap' }}>
+                      수업 {g.lessons}
+                    </span>
+                    {g.makeups > 0 && (
+                      <span style={{ fontSize: 11.5, fontWeight: 700, borderRadius: 99, padding: '2px 8px', background: g.loose ? '#FDE3E0' : DOT.보강.bg, color: g.loose ? '#B3261E' : DOT.보강.fg, whiteSpace: 'nowrap' }}>
+                        보강 {g.makeups}{g.loose ? ' !' : ''}
+                      </span>
+                    )}
                   </span>
                 </button>
 
@@ -1208,6 +1220,11 @@ function MonthView({
                       {g.unmade > 0 && (
                         <span style={{ color: '#8A5A00', marginLeft: 7 }}>· 미보강 {g.unmade}</span>
                       )}
+                      {g.loose > 0 && (
+                        <span style={{ color: '#B3261E', marginLeft: 7, fontWeight: 700 }}>
+                          · 결강과 연결 안 된 보강 {g.loose} (빨간 ! 칸 — 실수로 넣은 거면 지우고, 결강의 보강이면 지운 뒤 결강 칸에서 '보강 잡기'로)
+                        </span>
+                      )}
                       <span style={{ marginLeft: 7 }}>· 날짜를 눌러 결강 처리</span>
                     </div>
                     <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
@@ -1217,7 +1234,16 @@ function MonthView({
                           <button
                             key={s.id}
                             disabled={busy}
-                            title={`${s.d.slice(5)} (${s.weekday}) ${clock(s.start_time)} · ${s.status}`}
+                            title={`${s.d.slice(5)} (${s.weekday}) ${clock(s.start_time)}~${clock(s.end_time)} · ${s.status}${
+                              s.status === '보강'
+                                ? s.makeup_for
+                                  ? (() => {
+                                      const a = sessions.find((x) => x.id === s.makeup_for)
+                                      return a ? ` (${Number(a.d.slice(5, 7))}/${Number(a.d.slice(8))} 결강분)` : ' (지난달 결강분)'
+                                    })()
+                                  : ' (결강과 연결 안 됨)'
+                                : ''
+                            }`}
                             onClick={() => onMark(s.id, s.status === '결강' ? '진행' : '결강')}
                             style={{
                               width: 34, height: 34, borderRadius: 8,
@@ -1227,8 +1253,12 @@ function MonthView({
                             }}
                           >
                             {Number(s.d.slice(-2))}
-                            {s.status === '보강' && (
+                            {s.status === '보강' && s.makeup_for && (
                               <span style={{ position: 'absolute', top: -2, right: -2, fontSize: 9 }}>↻</span>
+                            )}
+                            {s.status === '보강' && !s.makeup_for && (
+                              <span style={{ position: 'absolute', top: -6, right: -5, width: 14, height: 14, lineHeight: '14px', borderRadius: 99,
+                                background: '#D93025', color: '#fff', fontSize: 10, fontWeight: 800 }}>!</span>
                             )}
                           </button>
                         )
@@ -5610,7 +5640,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
         <div style={{ fontSize: 15, fontWeight: 700 }}>
           {ym.replace('-', '년 ')}월 시간표 인쇄
           {/* 새 파일이 제대로 올라갔는지 확인용 — 브라우저가 옛 파일을 기억하고 있으면 이 표시가 안 보입니다 */}
-          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-25</span>
+          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-27</span>
           {mode === 'grid' && (
             <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: imgErr ? C.danger : useImgs ? '#1F7A45' : C.mut }}>
               {imgErr ? `그림 실패: ${imgErr.slice(0, 60)}` : useImgs ? `그림 준비됨 ${imgs.length}장` : '그림 만드는 중'}
@@ -6046,7 +6076,7 @@ function AddSessionModal({ students, staff, programs, absent, pairs = [], onClos
               )}
             </div>
             <div style={{ fontSize: 11.5, color: C.sub, marginTop: 6, lineHeight: 1.55 }}>
-              나눠서 하면 남은 시간이 0분이 될 때까지 보강 목록에 남고, 선생님 급여는 마지막 보강을 마친 달에 한 회로 잡힙니다.
+              나눠서 하면 남은 시간이 0분이 될 때까지 보강 목록에 남습니다. 선생님 급여는 보강으로 50분(한 타임)을 채울 때마다 그 타임만큼, 채운 달에 잡힙니다.
             </div>
           </AddField>
         )}
