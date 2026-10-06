@@ -5610,7 +5610,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
         <div style={{ fontSize: 15, fontWeight: 700 }}>
           {ym.replace('-', '년 ')}월 시간표 인쇄
           {/* 새 파일이 제대로 올라갔는지 확인용 — 브라우저가 옛 파일을 기억하고 있으면 이 표시가 안 보입니다 */}
-          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-24</span>
+          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-25</span>
           {mode === 'grid' && (
             <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: imgErr ? C.danger : useImgs ? '#1F7A45' : C.mut }}>
               {imgErr ? `그림 실패: ${imgErr.slice(0, 60)}` : useImgs ? `그림 준비됨 ${imgs.length}장` : '그림 만드는 중'}
@@ -5926,6 +5926,7 @@ function AddSessionModal({ students, staff, programs, absent, pairs = [], onClos
   const madeMin = absent ? Number(absent.made_min) || 0 : 0
   const leftMin = Math.max(absentMin - madeMin, 0)
   const [partMin, setPartMin] = useState(null) // null = 남은 시간 전부
+  const [typed, setTyped] = useState('') // 직접 입력한 분
   const mins = useMemo(() => {
     if (absent) return partMin && partMin < leftMin ? partMin : leftMin
     return programs.find((p) => p.code === pcode)?.minutes ?? 50
@@ -6012,13 +6013,37 @@ function AddSessionModal({ students, staff, programs, absent, pairs = [], onClos
             </div>
             <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
               {[10, 20, 30].filter((m) => m < leftMin).map((m) => (
-                <Btn key={m} variant={partMin === m ? 'primary' : 'default'} onClick={() => setPartMin(m)} style={{ padding: '7px 12px', fontSize: 13 }}>
+                <Btn key={m} variant={partMin === m && !typed ? 'primary' : 'default'} onClick={() => { setPartMin(m); setTyped('') }} style={{ padding: '7px 12px', fontSize: 13 }}>
                   {m}분
                 </Btn>
               ))}
-              <Btn variant={!partMin || partMin >= leftMin ? 'primary' : 'default'} onClick={() => setPartMin(null)} style={{ padding: '7px 12px', fontSize: 13 }}>
+              <Btn variant={!typed && (!partMin || partMin >= leftMin) ? 'primary' : 'default'} onClick={() => { setPartMin(null); setTyped('') }} style={{ padding: '7px 12px', fontSize: 13 }}>
                 남은 {leftMin}분 전부
               </Btn>
+            </div>
+            {/* 위 칸에 없는 길이는 직접 입력 (예: 100분 수업을 70분만) */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 8 }}>
+              <span style={{ fontSize: 12.5, color: C.sub }}>직접 입력</span>
+              <input
+                type="number"
+                inputMode="numeric"
+                min="1"
+                max={leftMin}
+                step="5"
+                value={typed}
+                placeholder={String(leftMin)}
+                onChange={(e) => {
+                  const v = e.target.value
+                  setTyped(v)
+                  const n = Math.round(Number(v))
+                  setPartMin(n > 0 ? Math.min(n, leftMin) : null)
+                }}
+                style={{ ...addInp, width: 90, textAlign: 'right', borderColor: typed && Number(typed) > leftMin ? C.danger : undefined }}
+              />
+              <span style={{ fontSize: 12.5, color: C.sub }}>분</span>
+              {typed && Number(typed) > leftMin && (
+                <span style={{ fontSize: 12, color: C.danger }}>남은 {leftMin}분까지만 돼요</span>
+              )}
             </div>
             <div style={{ fontSize: 11.5, color: C.sub, marginTop: 6, lineHeight: 1.55 }}>
               나눠서 하면 남은 시간이 0분이 될 때까지 보강 목록에 남고, 선생님 급여는 마지막 보강을 마친 달에 한 회로 잡힙니다.
