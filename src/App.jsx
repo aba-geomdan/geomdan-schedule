@@ -206,6 +206,29 @@ async function loadPayrollDetail(ym, staffId) {
   return ok(await supabase.rpc('payroll_detail', { p_ym: ym, p_staff: staffId }))
 }
 
+// 선생님 관리
+async function staffAdd(name) {
+  return ok(await supabase.rpc('staff_add', { p_name: name }))
+}
+async function staffRename(id, name) {
+  return ok(await supabase.rpc('staff_rename', { p_id: id, p_name: name }))
+}
+async function staffSetActive(id, active) {
+  return ok(await supabase.rpc('staff_set_active', { p_id: id, p_active: active }))
+}
+async function staffMove(id, dir) {
+  return ok(await supabase.rpc('staff_move', { p_id: id, p_dir: dir }))
+}
+async function staffLinkLogin(id, email) {
+  return ok(await supabase.rpc('staff_link_login', { p_id: id, p_email: email }))
+}
+async function loadStaffLogins() {
+  return ok(await supabase.rpc('staff_logins'))
+}
+async function loadStaffList() {
+  return ok(await supabase.from('staff').select('*').order('sort_order'))
+}
+
 async function setPayRate(staffId, rate) {
   return ok(await supabase.rpc('set_pay_rate', { p_staff: staffId, p_rate: rate }))
 }
@@ -5657,7 +5680,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
         <div style={{ fontSize: 15, fontWeight: 700 }}>
           {ym.replace('-', '년 ')}월 시간표 인쇄
           {/* 새 파일이 제대로 올라갔는지 확인용 — 브라우저가 옛 파일을 기억하고 있으면 이 표시가 안 보입니다 */}
-          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-34</span>
+          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-35</span>
           {mode === 'grid' && (
             <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: imgErr ? C.danger : useImgs ? '#1F7A45' : C.mut }}>
               {imgErr ? `그림 실패: ${imgErr.slice(0, 60)}` : useImgs ? `그림 준비됨 ${imgs.length}장` : '그림 만드는 중'}
@@ -6320,6 +6343,183 @@ function PayPrint({ ym, rows, teachersOf, rank, loadMonthDeposits, onClose }) {
       </div>
     </div>,
     document.body
+  )
+}
+
+/* ================= 선생님 관리 ================= */
+function StaffManage({ staff, busy, onChanged, say, toneOf }) {
+  const [logins, setLogins] = useState({})
+  const [newName, setNewName] = useState('')
+  const [working, setWorking] = useState(false)
+  const [showOld, setShowOld] = useState(false)
+  const loadLogins = useCallback(() => {
+    loadStaffLogins()
+      .then((rows) => setLogins(Object.fromEntries((rows || []).map((r) => [r.staff_id, r.email]))))
+      .catch(() => {})
+  }, [])
+  useEffect(() => { loadLogins() }, [loadLogins, staff])
+
+  const run = async (fn, msg) => {
+    setWorking(true)
+    try {
+      const r = await fn()
+      await onChanged()
+      loadLogins()
+      say?.(typeof r === 'string' ? r : msg)
+    } catch (e) {
+      say?.(e.message || String(e), 'err')
+    }
+    setWorking(false)
+  }
+  const now = staff.filter((x) => x.active)
+  const old = staff.filter((x) => !x.active)
+  const dis = busy || working
+  const cell = { padding: '10px 12px', borderBottom: `1px solid ${C.line2}`, verticalAlign: 'middle' }
+
+  return (
+    <div style={{ maxWidth: 880 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+        <div style={{ fontSize: 15, fontWeight: 700 }}>선생님 관리</div>
+        <span style={{ fontSize: 12, color: C.sub }}>지금 {now.length}명</span>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+          <input
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && newName.trim() && run(() => staffAdd(newName.trim()).then(() => setNewName('')), `${newName.trim()} 선생님을 추가했습니다`)}
+            placeholder="새 선생님 이름"
+            style={{ width: 160, fontSize: 13.5, padding: '7px 10px', border: '1px solid #DEE0E3', borderRadius: 8 }}
+          />
+          <Btn variant="primary" disabled={dis || !newName.trim()} onClick={() => run(() => staffAdd(newName.trim()).then(() => setNewName('')), `${newName.trim()} 선생님을 추가했습니다`)}>
+            + 선생님 추가
+          </Btn>
+        </div>
+      </div>
+
+      <Card style={{ overflow: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13.5 }}>
+          <thead>
+            <tr style={{ background: '#FBFBFC', color: C.sub, fontSize: 12 }}>
+              {['순서', '이름', '급여 비율', '로그인', ''].map((h, i) => (
+                <th key={i} style={{ ...cell, fontWeight: 600, textAlign: 'left', borderBottom: `1px solid ${C.line}` }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {now.map((x, i) => {
+              const tone = toneOf ? toneOf(x.name) : null
+              const email = logins[x.id]
+              return (
+                <tr key={x.id}>
+                  <td style={{ ...cell, width: 70, whiteSpace: 'nowrap' }}>
+                    <Btn disabled={dis || i === 0} onClick={() => run(() => staffMove(x.id, -1), '순서를 바꿨습니다')} style={{ padding: '2px 7px', fontSize: 12, marginRight: 3 }}>↑</Btn>
+                    <Btn disabled={dis || i === now.length - 1} onClick={() => run(() => staffMove(x.id, 1), '순서를 바꿨습니다')} style={{ padding: '2px 7px', fontSize: 12 }}>↓</Btn>
+                  </td>
+                  <td style={cell}>
+                    <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 99, background: tone?.fg || '#999', marginRight: 7, verticalAlign: 'middle' }} />
+                    <b>{x.name}</b>
+                    {x.role === 'admin' && <span style={{ marginLeft: 6 }}><Pill tone="pink">원장</Pill></span>}
+                    <button
+                      disabled={dis}
+                      onClick={() => {
+                        const n = prompt('바꿀 이름을 넣어주세요', x.name)
+                        if (n && n.trim() && n.trim() !== x.name) run(() => staffRename(x.id, n.trim()), '이름을 바꿨습니다')
+                      }}
+                      style={{ marginLeft: 6, border: 'none', background: 'none', color: C.mut, cursor: 'pointer', fontSize: 12 }}
+                    >
+                      이름 바꾸기
+                    </button>
+                  </td>
+                  <td style={{ ...cell, whiteSpace: 'nowrap' }}>
+                    {x.role === 'admin' ? (
+                      <span style={{ color: C.mut }}>—</span>
+                    ) : (
+                      <>
+                        <input
+                          key={x.id + ':' + x.pay_rate}
+                          defaultValue={x.pay_rate != null ? Math.round(x.pay_rate * 1000) / 10 : ''}
+                          placeholder="—"
+                          onBlur={(e) => {
+                            const v = e.target.value.trim()
+                            const rate = v === '' ? null : Number(v) / 100
+                            if (v !== '' && (isNaN(rate) || rate < 0 || rate > 1)) return say?.('0에서 100 사이 숫자로 넣어주세요', 'err')
+                            if (rate === (x.pay_rate ?? null)) return
+                            run(() => setPayRate(x.id, rate), '급여 비율을 저장했습니다')
+                          }}
+                          style={{ width: 56, fontSize: 13, padding: '5px 7px', border: '1px solid #DEE0E3', borderRadius: 6, textAlign: 'right' }}
+                        />
+                        <span style={{ fontSize: 12, color: C.sub, marginLeft: 3 }}>%</span>
+                      </>
+                    )}
+                  </td>
+                  <td style={cell}>
+                    {email ? (
+                      <span style={{ fontSize: 12.5, color: '#1F7A45', fontWeight: 600 }}>✓ {email}</span>
+                    ) : (
+                      <span style={{ fontSize: 12.5, color: C.mut }}>연결 안 됨</span>
+                    )}
+                    <button
+                      disabled={dis}
+                      onClick={() => {
+                        const e = prompt(
+                          email
+                            ? `${x.name} 선생님 로그인 이메일을 바꾸려면 새 이메일을, 연결을 끊으려면 비워서 확인을 눌러주세요.`
+                            : `${x.name} 선생님 로그인 이메일을 넣어주세요.\n(Supabase → Authentication → Users 에서 먼저 계정을 만들어야 합니다)`,
+                          email || ''
+                        )
+                        if (e === null) return
+                        run(() => staffLinkLogin(x.id, e.trim()))
+                      }}
+                      style={{ marginLeft: 8, border: 'none', background: 'none', color: C.pkd, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}
+                    >
+                      {email ? '바꾸기' : '연결하기'}
+                    </button>
+                  </td>
+                  <td style={{ ...cell, textAlign: 'right' }}>
+                    {x.role !== 'admin' && (
+                      <Btn
+                        disabled={dis}
+                        onClick={() => {
+                          if (!confirm(`${x.name} 선생님을 퇴사 처리할까요?\n\n· 지난 수업 · 급여 기록은 그대로 남습니다\n· 지금 목록과 시간표 짜기에서만 빠집니다\n· 나중에 다시 재직으로 돌릴 수 있어요`)) return
+                          run(() => staffSetActive(x.id, false), `${x.name} 선생님을 퇴사 처리했습니다`)
+                        }}
+                        style={{ padding: '5px 11px', fontSize: 12, color: C.danger }}
+                      >
+                        퇴사 처리
+                      </Btn>
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </Card>
+
+      <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.7, marginTop: 10 }}>
+        · 새 선생님을 추가하면 <b>시간표 짜기</b>에서 바로 고를 수 있고, 색은 자동으로 정해집니다.<br />
+        · 로그인은 Supabase → Authentication → Users → <b>Add user</b>로 계정을 만든 뒤, 여기서 <b>연결하기</b>에 그 이메일을 넣으면 됩니다. 선생님은 자기 수업 · 출결만 봅니다.
+      </div>
+
+      {old.length > 0 && (
+        <div style={{ marginTop: 18 }}>
+          <button onClick={() => setShowOld(!showOld)} style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: 13, color: C.sub, fontWeight: 600, padding: 0 }}>
+            {showOld ? '▾' : '▸'} 퇴사한 선생님 {old.length}명
+          </button>
+          {showOld && (
+            <Card style={{ marginTop: 8 }}>
+              {old.map((x) => (
+                <div key={x.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 12px', borderBottom: `1px solid ${C.line2}`, fontSize: 13.5 }}>
+                  <span style={{ color: C.sub }}>{x.name}</span>
+                  <Btn disabled={dis} onClick={() => run(() => staffSetActive(x.id, true), `${x.name} 선생님을 다시 재직으로 바꿨습니다`)} style={{ marginLeft: 'auto', padding: '4px 10px', fontSize: 12 }}>
+                    다시 재직
+                  </Btn>
+                </div>
+              ))}
+            </Card>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -7857,6 +8057,7 @@ function App() {
         { k: 'cp', label: '연말정산', on: tab === 'billing' && billGroup === 'copay', go: () => { setTab('billing'); setBillGroup('copay') } },
       ],
     },
+    { h: '관리', items: [{ k: 'staff', label: '선생님 관리', on: tab === 'staff', go: () => setTab('staff') }] },
   ]
   const SIDE_W = 176
 
@@ -8506,6 +8707,16 @@ function App() {
           </>
         )}
 
+
+        {!loading && tab === 'staff' && isAdmin && (
+          <StaffManage
+            staff={staff}
+            busy={busy}
+            say={say}
+            toneOf={toneOf}
+            onChanged={async () => setStaff(await loadStaffList())}
+          />
+        )}
 
         {!loading && tab === 'plan' && isAdmin && (
           <>
