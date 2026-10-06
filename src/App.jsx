@@ -1065,6 +1065,10 @@ function MonthView({
           // 실제로 한 수업 · 결강 · 보강을 따로 셉니다
           lessons: list.filter((x) => x.status === '진행').length,
           absents: list.filter((x) => x.status === '결강').length,
+          // 오른쪽 칸은 회기(50분 = 1회기)로: 100분 = 2, 150분 = 3 · 나눠 보강은 길이만큼 (10분 = 0.2)
+          lessonU: list.filter((x) => x.status === '진행').reduce((a, x) => a + Math.max(1, Math.round(minutesBetween(x.start_time, x.end_time) / 50)), 0),
+          absentU: list.filter((x) => x.status === '결강').reduce((a, x) => a + Math.max(1, Math.round(minutesBetween(x.start_time, x.end_time) / 50)), 0),
+          makeupU: Math.round(list.filter((x) => x.status === '보강').reduce((a, x) => a + minutesBetween(x.start_time, x.end_time) / 50, 0) * 10) / 10,
           makeups: list.filter((x) => x.status === '보강').length,
           // 어느 결강의 보강인지 연결이 안 된 보강 (급여에 한 회로 들어가서 확인이 필요)
           loose: list.filter((x) => x.status === '보강' && !x.makeup_for).length,
@@ -1132,10 +1136,6 @@ function MonthView({
               {sum.absent}회
             </div>
           </div>
-          <div>
-            <div style={{ fontSize: 11.5, color: C.sub }}>시수</div>
-            <div style={{ fontSize: 19, fontWeight: 700 }}>{(sum.minutes / 60).toFixed(1)}h</div>
-          </div>
         </div>
 
         <div
@@ -1148,7 +1148,7 @@ function MonthView({
           {Array.from({ length: weeks }, (_, i) => (
             <span key={i} style={{ width: colW, textAlign: 'center' }}>{i + 1}주</span>
           ))}
-          <span style={{ width: 170, textAlign: 'right' }}>수업 · 결강 · 보강</span>
+          <span style={{ width: 230, textAlign: 'right' }}>수업 · 결강 · 보강 (회기)</span>
         </div>
 
         {rows.length === 0 ? (
@@ -1202,18 +1202,18 @@ function MonthView({
                       </span>
                     )
                   })}
-                  <span style={{ width: 170, display: 'inline-flex', justifyContent: 'flex-end', gap: 4 }}>
+                  <span style={{ width: 230, display: 'inline-flex', justifyContent: 'flex-end', gap: 4 }}>
                     <span style={{ fontSize: 11.5, fontWeight: 700, borderRadius: 99, padding: '2px 8px', background: DOT.진행.bg, color: DOT.진행.fg, whiteSpace: 'nowrap' }}>
-                      수업 {g.lessons}
+                      수업 {g.lessonU}회기
                     </span>
                     {g.absents > 0 && (
                       <span style={{ fontSize: 11.5, fontWeight: 700, borderRadius: 99, padding: '2px 8px', background: DOT.미보강.bg, color: DOT.미보강.fg, whiteSpace: 'nowrap' }}>
-                        결강 {g.absents}
+                        결강 {g.absentU}회기
                       </span>
                     )}
                     {g.makeups > 0 && (
                       <span style={{ fontSize: 11.5, fontWeight: 700, borderRadius: 99, padding: '2px 8px', background: g.loose ? '#FDE3E0' : DOT.보강.bg, color: g.loose ? '#B3261E' : DOT.보강.fg, whiteSpace: 'nowrap' }}>
-                        보강 {g.makeups}{g.loose ? ' !' : ''}
+                        보강 {g.makeupU}회기{g.loose ? ' !' : ''}
                       </span>
                     )}
                   </span>
@@ -1302,12 +1302,6 @@ function TodayView({ today, weekMinutes, onMark, busy }) {
         <Card style={{ flex: 1, padding: '12px 14px' }}>
           <div style={{ fontSize: 11.5, color: C.sub }}>오늘 수업</div>
           <div style={{ fontSize: 22, fontWeight: 700, marginTop: 2 }}>{today.length}건</div>
-        </Card>
-        <Card style={{ flex: 1, padding: '12px 14px' }}>
-          <div style={{ fontSize: 11.5, color: C.sub }}>이번 주 시수</div>
-          <div style={{ fontSize: 22, fontWeight: 700, marginTop: 2 }}>
-            {(weekMinutes / 60).toFixed(1)}h
-          </div>
         </Card>
       </div>
 
@@ -1405,7 +1399,6 @@ function MyClosingView({ ym, summary, closing, onSubmit, onPrevYm, onNextYm, bus
           <Stat label="결강" value={`${summary?.absent_count ?? 0}건`} />
         </div>
         <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
-          <Stat label="시수" value={`${((summary?.total_minutes ?? 0) / 60).toFixed(1)}h`} />
           <Stat label="보강" value={`${summary?.makeup_count ?? 0}건`} />
         </div>
 
@@ -2032,7 +2025,7 @@ function PayrollHistory({ rows, staffOrder = [], ownerName, toneOf, busy, onPaid
             const extra = itemsText(r.extra_items)
             const sessions = r.source === '앱'
               ? r.units != null
-                ? `${fmtUnits(r.units)}타임`
+                ? `${fmtUnits(r.units)}회기`
                 : `회차 ${r.lesson_count}${r.makeup_count > 0 ? ` (보강 ${r.makeup_count})` : ''}`
               : r.sessions_text ? `회기 ${r.sessions_text}` : ''
             return (
@@ -2841,7 +2834,7 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
           ) : (
         <div>
           <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.75, marginBottom: 12 }}>
-            급여 = <b>(진행 + 보강)</b> 수강료 합계 × 선생님 비율. 타임 = 50분 1타임 (100분 = 2, 150분 = 3). 결강은 보강해야 집계됩니다.
+            급여 = <b>(진행 + 보강)</b> 수강료 합계 × 선생님 비율. 회기 = 50분 1회기 (100분 = 2, 150분 = 3). 결강은 보강해야 집계됩니다.
             보강은 <b>보강한 달</b>에 잡혀요.
             <br />
             수강료 청구는 (진행 + 결강) 기준이라 아래 <b>수강료</b> 금액과 정산 탭의 금액이 다를 수 있습니다.
@@ -2850,7 +2843,7 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 660 }}>
               <thead>
                 <tr style={{ background: '#FBFBFC', color: C.sub }}>
-                  {['선생님', '비율', '타임', '보강', '수강료', '수업분', '미보강', '', ''].map((h, i) => (
+                  {['선생님', '비율', '회기', '보강', '수강료', '수업분', '미보강', '', ''].map((h, i) => (
                     <th
                       key={i}
                       style={{
@@ -3035,7 +3028,7 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
                     <thead>
                       <tr style={{ color: C.mut, fontSize: 11.5 }}>
                         <th style={{ textAlign: 'left', padding: '8px 16px', fontWeight: 600 }}>아동</th>
-                        <th style={{ textAlign: 'right', padding: '8px 8px', fontWeight: 600 }}>타임</th>
+                        <th style={{ textAlign: 'right', padding: '8px 8px', fontWeight: 600 }}>회기</th>
                         <th style={{ textAlign: 'right', padding: '8px 16px', fontWeight: 600 }}>수강료</th>
                       </tr>
                     </thead>
@@ -3046,7 +3039,7 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
                             {d.student_name}
                             <div style={{ fontSize: 11, color: C.mut }}>
                               {d.program_label}
-                              {Number(d.makeup_units) > 0 && ` · 보강 ${fmtUnits(d.makeup_units)}타임`}
+                              {Number(d.makeup_units) > 0 && ` · 보강 ${fmtUnits(d.makeup_units)}회기`}
                             </div>
                           </td>
                           <td style={{ padding: '8px 8px', textAlign: 'right', verticalAlign: 'top' }}>
@@ -3387,7 +3380,7 @@ function ClosingView({ ym, rows, staff, onRequest, onReview, onPrevYm, onNextYm,
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 640 }}>
           <thead>
             <tr style={{ background: '#FBFBFC', color: C.sub }}>
-              {['선생님', '상태', '회차', '결강', '시수', '미보강', ''].map((h, i) => (
+              {['선생님', '상태', '회차', '결강', '미보강', ''].map((h, i) => (
                 <th
                   key={i}
                   style={{
@@ -3420,9 +3413,6 @@ function ClosingView({ ym, rows, staff, onRequest, onReview, onPrevYm, onNextYm,
                     </td>
                     <td style={{ padding: '9px 12px', textAlign: 'right' }}>{r?.total_count ?? '—'}</td>
                     <td style={{ padding: '9px 12px', textAlign: 'right' }}>{r?.absent_count ?? '—'}</td>
-                    <td style={{ padding: '9px 12px', textAlign: 'right' }}>
-                      {r?.total_minutes != null ? `${(r.total_minutes / 60).toFixed(1)}h` : '—'}
-                    </td>
                     <td
                       style={{
                         padding: '9px 12px',
@@ -4975,7 +4965,7 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
       <div className={`tt-mk${makeupKids.length > 7 ? ' tt-mk2' : ''}`}>
         <div className="tt-mk-h">
           보강 잡아야 할 것 {makeupKids.reduce((a, k) => a + k.items.length, 0)}건
-          <span>(모두 {makeupKids.reduce((a, k) => a + k.items.reduce((b, x) => b + x.t, 0), 0)}타임)</span>
+          <span>(모두 {makeupKids.reduce((a, k) => a + k.items.reduce((b, x) => b + x.t, 0), 0)}회기)</span>
         </div>
         {makeupKids.map((k) => {   // 보강 남은 아이는 전부 (개수 제한 없음)
           const tot = k.items.reduce((a, x) => a + x.t, 0)
@@ -4983,7 +4973,7 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
             <div key={k.name} className="tt-mk-r">
               <i className="tt-mk-cb" />
               <b>{k.name}</b>
-              <em className={tot >= 2 ? 'tt-mk-t2' : ''}>{tot}타임</em>
+              <em className={tot >= 2 ? 'tt-mk-t2' : ''}>{tot}회기</em>
               <span>
                 {k.items
                   .map((x) => `${Number(x.d.slice(5, 7))}/${Number(x.d.slice(8, 10))}${x.left ? `(남은 ${x.left}분)` : x.t > 1 ? `(${x.t})` : ''}`)
@@ -5650,7 +5640,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
         <div style={{ fontSize: 15, fontWeight: 700 }}>
           {ym.replace('-', '년 ')}월 시간표 인쇄
           {/* 새 파일이 제대로 올라갔는지 확인용 — 브라우저가 옛 파일을 기억하고 있으면 이 표시가 안 보입니다 */}
-          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-29</span>
+          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-31</span>
           {mode === 'grid' && (
             <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: imgErr ? C.danger : useImgs ? '#1F7A45' : C.mut }}>
               {imgErr ? `그림 실패: ${imgErr.slice(0, 60)}` : useImgs ? `그림 준비됨 ${imgs.length}장` : '그림 만드는 중'}
@@ -6086,7 +6076,7 @@ function AddSessionModal({ students, staff, programs, absent, pairs = [], onClos
               )}
             </div>
             <div style={{ fontSize: 11.5, color: C.sub, marginTop: 6, lineHeight: 1.55 }}>
-              나눠서 하면 남은 시간이 0분이 될 때까지 보강 목록에 남습니다. 선생님 급여는 보강으로 50분(한 타임)을 채울 때마다 그 타임만큼, 채운 달에 잡힙니다.
+              나눠서 하면 남은 시간이 0분이 될 때까지 보강 목록에 남습니다. 선생님 급여는 보강으로 50분(1회기)을 채울 때마다 그 회기만큼, 채운 달에 잡힙니다.
             </div>
           </AddField>
         )}
