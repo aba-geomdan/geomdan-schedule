@@ -4922,7 +4922,11 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
     ;[...unmade].sort((a, b) => a.d.localeCompare(b.d) || a.start_time.localeCompare(b.start_time)).forEach((u) => {
       const k = u.student_name
       if (!m[k]) m[k] = { name: k, first: u.d, items: [] }
-      m[k].items.push({ d: u.d, t: tOf(u) })
+      // 나눠 보강 중이면 남은 분만큼만 (예: 50분 중 10분 했으면 남은 40분)
+      const total = Math.round(ttMin(u.end_time) - ttMin(u.start_time))
+      const left = Math.max(total - (Number(u.made_min) || 0), 0)
+      const t = left < total ? Math.max(1, Math.round((tOf(u) * left) / total)) : tOf(u)
+      m[k].items.push({ d: u.d, t, left: left < total ? left : null })
     })
     return Object.values(m).sort((a, b) => a.first.localeCompare(b.first))
   }, [unmade])
@@ -4942,7 +4946,7 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
               <em className={tot >= 2 ? 'tt-mk-t2' : ''}>{tot}타임</em>
               <span>
                 {k.items
-                  .map((x) => `${Number(x.d.slice(5, 7))}/${Number(x.d.slice(8, 10))}${x.t > 1 ? `(${x.t})` : ''}`)
+                  .map((x) => `${Number(x.d.slice(5, 7))}/${Number(x.d.slice(8, 10))}${x.left ? `(남은 ${x.left}분)` : x.t > 1 ? `(${x.t})` : ''}`)
                   .join('  ·  ')}
               </span>
             </div>
@@ -5606,7 +5610,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
         <div style={{ fontSize: 15, fontWeight: 700 }}>
           {ym.replace('-', '년 ')}월 시간표 인쇄
           {/* 새 파일이 제대로 올라갔는지 확인용 — 브라우저가 옛 파일을 기억하고 있으면 이 표시가 안 보입니다 */}
-          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-23</span>
+          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-24</span>
           {mode === 'grid' && (
             <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: imgErr ? C.danger : useImgs ? '#1F7A45' : C.mut }}>
               {imgErr ? `그림 실패: ${imgErr.slice(0, 60)}` : useImgs ? `그림 준비됨 ${imgs.length}장` : '그림 만드는 중'}
@@ -5761,6 +5765,11 @@ function MakeupLog({ rows, staffOrder = [], ownerName, toneOf, busy, isAdmin, un
           {r.makeup_staff} 선생님이 함
         </span>
       )}
+      {!r.makeup_d && r.made_min > 0 && (
+        <span style={{ fontSize: 12, color: '#8A5A00', background: '#FEF6E7', borderRadius: 99, padding: '2px 9px', whiteSpace: 'nowrap' }}>
+          나눠 보강 중 · {r.parts} · 남은 {Math.max((r.absent_min || 0) - r.made_min, 0)}분
+        </span>
+      )}
       {!r.makeup_d && isAdmin && canBook.has(r.absent_id) && (
         <Btn
           variant="primary"
@@ -5907,15 +5916,20 @@ function AddSessionModal({ students, staff, programs, absent, pairs = [], onClos
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [regular])
   const [start, setStart] = useState(absent ? hhmm(absent.start_time) : '19:00')
-  // 길이는 프로그램이 정합니다. 보강은 원래 결강 수업과 같은 길이로.
+  // 길이는 프로그램이 정합니다. 보강은 결강 수업에서 '남은 시간'까지 — 나눠서(예: 10분씩) 할 수도 있습니다.
+  const absentMin = useMemo(() => {
+    if (!absent) return 0
+    const [h1, m1] = absent.start_time.split(':').map(Number)
+    const [h2, m2] = absent.end_time.split(':').map(Number)
+    return h2 * 60 + m2 - (h1 * 60 + m1)
+  }, [absent])
+  const madeMin = absent ? Number(absent.made_min) || 0 : 0
+  const leftMin = Math.max(absentMin - madeMin, 0)
+  const [partMin, setPartMin] = useState(null) // null = 남은 시간 전부
   const mins = useMemo(() => {
-    if (absent) {
-      const [h1, m1] = absent.start_time.split(':').map(Number)
-      const [h2, m2] = absent.end_time.split(':').map(Number)
-      return h2 * 60 + m2 - (h1 * 60 + m1)
-    }
+    if (absent) return partMin && partMin < leftMin ? partMin : leftMin
     return programs.find((p) => p.code === pcode)?.minutes ?? 50
-  }, [absent, pcode, programs])
+  }, [absent, leftMin, partMin, pcode, programs])
   const [note, setNote] = useState(absent ? `${absent.d.slice(5).replace('-', '/')} 결강분` : '')
   // 앱 쓰기 전 기록이 대부분이라 직접 추가는 기본이 '청구 안 함'
   const [noCharge, setNoCharge] = useState(!absent)
@@ -5990,7 +6004,29 @@ function AddSessionModal({ students, staff, programs, absent, pairs = [], onClos
           {dow && <div style={{ fontSize: 11.5, color: C.mut, marginTop: 5 }}>{dow}요일</div>}
         </AddField>
 
-        <AddField label={`시작 시각 (${mins}분 수업)`}>
+        {linked && (
+          <AddField label="보강 시간">
+            <div style={{ fontSize: 12.5, marginBottom: 7, padding: '7px 10px', borderRadius: 8, background: '#FEF6E7', color: '#8A5A00', lineHeight: 1.6 }}>
+              결강 {absentMin}분 중 <b>남은 보강 {leftMin}분</b>
+              {madeMin > 0 && ` · 지금까지 ${madeMin}분 함`}
+            </div>
+            <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+              {[10, 20, 30].filter((m) => m < leftMin).map((m) => (
+                <Btn key={m} variant={partMin === m ? 'primary' : 'default'} onClick={() => setPartMin(m)} style={{ padding: '7px 12px', fontSize: 13 }}>
+                  {m}분
+                </Btn>
+              ))}
+              <Btn variant={!partMin || partMin >= leftMin ? 'primary' : 'default'} onClick={() => setPartMin(null)} style={{ padding: '7px 12px', fontSize: 13 }}>
+                남은 {leftMin}분 전부
+              </Btn>
+            </div>
+            <div style={{ fontSize: 11.5, color: C.sub, marginTop: 6, lineHeight: 1.55 }}>
+              나눠서 하면 남은 시간이 0분이 될 때까지 보강 목록에 남고, 선생님 급여는 마지막 보강을 마친 달에 한 회로 잡힙니다.
+            </div>
+          </AddField>
+        )}
+
+        <AddField label={`시작 시각 (${mins}분${linked ? ' 보강' : ' 수업'})`}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
             <input type="time" step={300} value={start} onChange={(e) => setStart(e.target.value)} style={{ ...addInp, width: 'auto' }} />
             <span style={{ fontSize: 13, color: C.sub }}>~ {clock(end)}</span>
