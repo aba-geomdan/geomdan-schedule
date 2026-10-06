@@ -1081,6 +1081,10 @@ function MonthView({
     () => ({
       done: rows.reduce((a, b) => a + b.done, 0),
       absent: rows.reduce((a, b) => a + b.absent, 0),
+      // 위쪽 합계도 오른쪽 칸과 같은 회기로 (50분 = 1회기)
+      lessonU: rows.reduce((a, b) => a + b.lessonU, 0),
+      absentU: rows.reduce((a, b) => a + b.absentU, 0),
+      makeupU: Math.round(rows.reduce((a, b) => a + b.makeupU, 0) * 10) / 10,
       minutes: rows.reduce((a, b) => a + b.minutes, 0),
     }),
     [rows]
@@ -1127,13 +1131,19 @@ function MonthView({
       <Card style={{ overflow: 'hidden' }}>
         <div style={{ padding: '11px 14px', borderBottom: `1px solid ${C.line2}`, display: 'flex', gap: 18 }}>
           <div>
-            <div style={{ fontSize: 11.5, color: C.sub }}>한 수업</div>
-            <div style={{ fontSize: 19, fontWeight: 700 }}>{sum.done}회</div>
+            <div style={{ fontSize: 11.5, color: C.sub }}>수업</div>
+            <div style={{ fontSize: 19, fontWeight: 700 }}>{sum.lessonU}회기</div>
           </div>
           <div>
             <div style={{ fontSize: 11.5, color: C.sub }}>결강</div>
-            <div style={{ fontSize: 19, fontWeight: 700, color: sum.absent ? C.danger : C.ink }}>
-              {sum.absent}회
+            <div style={{ fontSize: 19, fontWeight: 700, color: sum.absentU ? C.danger : C.ink }}>
+              {sum.absentU}회기
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: 11.5, color: C.sub }}>보강</div>
+            <div style={{ fontSize: 19, fontWeight: 700, color: sum.makeupU ? '#0C447C' : C.ink }}>
+              {sum.makeupU}회기
             </div>
           </div>
         </div>
@@ -5640,7 +5650,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
         <div style={{ fontSize: 15, fontWeight: 700 }}>
           {ym.replace('-', '년 ')}월 시간표 인쇄
           {/* 새 파일이 제대로 올라갔는지 확인용 — 브라우저가 옛 파일을 기억하고 있으면 이 표시가 안 보입니다 */}
-          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-31</span>
+          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-32</span>
           {mode === 'grid' && (
             <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: imgErr ? C.danger : useImgs ? '#1F7A45' : C.mut }}>
               {imgErr ? `그림 실패: ${imgErr.slice(0, 60)}` : useImgs ? `그림 준비됨 ${imgs.length}장` : '그림 만드는 중'}
