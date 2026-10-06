@@ -2695,7 +2695,7 @@ function RevenueMenu({ total, loadRevenueList }) {
   )
 }
 
-function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onPrintAll, onSetRate, onDetail, busy, closing, closings = [], onClose, staffOrder = [], ownerName, payHistory = [], onPayrollPaid, toneOf, allStaff = [], onSaveExtras, onSaveManual, onDeleteManual, loadCopay, loadRevenueList, say }) {
+function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onPrintAll, onSetRate, onDetail, busy, closing, closings = [], onClose, staffOrder = [], ownerName, payHistory = [], onPayrollPaid, toneOf, allStaff = [], onSaveExtras, onSaveManual, onDeleteManual, loadCopay, loadRevenueList, say, group: groupProp, onGroup }) {
   // 이 달 마감한 선생님
   const closedSet = useMemo(() => new Set((closings || []).filter((c) => c.status === '승인').map((c) => c.staff_name)), [closings])
   // 정산 화면 선생님 순서: 원장님은 맨 위 고정, 나머지는 등록 순서 (금액과 상관없이 늘 같은 자리)
@@ -2705,7 +2705,10 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
     const ia = staffOrder.indexOf(an), ib = staffOrder.indexOf(bn)
     return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || an.localeCompare(bn, 'ko')
   }
-  const [group, setGroup] = useState('staff')
+  // 영수증 · 급여 · 연말정산 — 왼쪽 메뉴에서 정하면 그걸 따르고, 아니면 이 화면 안 버튼으로
+  const [groupLocal, setGroupLocal] = useState('staff')
+  const group = groupProp || groupLocal
+  const setGroup = onGroup || setGroupLocal
   const [payTab, setPayTab] = useState('now')
   const receiptShown = useMemo(() => new Set(), [byStaff, group])
   const [detailFor, setDetailFor] = useState(null)
@@ -2780,7 +2783,10 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
-        <div style={{ fontSize: 15, fontWeight: 700 }}>{ym.replace('-', '년 ')}월 정산</div>
+        <div style={{ fontSize: 15, fontWeight: 700 }}>
+          {ym.replace('-', '년 ')}월 {groupProp ? { staff: '영수증', payroll: '급여', copay: '연말정산' }[groupProp] : '정산'}
+        </div>
+        {!groupProp && (
         <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 8 }}>
           {[['staff', '영수증'], ['payroll', '급여'], ['copay', '연말정산']].map(([k, label]) => (
             <button
@@ -2798,7 +2804,8 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
             </button>
           ))}
         </div>
-        {group !== 'copay' && (
+        )}
+        {(groupProp ? group === 'staff' : group !== 'copay') && (
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
             <Btn onClick={() => onPrintAll(printOrder)} disabled={printOrder.length === 0}>
               영수증 {printOrder.length}장 인쇄
@@ -5650,7 +5657,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
         <div style={{ fontSize: 15, fontWeight: 700 }}>
           {ym.replace('-', '년 ')}월 시간표 인쇄
           {/* 새 파일이 제대로 올라갔는지 확인용 — 브라우저가 옛 파일을 기억하고 있으면 이 표시가 안 보입니다 */}
-          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-32</span>
+          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-34</span>
           {mode === 'grid' && (
             <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: imgErr ? C.danger : useImgs ? '#1F7A45' : C.mut }}>
               {imgErr ? `그림 실패: ${imgErr.slice(0, 60)}` : useImgs ? `그림 준비됨 ${imgs.length}장` : '그림 만드는 중'}
@@ -6319,8 +6326,10 @@ function PayPrint({ ym, rows, teachersOf, rank, loadMonthDeposits, onClose }) {
 function PaymentView({
   ym, rows, revenue, busy, onDeposit, onRefund, onRemoveDeposit, loadHistory, say,
   byStaff = [], staffOrder = [], ownerName, toneOf, loadMonthDeposits,
+  // 수강료 화면(영수증 + 입금 합침)
+  receipts = [], kids = [], printOrder = [], onOpenReceipt, onPrintAll, loadRevenueList,
 }) {
-  const [filter, setFilter] = useState('unpaid')
+  const [filter, setFilter] = useState(onOpenReceipt ? 'all' : 'unpaid')
   const [printOpen, setPrintOpen] = useState(false)
   const [depositFor, setDepositFor] = useState(null)
   const [refundFor, setRefundFor] = useState(null)
@@ -6387,9 +6396,23 @@ function PaymentView({
 
   return (
     <div>
+      {onOpenReceipt && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 15, fontWeight: 700 }}>{ym.replace('-', '년 ')}월 수강료</div>
+          <span style={{ fontSize: 12, color: C.sub }}>
+            영수증 {receipts.filter((x) => x.locked).length}/{kids.length}명 발행
+          </span>
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
+            <Btn onClick={() => onPrintAll(printOrder)} disabled={printOrder.length === 0}>
+              영수증 {printOrder.length}장 인쇄
+            </Btn>
+            <RevenueMenu total={t.billed} loadRevenueList={loadRevenueList} />
+          </div>
+        </div>
+      )}
       <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
         <Stat label="이 달 청구" value={`${won(t.billed)}원`} />
-        <Stat label="충당됨" value={`${won(t.allocated)}원`} tone="#1F5B3A" />
+        <Stat label={onOpenReceipt ? '받은 돈' : '충당됨'} value={`${won(t.allocated)}원`} tone="#1F5B3A" />
         <Stat
           label={`미수 (${t.unpaid.length}명)`}
           value={`${won(t.balance)}원`}
@@ -6434,7 +6457,7 @@ function PaymentView({
           미납 안내 문구 복사
         </Btn>
         <Btn onClick={() => setPrintOpen(true)} disabled={!rows.length}>
-          한 장 인쇄
+          입금 내역 한 장 인쇄
         </Btn>
       </div>
       {printOpen && (
@@ -6452,12 +6475,15 @@ function PaymentView({
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 660 }}>
           <thead>
             <tr style={{ background: '#FBFBFC', color: C.sub }}>
-              {['아동', '담당', '이 달 청구', '충당', '미수', '선입금 잔액', ''].map((h, i) => (
+              {(onOpenReceipt
+                ? ['아동', '담당', '이 달 청구', '영수증', '받은 돈', '미수', '선입금 잔액', '']
+                : ['아동', '담당', '이 달 청구', '충당', '미수', '선입금 잔액', '']
+              ).map((h, i, arr) => (
                 <th
                   key={i}
                   style={{
                     padding: '9px 12px',
-                    textAlign: i >= 2 && i <= 5 ? 'right' : 'left',
+                    textAlign: i >= 2 && i <= arr.length - 2 ? (onOpenReceipt && i === 3 ? 'center' : 'right') : 'left',
                     fontWeight: 600,
                     borderBottom: `1px solid ${C.line}`,
                     whiteSpace: 'nowrap',
@@ -6471,7 +6497,7 @@ function PaymentView({
           <tbody>
             {shown.length === 0 && (
               <tr>
-                <td colSpan={7}>
+                <td colSpan={onOpenReceipt ? 8 : 7}>
                   <Empty>해당하는 아동이 없습니다.</Empty>
                 </td>
               </tr>
@@ -6479,7 +6505,7 @@ function PaymentView({
             {groups.map((g) => [
               <tr key={'h-' + g.name}>
                 <td
-                  colSpan={7}
+                  colSpan={onOpenReceipt ? 8 : 7}
                   style={{
                     padding: '8px 12px', fontWeight: 700, fontSize: 13,
                     background: toneOf ? toneOf(g.name).bg : '#F7F8F9',
@@ -6499,7 +6525,7 @@ function PaymentView({
               const done = r.balance <= 0
               const partial = r.allocated > 0 && r.balance > 0
               return (
-                <tr key={r.student_id} style={{ borderBottom: `1px solid ${C.line2}` }}>
+                <tr key={r.student_id} style={{ borderBottom: `1px solid ${C.line2}`, background: onOpenReceipt && r.balance > 0 ? '#FFF6F7' : undefined }}>
                   <td style={{ padding: '9px 12px', fontWeight: 700, whiteSpace: 'nowrap' }}>
                     {r.student_name}
                     {done && (
@@ -6517,6 +6543,28 @@ function PaymentView({
                     {(teachersOf[r.student_id] || [r.staff_name]).join(' · ')}
                   </td>
                   <td style={{ padding: '9px 12px', textAlign: 'right' }}>{won(r.billed)}</td>
+                  {onOpenReceipt && (() => {
+                    const kid = kids.find((x) => x.id === r.student_id)
+                    const rc = receipts.find((x) => x.student_id === r.student_id)
+                    return (
+                      <td style={{ padding: '9px 12px', textAlign: 'center', whiteSpace: 'nowrap' }}>
+                        {!kid ? (
+                          <span style={{ color: '#C9CCD1' }}>—</span>
+                        ) : rc?.locked ? (
+                          <button
+                            onClick={() => onOpenReceipt(kid)}
+                            style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#1F7A45', fontWeight: 700, fontSize: 12.5 }}
+                          >
+                            발행 ✓
+                          </button>
+                        ) : (
+                          <Btn onClick={() => onOpenReceipt(kid)} style={{ padding: '4px 11px', fontSize: 12 }}>
+                            발행
+                          </Btn>
+                        )}
+                      </td>
+                    )
+                  })()}
                   <td
                     style={{
                       padding: '9px 12px', textAlign: 'right',
@@ -7390,6 +7438,7 @@ function App() {
   const [printAll, setPrintAll] = useState(null)
   const [needRegen, setNeedRegen] = useState(false)
   const [schedView, setSchedView] = useState('month')
+  const [billGroup, setBillGroup] = useState('staff') // 정산 화면: 영수증 · 급여 · 연말정산 (왼쪽 메뉴)
   const [editStudent, setEditStudent] = useState(null)
   const [ttPrint, setTtPrint] = useState(false)
   const [receiptExtras, setReceiptExtras] = useState([])
@@ -7724,6 +7773,28 @@ function App() {
     [sessions, isAdmin, filter]
   )
 
+  // 수강료 화면(영수증 + 입금)용: 아동별 영수증 묶음과 인쇄 순서 (선생님 순서대로)
+  const billKids = useMemo(() => {
+    const m = {}
+    ;(billing || []).forEach((l) => {
+      if (!m[l.student_id])
+        m[l.student_id] = { id: l.student_id, name: l.student_name, label: l.label || l.student_name, lines: [], subtotal: 0, unmade: 0 }
+      m[l.student_id].lines.push(l)
+      m[l.student_id].subtotal += l.amount
+      m[l.student_id].unmade += l.unmade_up
+    })
+    return Object.values(m).sort((a, b) => a.name.localeCompare(b.name, 'ko'))
+  }, [billing])
+  const billPrintOrder = useMemo(() => {
+    const order = staff.map((x) => x.name)
+    const rank = (n) => (order.indexOf(n) < 0 ? 99 : order.indexOf(n))
+    const firstStaff = {}
+    ;(byStaff || []).forEach((r) => {
+      if (!(r.student_id in firstStaff) || rank(r.staff_name) < rank(firstStaff[r.student_id])) firstStaff[r.student_id] = r.staff_name
+    })
+    return [...billKids].sort((a, b) => rank(firstStaff[a.id]) - rank(firstStaff[b.id]) || a.name.localeCompare(b.name, 'ko'))
+  }, [billKids, byStaff, staff])
+
   /* ---- 로그인 화면 ---- */
   if (!hasKey) return <SetupNeeded />
   if (session === undefined) return <Loading />
@@ -7766,12 +7837,73 @@ function App() {
 
   const activeGroup = groups.find((g) => g.items.some(([k]) => k === tab)) || groups[0]
 
+  // 원장님 화면: 왼쪽 메뉴 하나로 모든 화면을 한 번에 (컴퓨터 기준)
+  const side = [
+    { h: null, items: [{ k: 'home', label: '홈', on: tab === 'home', go: () => setTab('home') }] },
+    {
+      h: '수업',
+      items: [
+        { k: 'att', label: '출결', on: tab === 'month' && schedView === 'month', go: () => { setTab('month'); setSchedView('month') } },
+        { k: 'week', label: '주간 시간표', on: tab === 'month' && schedView === 'week', go: () => { setTab('month'); setSchedView('week') } },
+        { k: 'mk', label: '보강', badge: unmadeUp.length, on: tab === 'month' && schedView === 'makeup', go: () => { setTab('month'); setSchedView('makeup') } },
+        { k: 'plan', label: '시간표 짜기', on: tab === 'plan', go: () => setTab('plan') },
+      ],
+    },
+    {
+      h: '돈',
+      items: [
+        { k: 'pay', label: '수강료', badge: unpaidCount, on: tab === 'payment' || (tab === 'billing' && billGroup === 'staff'), go: () => setTab('payment') },
+        { k: 'pr', label: '급여', on: tab === 'billing' && billGroup === 'payroll', go: () => { setTab('billing'); setBillGroup('payroll') } },
+        { k: 'cp', label: '연말정산', on: tab === 'billing' && billGroup === 'copay', go: () => { setTab('billing'); setBillGroup('copay') } },
+      ],
+    },
+  ]
+  const SIDE_W = 176
+
   return (
-    <div style={{ minHeight: '100vh', background: C.bg }} className={printAll ? 'app-hidden-on-print' : ''}>
+    <div style={{ minHeight: '100vh', background: C.bg, paddingLeft: isAdmin ? SIDE_W : 0 }} className={`${printAll ? 'app-hidden-on-print' : ''}${isAdmin ? ' app-with-side' : ''}`}>
+      {isAdmin && (
+        <nav
+          className="no-print"
+          style={{
+            position: 'fixed', left: 0, top: 0, bottom: 0, width: SIDE_W, boxSizing: 'border-box', zIndex: 20,
+            background: '#fff', borderRight: `1px solid ${C.line}`, padding: '16px 10px', overflowY: 'auto',
+          }}
+        >
+          <style>{`@media print { .app-with-side { padding-left: 0 !important; } }`}</style>
+          <div style={{ fontSize: 16, fontWeight: 800, padding: '2px 8px 14px' }}>검단ABA 시간표</div>
+          {side.map((g, gi) => (
+            <div key={gi} style={{ marginBottom: 8 }}>
+              {g.h && <div style={{ fontSize: 11.5, color: C.mut, fontWeight: 700, padding: '10px 8px 4px' }}>{g.h}</div>}
+              {g.items.map((it) => (
+                <button
+                  key={it.k}
+                  onClick={it.go}
+                  style={{
+                    display: 'flex', alignItems: 'center', width: '100%', border: 'none', cursor: 'pointer',
+                    padding: '9px 10px', marginBottom: 2, borderRadius: 8, fontSize: 14, textAlign: 'left',
+                    fontWeight: it.on ? 800 : 500,
+                    background: it.on ? C.pkl : 'transparent',
+                    color: it.on ? C.pkd : C.ink,
+                  }}
+                >
+                  <span>{it.label}</span>
+                  {it.badge > 0 && (
+                    <span style={{ marginLeft: 'auto', fontSize: 11.5, fontWeight: 700, borderRadius: 99, padding: '1px 7px', background: C.pkd, color: '#fff' }}>
+                      {it.badge}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          ))}
+        </nav>
+      )}
       <div className="no-print" style={{ background: '#fff', borderBottom: `1px solid ${C.line}`, padding: '12px 16px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', maxWidth: 1200, margin: '0 auto' }}>
-          <div style={{ fontSize: 16, fontWeight: 700 }}>검단ABA 시간표</div>
+          {!isAdmin && <div style={{ fontSize: 16, fontWeight: 700 }}>검단ABA 시간표</div>}
 
+          {!isAdmin && (
           <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 8 }}>
             {groups.map((g) => {
               const on = activeGroup.key === g.key
@@ -7802,6 +7934,7 @@ function App() {
               )
             })}
           </div>
+          )}
 
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ fontSize: 13, fontWeight: 600 }}>{me?.name || '—'}</span>
@@ -7813,7 +7946,7 @@ function App() {
         </div>
       </div>
 
-      {activeGroup.items.length > 1 && (
+      {!isAdmin && activeGroup.items.length > 1 && (
         <div
           className="no-print"
           style={{ background: '#fff', borderBottom: `1px solid ${C.line}`, padding: '0 16px' }}
@@ -7952,6 +8085,7 @@ function App() {
 
         {!loading && tab === 'month' && (
           <div className="no-print" style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+          {!isAdmin && (
           <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 9, width: 'fit-content' }}>
             {[
               ['month', '월'],
@@ -7973,6 +8107,7 @@ function App() {
               </button>
             ))}
           </div>
+          )}
           {isAdmin && (
             <Btn onClick={() => setTtPrint(true)} style={{ marginLeft: 'auto', padding: '6px 13px', fontSize: 12.5 }}>
               시간표 인쇄
@@ -8142,7 +8277,7 @@ function App() {
           />
         )}
 
-        {!loading && tab === 'billing' && isAdmin && (
+        {!loading && tab === 'billing' && billGroup !== 'staff' && isAdmin && (
           <>
             <div className="no-print" style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 12, flexWrap: 'wrap' }}>
               <Btn onClick={() => setYm(shiftYm(ym, -1))} style={{ padding: '6px 11px' }}>
@@ -8170,6 +8305,8 @@ function App() {
             </div>
             <BillingView
               ym={ym}
+              group={billGroup}
+              onGroup={setBillGroup}
               staffOrder={staff.map((x) => x.name)}
               toneOf={toneOf}
               closings={closings}
@@ -8305,7 +8442,7 @@ function App() {
           </>
         )}
 
-        {!loading && tab === 'payment' && isAdmin && (
+        {!loading && (tab === 'payment' || (tab === 'billing' && billGroup === 'staff')) && isAdmin && (
           <>
             <div className="no-print" style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 12, flexWrap: 'wrap' }}>
               <Btn onClick={() => setYm(shiftYm(ym, -1))} style={{ padding: '6px 11px' }}>←</Btn>
@@ -8326,6 +8463,12 @@ function App() {
               say={say}
               loadHistory={depositHistory}
               loadMonthDeposits={loadDepositsInMonth}
+              receipts={receipts}
+              kids={billKids}
+              printOrder={billPrintOrder}
+              onOpenReceipt={setReceiptFor}
+              onPrintAll={setPrintAll}
+              loadRevenueList={loadRevenueByMonth}
               onDeposit={async (sid, v) => {
                 setBusy(true)
                 try {
