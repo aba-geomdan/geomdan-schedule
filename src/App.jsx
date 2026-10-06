@@ -5319,7 +5319,9 @@ function WeekSheet({ ym, days, weekNo, teachers, sessions, outside, holidays, le
   )
 }
 
-function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerName, loadHolidays, toneOf, colorOf, onClose, onlyTeacher, say }) {
+function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerName, loadHolidays, toneOf, colorOf, onClose, onlyTeacher, say, inline = false }) {
+  // inline: '시간표 → 한 달' 화면 안에 인쇄와 같은 모양으로 바로 보여줄 때 (인쇄 창 · 그림 만들기 없이)
+  const rootRef = useRef(null)
   const teachers = useMemo(() => staff.filter((x) => x.active), [staff])
   // 시간표 화면에서 선생님을 골라둔 채 인쇄를 누르면 그 선생님만 골라진 상태로 엽니다
   const [picked, setPicked] = useState(() => {
@@ -5336,7 +5338,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
   const [imgErr, setImgErr] = useState('')
   const snapKey = mode + '|' + [...picked].sort().join(',') + '|' + ym + '|' + sessions.length + '|' + hols.length + '|' + unmade.length
   useEffect(() => {
-    if (mode !== 'grid') return
+    if (mode !== 'grid' || inline) return
     let on = true
     setImgs(null)
     setMaking(true)
@@ -5344,7 +5346,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
     const t = setTimeout(async () => {
       try {
         const { toPng } = await import('html-to-image')
-        const nodes = [...document.querySelectorAll('.tt-root .tt-gcap')]
+        const nodes = [...(rootRef.current || document).querySelectorAll('.tt-gcap')]
         if (!nodes.length) throw new Error('시간표를 찾지 못함')
         const out = []
         for (const n of nodes) {
@@ -5386,11 +5388,11 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
     try {
       let files = [] // [{ name, url }]
       if (mode === 'grid') {
-        const names = [...document.querySelectorAll('.tt-root .tt-gcap')].map((n) => n.dataset.name || '')
+        const names = [...(rootRef.current || document).querySelectorAll('.tt-gcap')].map((n) => n.dataset.name || '')
         files = (imgs || []).map((url, i) => ({ name: `${names[i] || i + 1} ${mLabel} 시간표.png`, url }))
       } else {
         const { toPng } = await import('html-to-image')
-        const nodes = [...document.querySelectorAll('.tt-root .tt-wrap .tt-page')]
+        const nodes = [...(rootRef.current || document).querySelectorAll('.tt-wrap .tt-page')]
         for (let i = 0; i < nodes.length; i++) {
           const n = nodes[i]
           const url = await toPng(n, {
@@ -5483,9 +5485,11 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
 
   const pageCount = mode === 'all' ? weeks.length : shown.length
 
-  return createPortal(
-    <div className={`tt-root${useImgs ? ' tt-hasimgs' : ''}`}>
-      <style>{`
+  // 화면 안에 넣을 때는 인쇄용 규칙(@media print)을 빼서, 다른 화면 인쇄에 영향이 없게 합니다
+  const ttCss = (css) => (inline ? css.replace(/@media print \{[\s\S]*$/, '') : css)
+  const node = (
+    <div ref={rootRef} className={`tt-root${useImgs ? ' tt-hasimgs' : ''}${inline ? ' tt-inline' : ''}`}>
+      <style>{ttCss(`
         .tt-root { position: fixed; inset: 0; background: #E9EAEC; z-index: 100; overflow: auto; }
         .tt-bar { position: sticky; top: 0; z-index: 2; background: #fff; border-bottom: 1px solid ${C.line};
           padding: 11px 16px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -5674,13 +5678,21 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
           .tt-imgpage:last-child { break-after: auto; page-break-after: auto; }
           .tt-imgpage img { display: block; width: 100%; height: auto; max-height: 194mm; object-fit: contain; margin: 0 auto; }
         }
-      `}</style>
+      `)}</style>
+      {inline && (
+        <style>{`
+          .tt-root.tt-inline { position: static; inset: auto; background: transparent; overflow: visible; z-index: auto; }
+          .tt-inline .tt-wrap { padding: 0 0 20px; }
+          .tt-inline .tt-page { margin: 0 0 14px; box-shadow: 0 1px 4px rgba(0,0,0,.10); }
+        `}</style>
+      )}
 
+      {!inline && (
       <div className="tt-bar">
         <div style={{ fontSize: 15, fontWeight: 700 }}>
           {ym.replace('-', '년 ')}월 시간표 인쇄
           {/* 새 파일이 제대로 올라갔는지 확인용 — 브라우저가 옛 파일을 기억하고 있으면 이 표시가 안 보입니다 */}
-          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-35</span>
+          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-37</span>
           {mode === 'grid' && (
             <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: imgErr ? C.danger : useImgs ? '#1F7A45' : C.mut }}>
               {imgErr ? `그림 실패: ${imgErr.slice(0, 60)}` : useImgs ? `그림 준비됨 ${imgs.length}장` : '그림 만드는 중'}
@@ -5744,6 +5756,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
           <Btn onClick={onClose}>닫기</Btn>
         </div>
       </div>
+      )}
 
       <div className="tt-wrap">
         {mode === 'all' &&
@@ -5790,9 +5803,9 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
           ))}
         </div>
       )}
-    </div>,
-    document.body
+    </div>
   )
+  return inline ? node : createPortal(node, document.body)
 }
 
 
@@ -7639,6 +7652,7 @@ function App() {
   const [needRegen, setNeedRegen] = useState(false)
   const [schedView, setSchedView] = useState('month')
   const [billGroup, setBillGroup] = useState('staff') // 정산 화면: 영수증 · 급여 · 연말정산 (왼쪽 메뉴)
+  const [weekMode, setWeekMode] = useState('week') // 시간표 화면: 이번 주 | 한 달
   const [editStudent, setEditStudent] = useState(null)
   const [ttPrint, setTtPrint] = useState(false)
   const [receiptExtras, setReceiptExtras] = useState([])
@@ -8044,7 +8058,7 @@ function App() {
       h: '수업',
       items: [
         { k: 'att', label: '출결', on: tab === 'month' && schedView === 'month', go: () => { setTab('month'); setSchedView('month') } },
-        { k: 'week', label: '주간 시간표', on: tab === 'month' && schedView === 'week', go: () => { setTab('month'); setSchedView('week') } },
+        { k: 'week', label: '시간표', on: tab === 'month' && schedView === 'week', go: () => { setTab('month'); setSchedView('week') } },
         { k: 'mk', label: '보강', badge: unmadeUp.length, on: tab === 'month' && schedView === 'makeup', go: () => { setTab('month'); setSchedView('makeup') } },
         { k: 'plan', label: '시간표 짜기', on: tab === 'plan', go: () => setTab('plan') },
       ],
@@ -8358,6 +8372,31 @@ function App() {
         {!loading && tab === 'month' && schedView === 'week' && (
           <>
             <div className="no-print" style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 12, flexWrap: 'wrap' }}>
+              {isAdmin && (
+                <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 9 }}>
+                  {[['week', '이번 주'], ['month', '한 달']].map(([k, l]) => (
+                    <button
+                      key={k}
+                      onClick={() => setWeekMode(k)}
+                      style={{
+                        border: 'none', cursor: 'pointer', padding: '6px 14px', borderRadius: 7, fontSize: 13, fontWeight: 700,
+                        background: weekMode === k ? '#fff' : 'transparent', color: weekMode === k ? C.ink : C.sub,
+                        boxShadow: weekMode === k ? '0 1px 2px rgba(0,0,0,.06)' : 'none',
+                      }}
+                    >
+                      {l}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {isAdmin && weekMode === 'month' ? (
+                <>
+                  <Btn onClick={() => setYm(shiftYm(ym, -1))} style={{ padding: '6px 11px' }}>←</Btn>
+                  <div style={{ fontSize: 14.5, fontWeight: 700, minWidth: 96, textAlign: 'center' }}>{ym.replace('-', '년 ')}월</div>
+                  <Btn onClick={() => setYm(shiftYm(ym, 1))} style={{ padding: '6px 11px' }}>→</Btn>
+                </>
+              ) : (
+              <>
               <Btn
                 onClick={() => {
                   const d = new Date(weekStart)
@@ -8384,6 +8423,9 @@ function App() {
               <Btn onClick={() => goWeek(mondayOf(new Date()))} style={{ padding: '6px 11px' }}>
                 오늘
               </Btn>
+
+              </>
+              )}
 
               {isAdmin && (
                 <div style={{ display: 'flex', gap: 5, marginLeft: 8, flexWrap: 'wrap' }}>
@@ -8416,6 +8458,25 @@ function App() {
               )}
             </div>
 
+            {isAdmin && weekMode === 'month' ? (
+              <TimetablePrint
+                key={(filter || 'all') + ym}
+                inline
+                ym={ym}
+                staff={staff}
+                sessions={monthSessions}
+                outside={outside}
+                ownerName={staff.find((x) => x.role === 'admin')?.name}
+                loadHolidays={loadHolidays}
+                toneOf={toneOf}
+                colorOf={colorOf}
+                onlyTeacher={filter}
+                unmade={unmadeUp}
+                say={say}
+                onClose={() => {}}
+              />
+            ) : (
+            <>
             <WeekGrid
               weekStart={weekStart}
               sessions={visible}
@@ -8458,6 +8519,8 @@ function App() {
                 <span style={{ textDecoration: 'line-through' }}>결강 · 취소</span>
               </span>
             </div>
+            </>
+            )}
           </>
         )}
 
