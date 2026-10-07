@@ -4949,10 +4949,13 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
     return rowTop[i] + frac * rows[i].H
   }
 
-  const blocksOf = (dIso) => {
+  // holOnly: 빨간 날(휴무)에는 따로 잡은 수업(보강 · 진행)만 그립니다 (결강 · 취소 처리된 원래 수업은 빼고)
+  const blocksOf = (dIso, holOnly = false) => {
     const items = [
       ...outside.filter((e) => e.d === dIso).map((x) => ({ x, out: true })),
-      ...sessions.filter((x) => x.d === dIso).map((x) => ({ x, out: false })),
+      ...sessions
+        .filter((x) => x.d === dIso && (!holOnly || x.status === '보강' || x.status === '진행'))
+        .map((x) => ({ x, out: false })),
     ]
       .map((k) => {
         const a = Math.min(Math.max(ttMin(k.x.start_time), h1 * 60), h2 * 60 - 15)
@@ -5078,25 +5081,27 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
                 if (!day) return <div key={dw} className="tt-gw-day tt-gempty" />
                 const dIso = iso(day)
                 const hol = holidays[dIso]
-                if (hol)
+                const holBlocks = hol ? blocksOf(dIso, true) : []
+                if (hol && !holBlocks.length)
                   return (
                     <div key={dw} className="tt-gw-day tt-ghol">
                       <span>{hol}</span>
                     </div>
                   )
                 return (
-                  <div key={dw} className="tt-gw-day">
+                  <div key={dw} className={`tt-gw-day${hol ? ' tt-gholx' : ''}`}>
+                    {hol && <div className="tt-gholtag">{hol}</div>}
                     <div className="tt-glines">
                       {rows.map((r) => <div key={r.h} style={{ height: r.H }} />)}
                     </div>
-                    {gapsOf(blocksOf(dIso)).map(([g0, g1]) => {
+                    {(hol ? [] : gapsOf(blocksOf(dIso))).map(([g0, g1]) => {
                       const top = yOf(g0) + 1
                       const hh = Math.max(yOf(g1) - yOf(g0) - 2, 4)
                       return (
                         <div key={'g' + g0} className="tt-ggap" style={{ top, height: hh }} />
                       )
                     })}
-                    {blocksOf(dIso).map((k) => {
+                    {(hol ? holBlocks : blocksOf(dIso)).map((k) => {
                       const top = yOf(k.a)
                       const hgt = Math.max(yOf(k.b) - top - 1, 8)
                       const pos = {
@@ -5169,11 +5174,11 @@ function WeekSheet({ ym, days, weekNo, teachers, sessions, outside, holidays, le
   const dayBlocks = days.map((x) => {
     const iso = ttIso(x)
     const hol = holidays[iso]
-    if (hol) return { iso, x, hol, subs: [] }
     const subs = teachers
       .map((t) => {
         const list = sessions
-          .filter((s) => s.d === iso && s.staff_name === t.name)
+          // 빨간 날에는 따로 잡은 수업(보강 · 진행)만
+          .filter((s) => s.d === iso && s.staff_name === t.name && (!hol || s.status === '보강' || s.status === '진행'))
           .map((s) => ({ ...s, s0: ttMin(s.start_time), s1: ttMin(s.end_time) }))
         const outs =
           t.name === ownerName
@@ -5185,8 +5190,9 @@ function WeekSheet({ ym, days, weekNo, teachers, sessions, outside, holidays, le
         const all = [...list, ...outs].sort((p, q) => p.s0 - q.s0)
         return { t, all, leave }
       })
-      .filter((r) => r.all.length || r.leave)
-    return { iso, x, hol: null, subs }
+      .filter((r) => r.all.length || (!hol && r.leave))
+    if (hol && !subs.some((r) => r.all.length)) return { iso, x, hol, subs: [] }
+    return { iso, x, hol: null, holName: hol || null, subs }
   })
 
   return (
@@ -5239,6 +5245,7 @@ function WeekSheet({ ym, days, weekNo, teachers, sessions, outside, holidays, le
             <div className={`tt-dl${w === 6 ? ' tt-sat' : ''}`}>
               {d.x.getMonth() + 1}/{d.x.getDate()}
               <i>{TT_DOW[w]}</i>
+              {d.holName && <i style={{ color: '#AE2340', fontWeight: 800 }}>{d.holName}</i>}
             </div>
           )
           if (d.hol)
@@ -5548,6 +5555,9 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
         .tt-glines > div { box-sizing: border-box; border-bottom: 0.6px solid #DADDE1; }
         .tt-gw-axis > div.tt-gthin { font-size: 8.5px !important; padding-top: 0; line-height: 1; color: #9AA0A6; }
         .tt-gw-day.tt-ghol { display: flex; align-items: center; justify-content: center; background: #E9A9A2; }
+        /* 빨간 날인데 보강 등을 따로 잡은 날: 연분홍 바탕 + 위에 휴일 이름 + 잡은 수업 */
+        .tt-gw-day.tt-gholx { background: #FBE3E0; }
+        .tt-gholtag { position: absolute; top: 2px; left: 0; right: 0; text-align: center; font-size: 11px; font-weight: 800; color: #A8322A; pointer-events: none; z-index: 1; }
         .tt-gw-day.tt-gempty { background: #F7F8F9; }
         .tt-gblk { position: absolute; box-sizing: border-box; overflow: hidden; margin: 0 !important; padding: 1px 3px !important;
           line-height: 1.08 !important; border-radius: 3px; }
@@ -5692,7 +5702,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
         <div style={{ fontSize: 15, fontWeight: 700 }}>
           {ym.replace('-', '년 ')}월 시간표 인쇄
           {/* 새 파일이 제대로 올라갔는지 확인용 — 브라우저가 옛 파일을 기억하고 있으면 이 표시가 안 보입니다 */}
-          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-37</span>
+          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-38</span>
           {mode === 'grid' && (
             <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: imgErr ? C.danger : useImgs ? '#1F7A45' : C.mut }}>
               {imgErr ? `그림 실패: ${imgErr.slice(0, 60)}` : useImgs ? `그림 준비됨 ${imgs.length}장` : '그림 만드는 중'}
