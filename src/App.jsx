@@ -4041,7 +4041,8 @@ function PlanView({
       .filter((s) => s.status === '퇴소' || s.status === '휴원')
       .map((k) => ({ ...k, items: [], shared: false, gone: true }))
       .sort((a, b) => a.name.localeCompare(b.name, 'ko'))
-    const out = groups.filter((g) => g.kids.length)
+    // 수업이 아직 없는 선생님(새로 온 선생님 등)도 묶음을 보여줍니다 — 아래에서 아이를 골라 수업을 넣을 수 있게
+    const out = groups.filter((g) => g.kids.length || g.id !== 'etc')
     if (gone.length) out.push({ id: 'gone', name: '그만둔 아동', kids: gone, gone: true })
     return out
   }, [rows, students, staff])
@@ -4475,9 +4476,46 @@ function PlanView({
             </div>
           </div>
             ))}
+            {g.id !== 'etc' && !g.gone && (
+              <PlanAddKid
+                group={g}
+                students={students.filter((k) => k.status === '재원')}
+                onAdd={(sid) => addRow(sid, g.id)}
+              />
+            )}
           </div>
         ))}
       </Card>
+    </div>
+  )
+}
+
+// 선생님 묶음 맨 아래: 다른 아이를 골라 이 선생님 수업으로 넣기
+function PlanAddKid({ group, students, onAdd }) {
+  const [sid, setSid] = useState('')
+  const mine = new Set(group.kids.map((k) => k.id))
+  const list = students.filter((k) => !mine.has(k.id)).sort((a, b) => a.name.localeCompare(b.name, 'ko'))
+  return (
+    <div style={{ padding: '9px 14px', display: 'flex', gap: 7, alignItems: 'center', flexWrap: 'wrap', borderTop: group.kids.length ? `1px solid ${C.line2}` : 'none' }}>
+      {group.kids.length === 0 && (
+        <span style={{ fontSize: 12.5, color: C.sub }}>아직 맡은 수업이 없습니다.</span>
+      )}
+      <select value={sid} onChange={(e) => setSid(e.target.value)} style={{ ...planSel, width: 140 }}>
+        <option value="">아동 고르기</option>
+        {list.map((k) => (
+          <option key={k.id} value={k.id}>{k.name}</option>
+        ))}
+      </select>
+      <Btn
+        disabled={!sid}
+        onClick={() => {
+          onAdd(sid)
+          setSid('')
+        }}
+        style={{ padding: '4px 10px', fontSize: 12 }}
+      >
+        + {group.name} 선생님 수업 추가
+      </Btn>
     </div>
   )
 }
