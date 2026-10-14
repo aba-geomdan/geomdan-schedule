@@ -4476,7 +4476,7 @@ function PlanView({
             </div>
           </div>
             ))}
-            {g.id !== 'etc' && !g.gone && (
+            {g.id !== 'etc' && !g.gone && g.kids.length === 0 && (
               <PlanAddKid
                 group={g}
                 students={students.filter((k) => k.status === '재원')}
@@ -4865,7 +4865,7 @@ const GRID_COLORS = [
   ['#BEE3DC', '#11423B'], ['#F2C9B8', '#5B2716'], ['#CBD5E1', '#1E293B'],
   ['#E7C9F0', '#4A1157'],
 ]
-function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unmade = [] }) {
+function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unmade = [], endHour = 19 }) {
   const [y, m] = ym.split('-').map(Number)
   const lastDay = new Date(y, m, 0).getDate()
   const DOW = ['월', '화', '수', '목', '금', '토']
@@ -4885,7 +4885,8 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
   // 모든 선생님 항상 똑같이 9시 ~ 6시 줄(아침 9시 ~ 저녁 7시).
   //   7시를 넘겨 끝나는 수업은 칸 맨 아래에 붙여 그리고, 글씨에는 실제 시간(예: 5:30~7:10)이 그대로 나옵니다.
   const h1 = 9
-  const h2 = 19
+  // 기본은 저녁 7시까지, 7시 넘어 끝나는 수업(보강 등)이 있으면 그 시각까지 늘립니다 (모든 선생님 같은 높이)
+  const h2 = Math.max(19, endHour)
   const hours = []
   for (let h = h1; h < Math.max(h2, h1 + 4); h++) hours.push(h)
 
@@ -5511,6 +5512,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
   const allMax = [...live.map((s) => ttMin(s.end_time)), ...monthOut.map((e) => ttMin(e.end_time))]
   const gSt = allMin.length ? Math.floor(Math.min(...allMin) / 60) * 60 : 9 * 60
   let gEn = allMax.length ? Math.ceil(Math.max(...allMax) / 60) * 60 : 19 * 60
+  const gEnAll = allMax.length ? Math.max(...allMax) : 19 * 60
   if (gEn - gSt < 240) gEn = gSt + 240
 
   const weeks = (() => {
@@ -5745,7 +5747,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
         <div style={{ fontSize: 15, fontWeight: 700 }}>
           {ym.replace('-', '년 ')}월 시간표 인쇄
           {/* 새 파일이 제대로 올라갔는지 확인용 — 브라우저가 옛 파일을 기억하고 있으면 이 표시가 안 보입니다 */}
-          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v0927-39</span>
+          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v1014-40</span>
           {mode === 'grid' && (
             <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: imgErr ? C.danger : useImgs ? '#1F7A45' : C.mut }}>
               {imgErr ? `그림 실패: ${imgErr.slice(0, 60)}` : useImgs ? `그림 준비됨 ${imgs.length}장` : '그림 만드는 중'}
@@ -5840,6 +5842,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
             holidays={holFor(t)}
             sessions={sessions.filter((s) => s.staff_name === t.name && s.status !== '취소')}
             outside={t.name === ownerName ? outside.filter((e) => e.d.slice(0, 7) === ym) : []}
+            endHour={Math.ceil(gEnAll / 60)}
             unmade={unmade.filter((u) => u.staff_name === t.name)}
           />
         ))}
