@@ -3629,10 +3629,10 @@ const inp = {
   background: '#fff',
 }
 
-function StudentModal({ student, staff, onClose, onSave, onRemove, busy }) {
+function StudentModal({ student, staff, defaultMain, onClose, onSave, onRemove, busy }) {
   const [name, setName] = useState(student?.name || '')
   const [display, setDisplay] = useState(student?.display_name || '')
-  const [main, setMain] = useState(student?.main_staff_id || staff[0]?.id || '')
+  const [main, setMain] = useState(student?.main_staff_id || defaultMain || staff[0]?.id || '')
   const [status, setStatus] = useState(student?.status || '재원')
   // 퇴소·휴원 시작일 — 기본값은 다음 달 1일
   const [from, setFrom] = useState(() => {
@@ -3937,6 +3937,7 @@ function PlanView({
   const [loading, setLoading] = useState(true)
   const [backups, setBackups] = useState(null)
   const [clash, setClash] = useState([])
+  const [goneOpen, setGoneOpen] = useState(false)
 
   const prev = shiftYm(ym, -1)
   const [from, setFrom] = useState(ym)
@@ -4110,11 +4111,6 @@ function PlanView({
             )}
           </div>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 7 }}>
-            {onNewStudent && (
-              <Btn onClick={onNewStudent} style={{ padding: '6px 13px', fontSize: 12.5 }}>
-                + 새 아동
-              </Btn>
-            )}
             <Btn
               disabled={busy}
               onClick={async () => {
@@ -4282,7 +4278,7 @@ function PlanView({
       </div>
 
       <Card style={{ overflow: 'hidden' }}>
-        {byStaff.map((g) => (
+        {byStaff.filter((g) => !g.gone).map((g) => (
           <div key={g.id}>
             <div
               style={{
@@ -4292,14 +4288,27 @@ function PlanView({
                 fontSize: 13, fontWeight: 700,
                 borderTop: `1px solid ${C.line2}`,
                 borderBottom: `1px solid ${C.line2}`,
+                display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap',
               }}
             >
-              {g.name}
-              <span style={{ fontWeight: 400, marginLeft: 7, opacity: 0.8 }}>{g.kids.length}명</span>
+              <span>{g.name}</span>
+              <span style={{ fontWeight: 400, opacity: 0.8 }}>{g.kids.length}명</span>
               {g.gone && (
-                <span style={{ fontWeight: 400, marginLeft: 8, fontSize: 11.5 }}>
+                <span style={{ fontWeight: 400, marginLeft: 1, fontSize: 11.5 }}>
                   다시 다니면 <b>수정</b>에서 상태를 재원으로 바꾼 뒤 수업을 넣어주세요
                 </span>
+              )}
+              {onNewStudent && !g.gone && (
+                <button
+                  onClick={() => onNewStudent(g.id === 'etc' ? null : g.id)}
+                  title={g.id === 'etc' ? '새 아동 등록' : `${g.name} 선생님 담당으로 새 아동 등록`}
+                  style={{
+                    marginLeft: 'auto', border: `1px solid ${C.line}`, background: '#fff', borderRadius: 6,
+                    padding: '3px 9px', cursor: 'pointer', fontSize: 12, fontWeight: 700, color: C.ink,
+                  }}
+                >
+                  + 새 아동
+                </button>
               )}
             </div>
             {g.kids.map((s, si) => (
@@ -4313,7 +4322,7 @@ function PlanView({
               alignItems: 'flex-start',
             }}
           >
-            <div style={{ width: 92, paddingTop: 6, display: 'flex', flexDirection: 'column', gap: 3 }}>
+            <div style={{ width: 100, paddingTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
               <div style={{ fontSize: 14, fontWeight: 700 }}>{s.name}</div>
               {s.gone && <Pill tone="gray">{s.status}</Pill>}
               {s.shared && (
@@ -4321,17 +4330,31 @@ function PlanView({
                   다른 선생님도
                 </div>
               )}
-              {onEditStudent && (
-                <button
-                  onClick={() => onEditStudent(s)}
-                  style={{
-                    border: 'none', background: 'none', padding: 0, cursor: 'pointer',
-                    fontSize: 11.5, color: C.sub, textAlign: 'left', textDecoration: 'underline',
-                  }}
-                >
-                  수정
-                </button>
-              )}
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                {!s.gone && (
+                  <button
+                    onClick={() => addRow(s.id, g.id === 'etc' ? null : g.id)}
+                    title="이 아동 수업을 한 줄 더 넣습니다"
+                    style={{
+                      border: `1px solid ${C.line}`, background: '#fff', borderRadius: 6, padding: '1px 6px',
+                      cursor: 'pointer', fontSize: 11.5, fontWeight: 700, color: C.pkd,
+                    }}
+                  >
+                    + 수업
+                  </button>
+                )}
+                {onEditStudent && (
+                  <button
+                    onClick={() => onEditStudent(s)}
+                    style={{
+                      border: 'none', background: 'none', padding: 0, cursor: 'pointer',
+                      fontSize: 11.5, color: C.sub, textAlign: 'left', textDecoration: 'underline',
+                    }}
+                  >
+                    수정
+                  </button>
+                )}
+              </div>
             </div>
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
               {s.items.map((r) => {
@@ -4465,13 +4488,8 @@ function PlanView({
                   </div>
                 )
               })}
-              {!s.gone && (
-                <Btn
-                  onClick={() => addRow(s.id, g.id === 'etc' ? null : g.id)}
-                  style={{ alignSelf: 'flex-start', padding: '4px 10px', fontSize: 12 }}
-                >
-                  + 수업 추가
-                </Btn>
+              {!s.gone && s.items.length === 0 && (
+                <div style={{ fontSize: 12, color: C.mut, paddingTop: 7 }}>수업이 없습니다 · 왼쪽 + 수업을 눌러 넣으세요</div>
               )}
             </div>
           </div>
@@ -4486,6 +4504,45 @@ function PlanView({
           </div>
         ))}
       </Card>
+
+      {/* 그만둔 아동(퇴소·휴원) — 평소에는 접어 두고, 필요할 때만 펼쳐서 수정 */}
+      {(() => {
+        const gone = byStaff.find((g) => g.gone)
+        if (!gone) return null
+        return (
+          <div style={{ marginTop: 14 }}>
+            <button
+              onClick={() => setGoneOpen(!goneOpen)}
+              style={{ border: 'none', background: 'none', cursor: 'pointer', padding: '4px 2px', fontSize: 13, color: C.sub, fontWeight: 600 }}
+            >
+              {goneOpen ? '▾' : '▸'} 그만둔 아동 {gone.kids.length}명
+            </button>
+            {goneOpen && (
+              <Card style={{ marginTop: 6, padding: '10px 14px' }}>
+                <div style={{ fontSize: 11.5, color: C.sub, marginBottom: 8 }}>
+                  다시 다니면 <b>수정</b>에서 상태를 재원으로 바꾸세요. 그러면 담당 선생님 묶음으로 돌아갑니다.
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 16px' }}>
+                  {gone.kids.map((k) => (
+                    <span key={k.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+                      <b>{k.name}</b>
+                      <Pill tone="gray">{k.status}</Pill>
+                      {onEditStudent && (
+                        <button
+                          onClick={() => onEditStudent(k)}
+                          style={{ border: 'none', background: 'none', padding: 0, cursor: 'pointer', fontSize: 11.5, color: C.sub, textDecoration: 'underline' }}
+                        >
+                          수정
+                        </button>
+                      )}
+                    </span>
+                  ))}
+                </div>
+              </Card>
+            )}
+          </div>
+        )
+      })()}
     </div>
   )
 }
@@ -8860,7 +8917,7 @@ function App() {
               onCheck={checkMonthPlan}
               toneOf={toneOf}
               onEditStudent={(s) => setEditStudent(s)}
-              onNewStudent={() => setEditStudent('new')}
+              onNewStudent={(staffId) => setEditStudent({ __new: true, main_staff_id: staffId })}
               leaves={leaves}
               outside={outside}
               onAddLeave={async (v) => {
@@ -9118,7 +9175,8 @@ function App() {
 
       {editStudent && isAdmin && (
         <StudentModal
-          student={editStudent === 'new' ? null : editStudent}
+          student={editStudent === 'new' || editStudent?.__new ? null : editStudent}
+          defaultMain={editStudent?.__new ? editStudent.main_staff_id : null}
           staff={staff}
           busy={busy}
           onClose={() => setEditStudent(null)}
@@ -9135,7 +9193,7 @@ function App() {
             setBusy(false)
           }}
           onSave={async (v, leaveFrom) => {
-            const id = editStudent === 'new' ? null : editStudent.id
+            const id = editStudent === 'new' || editStudent?.__new ? null : editStudent.id
             setEditStudent(null)
             setBusy(true)
             try {
