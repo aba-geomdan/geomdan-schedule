@@ -452,7 +452,7 @@ async function loadNotices() {
   const { data, error } = await supabase
     .from('notices')
     .select('*')
-    .or(`confirmed_at.is.null,created_at.gte.${since}`)
+    .or(`confirmed_at.is.null,created_at.gte.${since},kind.in.(close_req,close_ans)`) // 마감 확인 요청 · 답은 지난달 것도 계속 보여야 해서 항상
     .order('created_at', { ascending: false })
     .limit(1000)
   return error ? [] : data || []
@@ -465,6 +465,9 @@ async function notifyStaff(to, kind, message, sessionRef, payload) {
 }
 async function reportMakeup(sessionRef, message, payload) {
   return ok(await supabase.rpc('report_makeup', { p_session: String(sessionRef), p_message: message, p_payload: payload ?? null }))
+}
+async function answerClosing(ym, agree, reason, snap) {
+  return ok(await supabase.rpc('answer_closing', { p_ym: ym, p_agree: agree, p_reason: reason ?? null, p_snap: snap ?? null }))
 }
 async function confirmNotice(id) {
   return ok(await supabase.rpc('confirm_notice', { p_id: id }))
@@ -888,6 +891,10 @@ const NOTICE_KIND = {
   uncancel: { label: '되돌림', bg: '#F2F3F5', fg: '#4B5057' },
   cancel: { label: '취소', bg: '#F2F3F5', fg: '#4B5057' },
   report: { label: '보강 체크', bg: MAKEUP, fg: '#fff' },
+  close_req: { label: '마감 확인', bg: '#E6F1FB', fg: '#0C447C' },
+  close_ans: { label: '마감 답', bg: '#E6F1FB', fg: '#0C447C' },
+  closing_ok: { label: '마감 승인', bg: '#EDF7F1', fg: '#1F5B3A' },
+  closing_back: { label: '마감 반려', bg: '#FDECEF', fg: '#AE2340' },
 }
 function NoticeChip({ kind }) {
   const k = NOTICE_KIND[kind] || { label: '알림', bg: '#F2F3F5', fg: '#4B5057' }
@@ -903,6 +910,102 @@ const ago = (ts) => {
   if (m < 60) return `${m}분 전`
   if (m < 60 * 24) return `${Math.round(m / 60)}시간 전`
   return `${Math.round(m / 1440)}일 전`
+}
+
+// 마감 확인 상태 — 그 선생님 · 그 달의 마지막 요청과, 그 뒤에 온 답
+const byNew = (a, b) => (a.created_at < b.created_at ? 1 : -1)
+function closeStateOf(notices, staffId, ym, row) {
+  const sid = String(staffId)
+  const req = notices.filter((n) => n.kind === 'close_req' && String(n.to_staff) === sid && n.payload?.ym === ym).sort(byNew)[0] || null
+  if (!req) return { st: 'none' }
+  const ans = notices.filter((n) => n.kind === 'close_ans' && String(n.from_staff) === sid && n.payload?.ym === ym && n.created_at >= req.created_at).sort(byNew)[0] || null
+  if (!ans) return { st: 'wait', req }
+  const agree = !!ans.payload?.agree
+  // 선생님이 '맞아요' 한 뒤에 숫자가 바뀌었으면 다시 확인 필요
+  const snap = req.payload || {}
+  const changed =
+    row && (Number(snap.units) !== Number(row.units) || Number(snap.makeups) !== Number(row.makeup_units || 0) || Number(snap.unmade) !== Number(row.unmade_up || 0))
+  return { st: agree ? (changed ? 'changed' : 'agree') : 'disagree', req, ans }
+}
+function CloseCheckPill({ s }) {
+  const sty = (bg, fg) => ({ fontSize: 11.5, fontWeight: 700, borderRadius: 99, padding: '2px 9px', background: bg, color: fg, whiteSpace: 'nowrap' })
+  if (s.st === 'wait') return <span style={sty('#F2F3F5', C.sub)}>확인 요청함 · 답 기다리는 중</span>
+  if (s.st === 'agree') return <span style={sty('#EDF7F1', '#1F5B3A')}>✓ 선생님 확인: 같음</span>
+  if (s.st === 'changed') return <span style={sty('#FEF6E7', '#8A5A00')}>같다고 한 뒤 숫자가 바뀜 · 다시 요청</span>
+  if (s.st === 'disagree')
+    return (
+      <span style={{ ...sty('#FDECEF', '#AE2340'), whiteSpace: 'normal' }} title={s.ans?.payload?.reason || ''}>
+        ✕ 선생님 확인: 다름 — {s.ans?.payload?.reason}
+      </span>
+    )
+  return null
+}
+
+// 선생님 마감 탭: 원장님 요청에 '맞아요 / 달라요'
+function TeacherCloseCheck({ ym, state, onAnswer, busy }) {
+  const [mode, setMode] = useState(null) // null | 'no'
+  const [why, setWhy] = useState('')
+  const mm = Number(ym.slice(5))
+  const box = { maxWidth: 560, margin: '0 auto 14px' }
+  if (state.st === 'none')
+    return (
+      <Card style={{ ...box, padding: '14px 16px' }}>
+        <div style={{ fontSize: 15, fontWeight: 800 }}>{mm}월 마감</div>
+        <div style={{ fontSize: 13, color: C.sub, marginTop: 4 }}>원장님이 아직 마감 확인을 요청하지 않았습니다. 요청이 오면 여기에 숫자가 뜹니다.</div>
+      </Card>
+    )
+  const sn = state.req.payload || {}
+  const cell = (label, v, color) => (
+    <div style={{ flex: 1, background: '#FAFAFB', borderRadius: 9, padding: '10px 12px' }}>
+      <div style={{ fontSize: 12, color: C.sub }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 800, color: color || C.ink }}>{v}</div>
+    </div>
+  )
+  return (
+    <Card style={{ ...box, padding: '14px 16px', border: state.st === 'wait' ? '1.5px solid #85B7EB' : undefined }}>
+      <div style={{ fontSize: 15, fontWeight: 800 }}>{mm}월 마감 확인</div>
+      <div style={{ fontSize: 13, color: C.sub, margin: '4px 0 10px', lineHeight: 1.5 }}>
+        원장님 급여 화면의 숫자입니다. 아래 출결 목록과 맞는지 확인해 주세요.
+      </div>
+      <div style={{ display: 'flex', gap: 8 }}>
+        {cell('회기 (수업 + 보강)', fmtUnits(sn.units ?? 0))}
+        {cell('그중 보강', fmtUnits(sn.makeups ?? 0), '#254B8C')}
+        {cell('아직 보강 안 된 결강', sn.unmade ?? 0, Number(sn.unmade) ? C.danger : C.ink)}
+      </div>
+      {state.st === 'wait' ? (
+        mode === 'no' ? (
+          <div style={{ marginTop: 12 }}>
+            <textarea
+              value={why}
+              onChange={(e) => setWhy(e.target.value)}
+              placeholder="무엇이 다른지 적어 주세요 (예: 10/14 김우빈 보강이 빠졌어요)"
+              rows={2}
+              style={{ width: '100%', boxSizing: 'border-box', padding: '9px 10px', border: `1px solid ${C.line}`, borderRadius: 8, fontSize: 13.5, fontFamily: 'inherit', resize: 'vertical' }}
+            />
+            <div style={{ display: 'flex', gap: 7, marginTop: 7 }}>
+              <Btn variant="danger" disabled={busy || !why.trim()} onClick={() => onAnswer(false, why.trim())} style={{ flex: 1, padding: '10px 0' }}>
+                원장님께 보내기
+              </Btn>
+              <Btn onClick={() => setMode(null)} style={{ flex: 1, padding: '10px 0' }}>취소</Btn>
+            </div>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', gap: 7, marginTop: 12 }}>
+            <Btn variant="primary" disabled={busy} onClick={() => onAnswer(true, null)} style={{ flex: 1, padding: '11px 0' }}>
+              맞아요
+            </Btn>
+            <Btn variant="danger" disabled={busy} onClick={() => setMode('no')} style={{ flex: 1, padding: '11px 0' }}>
+              달라요
+            </Btn>
+          </div>
+        )
+      ) : (
+        <div style={{ marginTop: 12, fontSize: 13.5, padding: '9px 12px', borderRadius: 8, background: state.st === 'disagree' ? '#FDECEF' : '#EDF7F1', color: state.st === 'disagree' ? '#AE2340' : '#1F5B3A' }}>
+          {state.st === 'disagree' ? `'다르다'고 보냈습니다 — ${state.ans.payload?.reason || ''} · 원장님이 고친 뒤 다시 요청하면 여기서 다시 확인합니다` : '맞다고 보냈습니다. 원장님이 마감하면 끝납니다.'}
+        </div>
+      )}
+    </Card>
+  )
 }
 
 // 선생님 화면 맨 위: 원장님이 바꾼 일정 (확인할 때까지 떠 있음)
@@ -930,11 +1033,36 @@ function TeacherNotices({ items, onConfirm, busy }) {
 }
 
 // 원장님 화면 맨 위: 선생님이 체크한 보강 + 선생님이 아직 확인 안 한 문구
-function AdminNotices({ reports, waiting, nameOf, onBook, onConfirm, onDrop, busy }) {
+function AdminNotices({ reports, closings = [], waiting, nameOf, onBook, onOpenClosing, onConfirm, onDrop, busy }) {
   const [openWait, setOpenWait] = useState(false)
-  if (!reports.length && !waiting.length) return null
+  if (!reports.length && !closings.length && !waiting.length) return null
   return (
     <div className="no-print" style={{ marginBottom: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {closings.length > 0 && (
+        <Card style={{ padding: '12px 14px', border: '1.5px solid #85B7EB', background: '#F3F8FD' }}>
+          <div style={{ fontSize: 14.5, fontWeight: 800, color: '#0C447C', marginBottom: 8 }}>
+            선생님이 마감 숫자를 확인했습니다 ({closings.length}건)
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {closings.map((n) => (
+              <div key={n.id} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', background: '#fff', borderRadius: 8, padding: '8px 10px', border: `1px solid ${C.line}` }}>
+                <span style={{ fontSize: 11.5, fontWeight: 700, borderRadius: 99, padding: '2px 8px', whiteSpace: 'nowrap', background: n.payload?.agree ? '#EDF7F1' : '#FDECEF', color: n.payload?.agree ? '#1F5B3A' : '#AE2340' }}>
+                  {n.payload?.agree ? '같음' : '다름'}
+                </span>
+                <span style={{ fontSize: 13, fontWeight: 700, color: C.ink, whiteSpace: 'nowrap' }}>{nameOf(n.from_staff)} 선생님</span>
+                <span style={{ flex: '1 1 220px', minWidth: 0, fontSize: 13.5, color: C.ink, lineHeight: 1.45 }}>{n.message}</span>
+                <span style={{ fontSize: 11.5, color: C.mut }}>{ago(n.created_at)}</span>
+                <Btn variant="primary" disabled={busy} onClick={() => onOpenClosing(n)} style={{ padding: '6px 12px', fontSize: 13 }}>
+                  급여 화면 보기
+                </Btn>
+                <Btn disabled={busy} onClick={() => onConfirm(n.id)} style={{ padding: '6px 12px', fontSize: 13 }}>
+                  확인만
+                </Btn>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
       {reports.length > 0 && (
         <Card style={{ padding: '12px 14px', border: '1.5px solid #F0C27A', background: '#FFFBF2' }}>
           <div style={{ fontSize: 14.5, fontWeight: 800, color: '#8A4B00', marginBottom: 8 }}>
@@ -1531,7 +1659,7 @@ function weekCount(ym) {
 }
 
 function MonthView({
-  ym, sessions, onPrevYm, onNextYm, onMark, busy, isAdmin, staff, filter, onFilter, colorOf,
+  ym, sessions, onPrevYm, onNextYm, onMark, busy, isAdmin, staff, filter, onFilter, colorOf, hideTotals = false,
 }) {
   const [open, setOpen] = useState(null)
   const weeks = weekCount(ym)
@@ -1659,6 +1787,8 @@ function MonthView({
       )}
 
       <Card style={{ overflow: 'hidden' }}>
+        {/* hideTotals: 선생님 마감 탭 — 급여 회기와 기준이 달라 헷갈리지 않게 맨 위 합계를 감춤 */}
+        {!hideTotals && (
         <div style={{ padding: '11px 14px', borderBottom: `1px solid ${C.line2}`, display: 'flex', gap: 18 }}>
           <div>
             <div style={{ fontSize: 11.5, color: C.sub }}>수업</div>
@@ -1677,6 +1807,7 @@ function MonthView({
             </div>
           </div>
         </div>
+        )}
 
         <div
           style={{
@@ -3225,7 +3356,7 @@ function RevenueMenu({ total, loadRevenueList }) {
   )
 }
 
-function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onPrintAll, onSetRate, onDetail, busy, closing, closings = [], onClose, staffOrder = [], ownerName, payHistory = [], onPayrollPaid, toneOf, allStaff = [], onSaveExtras, onSaveManual, onDeleteManual, loadCopay, loadRevenueList, say, group: groupProp, onGroup }) {
+function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onPrintAll, onSetRate, onDetail, busy, closing, closings = [], closeCheck = null, onClose, staffOrder = [], ownerName, payHistory = [], onPayrollPaid, toneOf, allStaff = [], onSaveExtras, onSaveManual, onDeleteManual, loadCopay, loadRevenueList, say, group: groupProp, onGroup }) {
   // 이 달 마감한 선생님
   const closedSet = useMemo(() => new Set((closings || []).filter((c) => c.status === '승인').map((c) => c.staff_name)), [closings])
   // 정산 화면 선생님 순서: 원장님은 맨 위 고정, 나머지는 등록 순서 (금액과 상관없이 늘 같은 자리)
@@ -3386,6 +3517,14 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
             <br />
             수강료 청구는 (진행 + 결강) 기준이라 아래 <b>수강료</b> 금액과 정산 탭의 금액이 다를 수 있습니다.
           </div>
+          {closeCheck && (payroll || []).length > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+              <Btn disabled={busy} onClick={() => closeCheck.onRequestAll(payroll)} style={{ padding: '6px 12px', fontSize: 12.5 }}>
+                전원 확인 요청
+              </Btn>
+              <span style={{ fontSize: 12, color: C.sub }}>선생님 마감 탭에 이 숫자(회기 · 보강 · 미보강)가 뜨고, 선생님이 맞아요 / 달라요로 답합니다.</span>
+            </div>
+          )}
           <Card style={{ overflow: 'auto', marginBottom: 12 }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 660 }}>
               <thead>
@@ -3447,6 +3586,20 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
                       {r.unmade_up || '—'}
                     </td>
                     <td style={{ padding: '9px 12px', textAlign: 'center', whiteSpace: 'nowrap' }}>
+                      {closeCheck && !closedSet.has(r.staff_name) && (() => {
+                        const s = closeCheck.stateOf(r)
+                        if (s.st === 'own') return null
+                        return (
+                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, marginBottom: 6, maxWidth: 230, marginLeft: 'auto', marginRight: 'auto' }}>
+                            <CloseCheckPill s={s} />
+                            {s.st !== 'agree' && s.st !== 'wait' && (
+                              <Btn disabled={busy} onClick={() => closeCheck.onRequest(r)} style={{ padding: '4px 10px', fontSize: 11.5 }}>
+                                {s.st === 'none' ? '확인 요청' : '다시 요청'}
+                              </Btn>
+                            )}
+                          </div>
+                        )
+                      })()}
                       {closedSet.has(r.staff_name) ? (
                         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                           <Pill tone="green">마감함</Pill>
@@ -8593,6 +8746,20 @@ function App() {
       // 문구를 못 보내도 결강 · 보강 처리는 그대로 된 상태
     }
   }
+  // 급여 화면 [확인 요청]: 지금 급여 줄의 숫자를 그대로 선생님께 보냅니다
+  const requestCloseCheck = async (r) => {
+    const mm = Number(ym.slice(5))
+    const units = Number(r.units) || 0
+    const makeups = Number(r.makeup_units) || 0
+    const unmade = Number(r.unmade_up) || 0
+    await notifyStaff(
+      r.staff_id,
+      'close_req',
+      `${mm}월 마감 확인을 요청했습니다 — 회기 ${fmtUnits(units)} · 보강 ${fmtUnits(makeups)} · 미보강 ${unmade}. 마감 탭에서 맞는지 확인해 주세요`,
+      null,
+      { ym, units, makeups, unmade }
+    )
+  }
   const tellMark = async (before, status) => {
     if (!before) return
     if (status === '결강') await tellTeacher(before, 'absent')
@@ -8965,6 +9132,14 @@ function App() {
         {!loading && isAdmin && (
           <AdminNotices
             reports={notices.filter((n) => n.kind === 'report' && !n.confirmed_at)}
+            closings={notices.filter((n) => n.kind === 'close_ans' && !n.confirmed_at)}
+            onOpenClosing={async (n) => {
+              if (n.payload?.ym) setYm(n.payload.ym)
+              setTab('billing')
+              setBillGroup('payroll')
+              await confirmNotice(n.id).catch(() => {})
+              setNotices(await loadNotices())
+            }}
             waiting={notices.filter((n) => n.to_staff && !n.confirmed_at)}
             nameOf={(id) => staff.find((x) => String(x.id) === String(id))?.name || '?'}
             busy={busy}
@@ -9000,9 +9175,32 @@ function App() {
             }}
           />
         )}
+        {/* 선생님: 원장님의 마감 확인 요청 (답하면 사라짐) */}
+        {!loading && !isAdmin && me && !(tab === 'myclose') &&
+          notices
+            .filter((n) => n.kind === 'close_req' && String(n.to_staff) === String(me.id) && !n.confirmed_at)
+            .slice(0, 1)
+            .map((n) => (
+              <Card key={n.id} className="no-print" style={{ padding: '12px 14px', marginBottom: 14, border: '1.5px solid #85B7EB', background: '#F3F8FD', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <NoticeChip kind="close_req" />
+                <span style={{ flex: '1 1 200px', fontSize: 14, fontWeight: 700, color: '#0C447C' }}>
+                  원장님이 {Number(String(n.payload?.ym || '').slice(5))}월 마감 확인을 요청했습니다
+                </span>
+                <Btn
+                  variant="primary"
+                  onClick={() => {
+                    if (n.payload?.ym) setCloseYm(n.payload.ym)
+                    setTab('myclose')
+                  }}
+                  style={{ padding: '6px 12px', fontSize: 13 }}
+                >
+                  확인하러 가기
+                </Btn>
+              </Card>
+            ))}
         {!loading && !isAdmin && me && (
           <TeacherNotices
-            items={notices.filter((n) => String(n.to_staff) === String(me.id) && !n.confirmed_at)}
+            items={notices.filter((n) => String(n.to_staff) === String(me.id) && !n.confirmed_at && n.kind !== 'close_req')}
             busy={busy}
             onConfirm={async (id) => {
               setBusy(true)
@@ -9169,32 +9367,39 @@ function App() {
           />
         )}
 
-        {!loading && tab === 'myclose' && (
-          <MyClosingView
-            ym={closeYm}
-            onPrevYm={() => setCloseYm(shiftYm(closeYm, -1))}
-            onNextYm={() => setCloseYm(shiftYm(closeYm, 1))}
-            summary={myClosing}
-            closing={myClosing}
-            busy={busy}
-            onSubmit={async () => {
-              setBusy(true)
-              try {
-                await submitClosing(closeYm)
-                say('제출했습니다')
-                await reloadMonth()
-              } catch (e) {
-                fail(e)
-              }
-              setBusy(false)
-            }}
-          />
+        {/* 선생님 마감: 원장님이 급여 화면에서 [확인 요청]을 하면 숫자가 뜨고 '맞아요 / 달라요'로 답합니다 */}
+        {!loading && tab === 'myclose' && !isAdmin && me && (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, maxWidth: 560, margin: '0 auto 12px' }}>
+              <Btn onClick={() => setCloseYm(shiftYm(closeYm, -1))} style={{ padding: '6px 11px' }}>←</Btn>
+              <div style={{ flex: 1, textAlign: 'center', fontSize: 15, fontWeight: 700 }}>{closeYm.replace('-', '년 ')}월</div>
+              <Btn onClick={() => setCloseYm(shiftYm(closeYm, 1))} style={{ padding: '6px 11px' }}>→</Btn>
+            </div>
+            <TeacherCloseCheck
+              key={closeYm}
+              ym={closeYm}
+              state={closeStateOf(notices, me.id, closeYm, null)}
+              busy={busy}
+              onAnswer={async (agree, reason) => {
+                setBusy(true)
+                try {
+                  const st = closeStateOf(notices, me.id, closeYm, null)
+                  await answerClosing(closeYm, agree, reason, st.req?.payload || null)
+                  say(agree ? '맞다고 보냈습니다' : '다르다고 보냈습니다')
+                  setNotices(await loadNotices())
+                } catch (e) {
+                  fail(e)
+                }
+                setBusy(false)
+              }}
+            />
+          </>
         )}
         {/* 선생님 마감: 아래에 그 달 출결 목록 (보기만 — 결강 처리는 원장님) */}
         {!loading && tab === 'myclose' && !isAdmin && ym === closeYm && (
           <div style={{ marginTop: 18 }}>
             <div style={{ maxWidth: 560, margin: '0 auto 8px', fontSize: 14.5, fontWeight: 800, color: C.ink }}>
-              {Number(ym.slice(5))}월 출결 확인
+              {Number(ym.slice(5))}월 출결 — 아이별 날짜를 위 숫자와 대조해 보세요
             </div>
             <MonthView
               ym={ym}
@@ -9208,6 +9413,7 @@ function App() {
               onPrevYm={null}
               onNextYm={null}
               onMark={null}
+              hideTotals
             />
           </div>
         )}
@@ -9414,6 +9620,34 @@ function App() {
             </div>
             <BillingView
               ym={ym}
+              closeCheck={{
+                stateOf: (r) => (me && String(r.staff_id) === String(me.id) ? { st: 'own' } : closeStateOf(notices, r.staff_id, ym, r)),
+                onRequest: async (r) => {
+                  setBusy(true)
+                  try {
+                    await requestCloseCheck(r)
+                    say(`${r.staff_name} 선생님께 확인을 요청했습니다`)
+                    setNotices(await loadNotices())
+                  } catch (e) {
+                    fail(e)
+                  }
+                  setBusy(false)
+                },
+                onRequestAll: async (rows) => {
+                  const list = rows.filter((r) => !(me && String(r.staff_id) === String(me.id)) && !closings.some((c) => c.status === '승인' && c.staff_name === r.staff_name))
+                  if (!list.length) return
+                  if (!confirm(`${list.map((r) => r.staff_name).join(', ')} 선생님께 ${Number(ym.slice(5))}월 마감 확인을 요청할까요?`)) return
+                  setBusy(true)
+                  try {
+                    for (const r of list) await requestCloseCheck(r)
+                    say(`${list.length}명에게 확인을 요청했습니다`)
+                    setNotices(await loadNotices())
+                  } catch (e) {
+                    fail(e)
+                  }
+                  setBusy(false)
+                },
+              }}
               group={billGroup}
               onGroup={setBillGroup}
               staffOrder={staff.map((x) => x.name)}
