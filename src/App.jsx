@@ -466,6 +466,11 @@ async function notifyStaff(to, kind, message, sessionRef, payload) {
 async function reportMakeup(sessionRef, message, payload) {
   return ok(await supabase.rpc('report_makeup', { p_session: String(sessionRef), p_message: message, p_payload: payload ?? null }))
 }
+// 선생님 본인 수업의 급여 회기 (서버의 급여 계산 함수를 그대로 씀) — SQL 실행 전이면 null
+async function myMonthUnits(ym) {
+  const { data, error } = await supabase.rpc('my_month_units', { p_ym: ym })
+  return error ? null : data || []
+}
 async function answerClosing(ym, agree, reason, snap) {
   return ok(await supabase.rpc('answer_closing', { p_ym: ym, p_agree: agree, p_reason: reason ?? null, p_snap: snap ?? null }))
 }
@@ -797,6 +802,7 @@ function useNarrow(px = 640) {
 
 // 휴대폰용 주간 시간표 — 6일을 가로로 나누면 칸이 너무 좁아서, 날짜별로 위에서 아래로 목록으로 보여 줍니다
 function WeekAgenda({ days, sessions, holidayMap, outByDay, showTeacher, colorOf, onPick, today }) {
+  // onPick 이 없으면(선생님 시간표) 줄을 눌러도 아무 일이 없으니 버튼 모양을 빼고 보기 전용으로 그립니다
   const chip = (bg, fg, text) => (
     <span style={{ fontSize: 11.5, fontWeight: 700, color: fg, background: bg, borderRadius: 99, padding: '2px 8px', whiteSpace: 'nowrap', flexShrink: 0 }}>
       {text}
@@ -846,10 +852,11 @@ function WeekAgenda({ days, sessions, holidayMap, outByDay, showTeacher, colorOf
               return (
                 <button
                   key={s.id}
-                  onClick={() => onPick(s)}
+                  onClick={onPick ? () => onPick(s) : undefined}
+                  disabled={!onPick}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '10px 14px',
-                    border: 'none', borderTop: `1px solid #F2F3F5`, textAlign: 'left', cursor: 'pointer',
+                    border: 'none', borderTop: `1px solid #F2F3F5`, textAlign: 'left', cursor: onPick ? 'pointer' : 'default', color: 'inherit', font: 'inherit',
                     background: s.status === '보강' ? '#FFF8EE' : '#fff',
                   }}
                 >
@@ -943,10 +950,124 @@ function CloseCheckPill({ s }) {
   return null
 }
 
+// 선생님 마감 탭 아래: 아이별 날짜와 급여 회기 (급여와 같은 규칙으로 서버가 센 값)
+function TeacherCloseList({ ym, rows, snap }) {
+  const md = (d) => `${Number(String(d).slice(5, 7))}/${Number(String(d).slice(8, 10))}`
+  const kids = useMemo(() => {
+    const m = new Map()
+    // 아이 id로 묶습니다 (이름이 같은 아이가 있어도 따로)
+    rows.forEach((r) => {
+      const key = String(r.student_id ?? r.student_name)
+      if (!m.has(key)) m.set(key, [])
+      m.get(key).push(r)
+    })
+    return [...m.values()]
+      .map((list) => {
+        const sumU = (f) => list.filter(f).reduce((a, x) => a + (Number(x.units) || 0), 0)
+        const absents = list.filter((x) => x.status === '결강')
+        const makeup = sumU((x) => x.status === '보강')
+        return {
+          key: String(list[0].student_id ?? list[0].student_name),
+          name: list[0].student_name,
+          list: [...list].sort((a, b) => String(a.d).localeCompare(String(b.d)) || String(a.start_time).localeCompare(String(b.start_time))),
+          // 급여와 같은 방식: 합계 = 모든 수업의 회기, 수업 = 합계 − 보강
+          lesson: sumU(() => true) - makeup,
+          makeup,
+          absent: absents.length,
+          unmade: absents.filter((x) => Number(x.left_min) > 0).length,
+        }
+      })
+      .sort((a, b) => a.name.localeCompare(b.name, 'ko'))
+  }, [rows])
+  const tot = kids.reduce((a, k) => ({ lesson: a.lesson + k.lesson, makeup: a.makeup + k.makeup, unmade: a.unmade + k.unmade }), { lesson: 0, makeup: 0, unmade: 0 })
+  const total = tot.lesson + tot.makeup
+  const same =
+    snap &&
+    Math.abs(total - (Number(snap.units) || 0)) < 0.001 &&
+    Math.abs(tot.makeup - (Number(snap.makeups) || 0)) < 0.001 &&
+    tot.unmade === (Number(snap.unmade) || 0)
+  const partial = rows.some((r) => r.status === '보강' && r.makeup_for && Number(r.units) === 0)
+  const chip = (bg, fg, text, key) => (
+    <span key={key} style={{ fontSize: 12.5, fontWeight: 600, borderRadius: 7, padding: '3px 8px', background: bg, color: fg, whiteSpace: 'nowrap' }}>
+      {text}
+    </span>
+  )
+  const pill = (bg, fg, text) => (
+    <span style={{ fontSize: 11.5, fontWeight: 700, borderRadius: 99, padding: '2px 8px', background: bg, color: fg, whiteSpace: 'nowrap' }}>{text}</span>
+  )
+  return (
+    <div style={{ maxWidth: 560, margin: '0 auto' }}>
+      <div style={{ fontSize: 14.5, fontWeight: 800, color: C.ink, margin: '4px 0 8px' }}>{Number(ym.slice(5))}월 아이별 수업 날짜</div>
+      <Card style={{ overflow: 'hidden', padding: 0 }}>
+        {!kids.length && <Empty>이 달 수업이 없습니다.</Empty>}
+        {kids.map((k) => (
+          <div key={k.key} style={{ padding: '11px 14px', borderBottom: `1px solid ${C.line2}` }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 7 }}>
+              <span style={{ fontSize: 15, fontWeight: 800, color: C.ink, marginRight: 4 }}>{k.name}</span>
+              {pill(DOT.진행.bg, DOT.진행.fg, `수업 ${fmtUnits(k.lesson)}회기`)}
+              {k.makeup > 0 && pill(DOT.보강.bg, DOT.보강.fg, `보강 ${fmtUnits(k.makeup)}회기`)}
+              {k.absent > 0 &&
+                pill(
+                  k.unmade ? DOT.미보강.bg : '#F2F3F5',
+                  k.unmade ? DOT.미보강.fg : C.sub,
+                  `결강 ${k.absent}건 · ${k.unmade ? `미보강 ${k.unmade}` : '보강 완료'}`
+                )}
+            </div>
+            <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+              {k.list.map((r) => {
+                if (r.status === '결강')
+                  return chip(
+                    '#FDECEF', '#AE2340',
+                    `${md(r.d)} 결강${Number(r.left_min) > 0 ? ` · 남은 보강 ${r.left_min}분` : ' · 보강함'}`,
+                    r.id
+                  )
+                if (r.status === '보강')
+                  return chip(
+                    '#EEF3FD', '#254B8C',
+                    `${md(r.d)} 보강${r.makeup_for && Number(r.minutes) < 50 ? ` ${r.minutes}분` : ''}${r.makeup_for && Number(r.units) === 0 ? ' (회기 0)' : ''}`,
+                    r.id
+                  )
+                return chip('#F6F7F8', C.ink, md(r.d), r.id)
+              })}
+            </div>
+          </div>
+        ))}
+        {kids.length > 0 && (
+          <div style={{ padding: '11px 14px', background: '#FBFBFC', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 13.5, fontWeight: 800 }}>
+              합계 — 수업 {fmtUnits(tot.lesson)} · 보강 {fmtUnits(tot.makeup)} · 합계 {fmtUnits(total)}회기
+            </span>
+            {snap &&
+              (same
+                ? pill('#EDF7F1', '#1F5B3A', '✓ 위 숫자와 같습니다')
+                : pill('#FEF6E7', '#8A5A00', '위 숫자와 다릅니다 · 원장님이 요청 뒤 출결을 고쳤을 수 있어요'))}
+          </div>
+        )}
+      </Card>
+      {partial && (
+        <div style={{ fontSize: 12.5, color: C.sub, marginTop: 8, lineHeight: 1.55 }}>
+          '(회기 0)'은 10분씩 나눠 한 보강이라 아직 회기로 잡히지 않은 것입니다. 나눠 한 보강은 모인 시간만큼 회기로 들어갑니다.
+        </div>
+      )}
+    </div>
+  )
+}
+
 // 선생님 마감 탭: 원장님 요청에 '맞아요 / 달라요'
-function TeacherCloseCheck({ ym, state, onAnswer, busy }) {
+function TeacherCloseCheck({ ym, state, onAnswer: onAnswerRaw, busy }) {
   const [mode, setMode] = useState(null) // null | 'no'
   const [why, setWhy] = useState('')
+  // 빠르게 두 번 눌러도 한 번만 보냅니다
+  const sending = useRef(false)
+  const onAnswer = async (agree, reason) => {
+    if (sending.current) return
+    sending.current = true
+    try {
+      await onAnswerRaw(agree, reason)
+    } finally {
+      sending.current = false
+    }
+  }
   const mm = Number(ym.slice(5))
   const box = { maxWidth: 560, margin: '0 auto 14px' }
   if (state.st === 'none')
@@ -967,12 +1088,15 @@ function TeacherCloseCheck({ ym, state, onAnswer, busy }) {
     <Card style={{ ...box, padding: '14px 16px', border: state.st === 'wait' ? '1.5px solid #85B7EB' : undefined }}>
       <div style={{ fontSize: 15, fontWeight: 800 }}>{mm}월 마감 확인</div>
       <div style={{ fontSize: 13, color: C.sub, margin: '4px 0 10px', lineHeight: 1.5 }}>
-        원장님 급여 화면의 숫자입니다. 아래 출결 목록과 맞는지 확인해 주세요.
+        원장님 급여 화면의 숫자입니다. 아래 아이별 날짜를 보고 맞는지 확인해 주세요.
       </div>
       <div style={{ display: 'flex', gap: 8 }}>
-        {cell('회기 (수업 + 보강)', fmtUnits(sn.units ?? 0))}
-        {cell('그중 보강', fmtUnits(sn.makeups ?? 0), '#254B8C')}
-        {cell('아직 보강 안 된 결강', sn.unmade ?? 0, Number(sn.unmade) ? C.danger : C.ink)}
+        {cell('수업', fmtUnits((Number(sn.units) || 0) - (Number(sn.makeups) || 0)) + '회기')}
+        {cell('보강', fmtUnits(sn.makeups ?? 0) + '회기', '#254B8C')}
+        {cell('합계', fmtUnits(sn.units ?? 0) + '회기')}
+      </div>
+      <div style={{ fontSize: 12.5, marginTop: 7, color: Number(sn.unmade) ? C.danger : C.sub }}>
+        아직 보강 안 된 결강 {Number(sn.unmade) || 0}건
       </div>
       {state.st === 'wait' ? (
         mode === 'no' ? (
@@ -1259,7 +1383,7 @@ function TeacherMonth({ ym, me, staff, sessions, unmade, loadHolidays, toneOf, c
             outByDay={{}}
             showTeacher={false}
             colorOf={colorOf}
-            onPick={() => {}}
+            onPick={null}
             today={isoOf(new Date())}
           />
         ) : (
@@ -8469,6 +8593,7 @@ function App() {
   const [makeupLog, setMakeupLog] = useState([])
   const [notices, setNotices] = useState([]) // 원장님 ↔ 선생님 확인 문구
   const [makeupPreset, setMakeupPreset] = useState(null) // 선생님 보강 체크로 보강 등록할 때 미리 채울 값
+  const [tUnits, setTUnits] = useState(undefined) // 선생님 마감 탭: { ym, rows } · undefined = 불러오는 중 · null = 못 불러옴(SQL 실행 전) → 예전 출결 목록
 
   // 어느 선생님이 어느 아이를 가르치는지 (수업 추가 창에서 아이 목록을 고르는 데 씁니다)
   // 선생님·아이·요일별 정규 수업 (수업 추가 창에서 시간·수업 종류를 채우는 데 씁니다)
@@ -8662,6 +8787,18 @@ function App() {
       tYmBack.current = null
     }
   }, [isAdmin, tab, closeYm])
+
+  // 선생님 마감 탭: 그 달 본인 수업의 급여 회기를 불러옵니다
+  useEffect(() => {
+    if (isAdmin || !session || tab !== 'myclose') return
+    let on = true
+    myMonthUnits(closeYm)
+      .then((r) => on && setTUnits(r ? { ym: closeYm, rows: r } : null))
+      .catch(() => on && setTUnits(null))
+    return () => {
+      on = false
+    }
+  }, [isAdmin, session, tab, closeYm, monthSessions])
 
   // 확인 문구는 1분마다, 그리고 창으로 돌아올 때 새로 불러옵니다 (상대방이 보낸 것이 바로 보이게)
   useEffect(() => {
@@ -9142,7 +9279,7 @@ function App() {
               await confirmNotice(n.id).catch(() => {})
               setNotices(await loadNotices())
             }}
-            waiting={notices.filter((n) => n.to_staff && !n.confirmed_at)}
+            waiting={notices.filter((n) => n.to_staff && !n.confirmed_at && n.kind !== 'close_req')}
             nameOf={(id) => staff.find((x) => String(x.id) === String(id))?.name || '?'}
             busy={busy}
             onBook={(n) => {
@@ -9307,7 +9444,8 @@ function App() {
             onMark={async (id, status, row) => {
               setBusy(true)
               try {
-                const before = row || findSession(id)
+                // 출결 체크 목록 줄에 담당 선생님 정보가 없으면 화면에 불러 둔 수업에서 찾습니다
+                const before = row?.staff_id != null ? row : findSession(id) || row
                 await markAttendance(id, status)
                 await tellMark(before, status)
                 say(status === '결강' ? '결강으로 표시했습니다' : '진행으로 되돌렸습니다')
@@ -9397,26 +9535,36 @@ function App() {
             />
           </>
         )}
-        {/* 선생님 마감: 아래에 그 달 출결 목록 (보기만 — 결강 처리는 원장님) */}
-        {!loading && tab === 'myclose' && !isAdmin && ym === closeYm && (
+        {/* 선생님 마감: 아래에 아이별 날짜와 급여 회기 (보기만 — 결강 처리는 원장님) */}
+        {!loading && tab === 'myclose' && !isAdmin && me && (
           <div style={{ marginTop: 18 }}>
-            <div style={{ maxWidth: 560, margin: '0 auto 8px', fontSize: 14.5, fontWeight: 800, color: C.ink }}>
-              {Number(ym.slice(5))}월 출결 — 아이별 날짜를 위 숫자와 대조해 보세요
-            </div>
-            <MonthView
-              ym={ym}
-              staff={null}
-              filter={null}
-              onFilter={() => {}}
-              colorOf={colorOf}
-              sessions={monthSessions.filter((s) => !me || s.staff_name === me.name)}
-              busy={busy}
-              isAdmin={false}
-              onPrevYm={null}
-              onNextYm={null}
-              onMark={null}
-              hideTotals
-            />
+            {tUnits && tUnits.ym === closeYm ? (
+              <TeacherCloseList ym={closeYm} rows={tUnits.rows} snap={closeStateOf(notices, me.id, closeYm, null).req?.payload || null} />
+            ) : tUnits === undefined || (tUnits && tUnits.ym !== closeYm) ? (
+              <Loading />
+            ) : (
+              ym === closeYm && (
+                <>
+                  <div style={{ maxWidth: 560, margin: '0 auto 8px', fontSize: 14.5, fontWeight: 800, color: C.ink }}>
+                    {Number(ym.slice(5))}월 출결
+                  </div>
+                  <MonthView
+                    ym={ym}
+                    staff={null}
+                    filter={null}
+                    onFilter={() => {}}
+                    colorOf={colorOf}
+                    sessions={monthSessions.filter((s) => s.staff_name === me.name)}
+                    busy={busy}
+                    isAdmin={false}
+                    onPrevYm={null}
+                    onNextYm={null}
+                    onMark={null}
+                    hideTotals
+                  />
+                </>
+              )
+            )}
           </div>
         )}
 
@@ -9636,8 +9784,17 @@ function App() {
                   setBusy(false)
                 },
                 onRequestAll: async (rows) => {
-                  const list = rows.filter((r) => !(me && String(r.staff_id) === String(me.id)) && !closings.some((c) => c.status === '승인' && c.staff_name === r.staff_name))
-                  if (!list.length) return
+                  // 원장님 본인 · 이미 마감한 선생님 · 이미 요청해 답을 기다리는 중이거나 '같음'이라고 답한 선생님은 빼고 보냅니다
+                  const list = rows.filter((r) => {
+                    if (me && String(r.staff_id) === String(me.id)) return false
+                    if (closings.some((c) => c.status === '승인' && c.staff_name === r.staff_name)) return false
+                    const st = closeStateOf(notices, r.staff_id, ym, r).st
+                    return st === 'none' || st === 'changed' || st === 'disagree'
+                  })
+                  if (!list.length) {
+                    say('지금 확인을 요청할 선생님이 없습니다 (이미 요청했거나 같다고 답함)')
+                    return
+                  }
                   if (!confirm(`${list.map((r) => r.staff_name).join(', ')} 선생님께 ${Number(ym.slice(5))}월 마감 확인을 요청할까요?`)) return
                   setBusy(true)
                   try {
