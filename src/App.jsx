@@ -751,6 +751,103 @@ function layout(items, names) {
 }
 
 
+// 휴대폰처럼 좁은 화면인지 (화면 폭이 바뀌면 다시 계산)
+function useNarrow(px = 640) {
+  const get = () => (typeof window !== 'undefined' ? window.innerWidth < px : false)
+  const [n, setN] = useState(get)
+  useEffect(() => {
+    const on = () => setN(get())
+    window.addEventListener('resize', on)
+    return () => window.removeEventListener('resize', on)
+  }, [px])
+  return n
+}
+
+// 휴대폰용 주간 시간표 — 6일을 가로로 나누면 칸이 너무 좁아서, 날짜별로 위에서 아래로 목록으로 보여 줍니다
+function WeekAgenda({ days, sessions, holidayMap, outByDay, showTeacher, colorOf, onPick, today }) {
+  const chip = (bg, fg, text) => (
+    <span style={{ fontSize: 11.5, fontWeight: 700, color: fg, background: bg, borderRadius: 99, padding: '2px 8px', whiteSpace: 'nowrap', flexShrink: 0 }}>
+      {text}
+    </span>
+  )
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {days.map((d) => {
+        const ds = isoOf(d)
+        const hol = holidayMap[ds]
+        const isToday = ds === today
+        const rows = [
+          ...(outByDay[ds] || []).map((e) => ({ out: true, e, a: e.start_time })),
+          ...sessions.filter((s) => s.d === ds).map((s) => ({ out: false, s, a: s.start_time })),
+        ].sort((x, y) => x.a.localeCompare(y.a))
+        return (
+          <Card key={ds} style={{ overflow: 'hidden', padding: 0, border: isToday ? '1.5px solid #85B7EB' : undefined }}>
+            <div
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8, padding: '9px 14px',
+                background: hol ? '#FDECEF' : isToday ? '#E6F1FB' : '#FBFBFC',
+                borderBottom: rows.length ? `1px solid ${C.line}` : 'none',
+              }}
+            >
+              <span style={{ fontSize: 15, fontWeight: 800, color: hol ? HOLIDAY.fg : isToday ? '#0C447C' : C.ink }}>
+                {d.getMonth() + 1}/{d.getDate()} ({'일월화수목금토'[d.getDay()]})
+              </span>
+              {isToday && chip('#0C447C', '#fff', '오늘')}
+              {hol && chip(HOLIDAY.pill, '#fff', hol)}
+              {!rows.length && <span style={{ marginLeft: 'auto', fontSize: 12.5, color: C.mut }}>수업 없음</span>}
+            </div>
+            {rows.map((r) => {
+              if (r.out) {
+                const e = r.e
+                return (
+                  <div key={'o' + e.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderTop: `1px solid #F2F3F5` }}>
+                    <span style={{ width: 82, flexShrink: 0, fontSize: 13, color: C.sub, fontVariantNumeric: 'tabular-nums' }}>
+                      {clock(e.start_time)}~{clock(e.end_time)}
+                    </span>
+                    <span style={{ flex: 1, minWidth: 0, fontSize: 14.5, fontWeight: 700, color: C.ink }}>{e.label}</span>
+                    {chip(OUTSIDE.bg, '#fff', '외부')}
+                  </div>
+                )
+              }
+              const s = r.s
+              const off = s.status === '결강' || s.status === '취소'
+              return (
+                <button
+                  key={s.id}
+                  onClick={() => onPick(s)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '10px 14px',
+                    border: 'none', borderTop: `1px solid #F2F3F5`, textAlign: 'left', cursor: 'pointer',
+                    background: s.status === '보강' ? '#FFF8EE' : '#fff',
+                  }}
+                >
+                  <span style={{ width: 82, flexShrink: 0, fontSize: 13, color: C.sub, fontVariantNumeric: 'tabular-nums' }}>
+                    {clock(s.start_time)}~{clock(s.end_time)}
+                  </span>
+                  <span style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    {showTeacher && (
+                      <span style={{ width: 4, alignSelf: 'stretch', borderRadius: 2, background: colorOf(s.staff_name), flexShrink: 0 }} />
+                    )}
+                    <span style={{ minWidth: 0 }}>
+                      <span style={{ display: 'block', fontSize: 15, fontWeight: 700, color: off ? C.mut : C.ink, textDecoration: off ? 'line-through' : 'none' }}>
+                        {s.student_name}
+                      </span>
+                      {showTeacher && <span style={{ display: 'block', fontSize: 11.5, color: C.mut }}>{s.staff_name}</span>}
+                    </span>
+                  </span>
+                  {s.status === '보강' && chip(MAKEUP, '#fff', '보강')}
+                  {s.status === '결강' && chip('#FDECEF', '#AE2340', s.needs_makeup ? '결강 · 미보강' : '결강 · 보강완료')}
+                  {s.status === '취소' && chip('#F2F3F5', C.mut, '취소')}
+                </button>
+              )
+            })}
+          </Card>
+        )
+      })}
+    </div>
+  )
+}
+
 function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colorOf, toneOf, staffOrder = [], onPick, today }) {
   const days = useMemo(
     () =>
@@ -791,6 +888,21 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
     return [...ordered, ...rest]
   }, [sessions, staffOrder, outside, ownerName, weekStart])
   const height = (DAY_END - DAY_START) * PX
+  const phone = useNarrow()
+
+  if (phone)
+    return (
+      <WeekAgenda
+        days={days}
+        sessions={sessions}
+        holidayMap={holidayMap}
+        outByDay={outByDay}
+        showTeacher={weekNames.length > 1}
+        colorOf={colorOf}
+        onPick={onPick}
+        today={today}
+      />
+    )
 
   return (
     <Card style={{ overflow: 'hidden' }}>
@@ -1192,6 +1304,11 @@ function MonthView({
   )
 
   const colW = 32
+  // 휴대폰: 오른쪽 '수업 · 결강 · 보강' 딱지를 옆으로 늘어놓으면 화면 밖으로 밀려나서 세로로 쌓습니다
+  const phone = useNarrow()
+  const badgeBox = phone
+    ? { width: 100, marginLeft: 6, flexShrink: 0, display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-end', gap: 3 }
+    : { width: 230, display: 'inline-flex', justifyContent: 'flex-end', gap: 4 }
 
   return (
     <div style={{ maxWidth: 560, margin: '0 auto' }}>
@@ -1259,7 +1376,7 @@ function MonthView({
           {Array.from({ length: weeks }, (_, i) => (
             <span key={i} style={{ width: colW, textAlign: 'center' }}>{i + 1}주</span>
           ))}
-          <span style={{ width: 230, textAlign: 'right' }}>수업 · 결강 · 보강 (회기)</span>
+          <span style={{ width: phone ? 100 : 230, marginLeft: phone ? 6 : 0, flexShrink: 0, textAlign: 'right' }}>{phone ? '회기' : '수업 · 결강 · 보강 (회기)'}</span>
         </div>
 
         {rows.length === 0 ? (
@@ -1313,7 +1430,7 @@ function MonthView({
                       </span>
                     )
                   })}
-                  <span style={{ width: 230, display: 'inline-flex', justifyContent: 'flex-end', gap: 4 }}>
+                  <span style={badgeBox}>
                     <span style={{ fontSize: 11.5, fontWeight: 700, borderRadius: 99, padding: '2px 8px', background: DOT.진행.bg, color: DOT.진행.fg, whiteSpace: 'nowrap' }}>
                       수업 {g.lessonU}회기
                     </span>
@@ -8714,7 +8831,9 @@ function App() {
               today={isoOf(new Date())}
             />
 
-            <div style={{ display: 'flex', gap: 14, marginTop: 11, flexWrap: 'wrap', fontSize: 11.5, color: C.sub }}>
+            {/* 휴대폰 목록 보기에서는 색 칸이 없어서 아래 색 안내를 숨깁니다 */}
+            <style>{'@media (max-width: 639px) { .wk-legend { display: none !important; } }'}</style>
+            <div className="wk-legend" style={{ display: 'flex', gap: 14, marginTop: 11, flexWrap: 'wrap', fontSize: 11.5, color: C.sub }}>
               {staff
                 .filter((x) => x.active)
                 .map((x) => {
