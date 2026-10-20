@@ -855,6 +855,30 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
           const hol = holidayMap[ds]
           const isHoliday = !!hol
           const items = sessions.filter((s) => s.d === ds)
+          const laid = layout(items, weekNames)
+          // 외부 일정 · 보강은 글자가 길거나 칸이 낮아서 좁은 줄에서는 잘립니다.
+          //   그 시간에 비어 있는 옆 선생님 줄이 있으면 거기까지 넓혀 그립니다 (다른 수업 칸과는 겹치지 않게).
+          const nL = Math.max(weekNames.length, 1)
+          const ownerLane = ownerName ? weekNames.indexOf(ownerName) : -1
+          const dayOut = ownerLane >= 0 ? outByDay[ds] || [] : []
+          const occ = [
+            ...laid.map(({ s, col }) => ({ key: 's' + s.id, lane: col, a: toMin(s.start_time), b: toMin(s.end_time) })),
+            ...dayOut.map((e) => ({ key: 'o' + e.id, lane: ownerLane, a: toMin(e.start_time), b: toMin(e.end_time) })),
+          ]
+          const spanOf = {}
+          const widen = (key, lane, a, b) => {
+            const free = (l) => !occ.some((o) => o.key !== key && o.lane === l && o.a < b && o.b > a)
+            let l0 = lane
+            let l1 = lane
+            while (l1 + 1 < nL && free(l1 + 1)) l1++
+            while (l0 - 1 >= 0 && free(l0 - 1)) l0--
+            for (let l = l0; l <= l1; l++) if (l !== lane) occ.push({ key, lane: l, a, b })
+            spanOf[key] = [l0, l1]
+          }
+          dayOut.forEach((e) => widen('o' + e.id, ownerLane, toMin(e.start_time), toMin(e.end_time)))
+          laid.forEach(({ s, col, subs }) => {
+            if (s.status === '보강' && subs === 1) widen('s' + s.id, col, toMin(s.start_time), toMin(s.end_time))
+          })
           return (
             <div
               key={i}
@@ -906,8 +930,11 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                 const eh = (toMin(e.end_time) - toMin(e.start_time)) * PX
                 // 원장 줄에 놓습니다 (원장 수업과 같은 줄, 색만 다르게)
                 const lane = ownerName ? weekNames.indexOf(ownerName) : -1
-                const n = Math.max(weekNames.length, 1)
-                const w = 100 / n
+                const nAll = Math.max(weekNames.length, 1)
+                const w = 100 / nAll
+                const sp = spanOf['o' + e.id] || [lane, lane]
+                const span = sp[1] - sp[0] + 1
+                const n = nAll / span // 넓힌 만큼 덜 좁은 칸으로 취급 (글씨 크기 · 시간 표시)
                 return (
                   <div
                     key={e.id}
@@ -916,8 +943,9 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                       position: 'absolute',
                       top: top + 1,
                       height: Math.max(eh - 3, 18),
-                      left: lane >= 0 ? `calc(${lane * w}% + 2px)` : 2,
-                      width: lane >= 0 ? `calc(${w}% - 4px)` : 'calc(100% - 4px)',
+                      left: lane >= 0 ? `calc(${sp[0] * w}% + 2px)` : 2,
+                      width: lane >= 0 ? `calc(${span * w}% - 4px)` : 'calc(100% - 4px)',
+                      boxSizing: 'border-box', // 안쪽 여백까지 폭 · 높이 안에 (옆 칸 · 다음 수업을 덮지 않게)
                       borderRadius: 7,
                       background: OUTSIDE.bg,
                       border: `1px solid ${OUTSIDE.bd}`,
@@ -939,29 +967,32 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                 )
               })}
 
-              {layout(items, weekNames).map(({ s, col, cols: laneCols, sub, subs }) => {
-                // 겹쳐서 나눈 칸은 그만큼 좁은 칸으로 취급 (글씨 크기 등)
-                const cols = laneCols * subs
+              {laid.map(({ s, col, cols: laneCols, sub, subs }) => {
+                // 위치 · 폭(%): 보통은 선생님 줄(겹치면 그 안을 나눈 칸), 넓힌 보강은 넓힌 줄 전체
+                const sp = spanOf['s' + s.id]
+                const leftPct = sp ? (sp[0] * 100) / laneCols : ((col * subs + sub) * 100) / (laneCols * subs)
+                const widthPct = sp ? ((sp[1] - sp[0] + 1) * 100) / laneCols : 100 / (laneCols * subs)
+                // 칸 폭에 맞춰 글씨 크기 등을 정합니다 (줄 1개 폭 = 1, 나눈 칸 = 2 …)
+                const cols = 100 / widthPct
                 // 배경은 선생님 색, 결강·취소는 빗금과 취소선으로 구분합니다
                 const tone = toneOf ? toneOf(s.staff_name) : styleOf(s)
                 const tc = colorOf(s.staff_name)
                 const off = s.status === '결강' || s.status === '취소'
                 const isMakeup = s.status === '보강'
                 const h = (toMin(s.end_time) - toMin(s.start_time)) * PX
-                const w = 100 / cols
-                const narrow = cols > 1
+                const narrow = cols > 1.01
                 // 30분 남짓한 짧은 수업(나눠 보강 등)은 칸이 낮아서 두 줄이 안 들어갑니다 → 딱지 · 이름 · 시간을 한 줄로
                 const short = h < 36
                 return (
                   <button
                     key={s.id}
                     onClick={() => onPick(s)}
-                    title={`${s.student_name} · ${s.staff_name} · ${clock(s.start_time)}-${clock(s.end_time)}`}
+                    title={`${isMakeup ? '[보강] ' : ''}${s.student_name} · ${s.staff_name} · ${clock(s.start_time)}-${clock(s.end_time)}`}
                     style={{
                       position: 'absolute',
                       top: (toMin(s.start_time) - DAY_START) * PX,
-                      left: `calc(${(col * subs + sub) * w}% + ${subs > 1 && sub > 0 ? 1 : 2}px)`,
-                      width: `calc(${w}% - ${subs > 1 ? 3 : 4}px)`,
+                      left: `calc(${leftPct}% + ${subs > 1 && sub > 0 ? 1 : 2}px)`,
+                      width: `calc(${widthPct}% - ${subs > 1 ? 3 : 4}px)`,
                       height: Math.max(h - 2, short ? 20 : 18),
                       background: off
                         ? `repeating-linear-gradient(135deg, ${tone.bg}, ${tone.bg} 5px, #FFFFFF 5px, #FFFFFF 10px)`
@@ -982,7 +1013,7 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                       zIndex: short ? 1 : undefined,
                     }}
                   >
-                    {isMakeup && (
+                    {isMakeup && !(short && narrow) && (
                       <span
                         style={{
                           display: 'inline-block', fontSize: narrow ? 8.5 : 9.5, fontWeight: 700, color: '#fff',
@@ -5040,11 +5071,30 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
     // 수업 칸 글자 크기는 표 전체가 똑같게: 한 칸이라도 안 들어가면 전체를 한 단계씩 줄입니다
     const LV = ['tt-fsm', 'tt-fxs', 'tt-fxxs']
     el.classList.remove(...LV)
+    // 글자 폭을 소수점까지 재서 칸 안에 들어가는지 봅니다.
+    //   scrollWidth는 정수로 반올림돼서 1px 안쪽으로 넘치는 경우를 놓치고, 그때 이름이 '서강…'처럼 잘립니다.
+    const tooWide = (blk) => {
+      const r = blk.getBoundingClientRect()
+      const s = blk.offsetWidth ? r.width / blk.offsetWidth : 1
+      if (!(s > 0)) return false
+      const cs = getComputedStyle(blk)
+      const inner = blk.clientWidth - parseFloat(cs.paddingLeft || 0) - parseFloat(cs.paddingRight || 0)
+      const textW = (node) => {
+        if (!node) return 0
+        const rg = document.createRange()
+        rg.selectNodeContents(node)
+        return rg.getBoundingClientRect().width / s
+      }
+      const bw = textW(blk.querySelector('b'))
+      const sw = textW(blk.querySelector('small'))
+      const need = cs.display === 'flex' ? bw + sw + (sw ? parseFloat(cs.columnGap) || 0 : 0) : Math.max(bw, sw)
+      return need > inner - 0.5
+    }
     const overAny = () =>
       [...el.querySelectorAll('.tt-gblk:not(.tt-gout):not(.tt-glane):not(.tt-gmk)')].some((blk) => {
         const bb = blk.querySelector('b')
         return blk.scrollWidth > blk.clientWidth + 1 || blk.scrollHeight > blk.clientHeight + 1 ||
-          (bb && bb.scrollWidth > bb.clientWidth + 1)
+          (bb && bb.scrollWidth > bb.clientWidth + 1) || tooWide(blk)
       })
     for (const lv of LV) {
       if (!overAny()) break
@@ -5059,7 +5109,7 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
         const bb = blk.querySelector('b')
         const sm = blk.querySelector('small')
         return blk.scrollWidth > blk.clientWidth + 1 || blk.scrollHeight > blk.clientHeight + 1 ||
-          (bb && bb.scrollWidth > bb.clientWidth + 1) || (sm && sm.scrollWidth > sm.clientWidth + 1)
+          (bb && bb.scrollWidth > bb.clientWidth + 1) || (sm && sm.scrollWidth > sm.clientWidth + 1) || tooWide(blk)
       }
       // 안 들어가면: 먼저 같은 크기로 두 줄(이름 / 시간) → 한 단계 작게 한 줄 → 두 줄 … 순서로 (글자가 겹치지 않게)
       const steps = [['tt-g2n'], ['tt-gsm'], ['tt-g2n', 'tt-gsm'], ['tt-gxs'], ['tt-g2n', 'tt-gxs'], ['tt-g2t']]
@@ -5077,6 +5127,7 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
   // 시간 비례: 한 시간 = GH px. 수업은 시작 분 ~ 끝 분 위치에 그 길이만큼 그립니다.
   //   같은 시간에 겹치는 일정은 나란히 (겹친 것끼리만 폭을 나눔)
   const GH = 26
+  const MIN_BLK = 20 // 짧은 수업 칸의 최소 높이 (한 줄이 들어가는 높이)
   // 이 달 내내 일정이 한 건도 없는 시간 줄은 얇게 접어서, 그만큼 표 전체(글자)를 크게 씁니다.
   //   일정이 있는 시간 줄 안에서는 분 단위 위치 · 길이가 그대로 정확합니다.
   // 시간 줄 높이는 모두 같게 (선생님끼리 비교하기 쉽게)
@@ -5122,6 +5173,19 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
       groupEnd = Math.max(groupEnd, k.b)
     }
     if (group.length) flush()
+    // 짧은 수업(나눠 보강 20분 등)은 칸이 너무 낮아 글씨가 잘리므로,
+    //   바로 아래 다른 칸이나 표 끝에 닿지 않는 범위에서 칸을 한 줄 높이까지 늘려 그립니다 (시작 위치는 그대로)
+    items.forEach((k) => {
+      const x0 = k.lane / k.lanes
+      const x1 = (k.lane + 1) / k.lanes
+      let room = bodyH
+      items.forEach((o) => {
+        if (o === k || o.a < k.b) return
+        if (o.lane / o.lanes >= x1 || (o.lane + 1) / o.lanes <= x0) return
+        room = Math.min(room, yOf(o.a))
+      })
+      k.room = room - yOf(k.a) - 1
+    })
     return items
   }
   // 보강 잡아야 할 것 — 아직 보강을 안 잡은 결강을 아이별로 묶어서, 오래된 결강부터
@@ -5249,7 +5313,7 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
                     })}
                     {(hol ? holBlocks : blocksOf(dIso)).map((k) => {
                       const top = yOf(k.a)
-                      const hgt = Math.max(yOf(k.b) - top - 1, 8)
+                      const hgt = Math.max(yOf(k.b) - top - 1, Math.min(MIN_BLK, k.room), 8)
                       const pos = {
                         top, height: hgt,
                         left: `calc(${(k.lane / k.lanes) * 100}% + 1px)`,
