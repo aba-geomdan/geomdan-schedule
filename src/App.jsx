@@ -709,13 +709,45 @@ const toMin = (t) => {
 // 선생님마다 고정된 세로 열을 줍니다.
 //   같은 선생님이 같은 시간에 두 수업을 할 수 없으므로 열이 겹치지 않고,
 //   하루 안에서 한 선생님 수업이 같은 줄에 쭉 이어집니다.
+// 단, 같은 선생님 줄 안에서 시간이 겹치면(결강한 수업 자리에 보강을 잡은 경우 등)
+//   그 줄을 다시 반으로 나눠 나란히 놓습니다 — 결강·취소가 왼쪽, 보강이 오른쪽.
 function layout(items, names) {
   if (!items.length || !names.length) return []
   const cols = names.length
-  return items.map((s) => {
+  const rank = (s) => (s.status === '결강' || s.status === '취소' ? 0 : 1)
+  const byLane = {}
+  items.forEach((s) => {
     const i = names.indexOf(s.staff_name)
-    return { s, col: i < 0 ? 0 : i, cols }
+    const col = i < 0 ? 0 : i
+    ;(byLane[col] = byLane[col] || []).push(s)
   })
+  const out = []
+  Object.entries(byLane).forEach(([col, list]) => {
+    list.sort((a, b) => toMin(a.start_time) - toMin(b.start_time) || rank(a) - rank(b))
+    // 겹치는 수업끼리 한 묶음으로
+    let group = []
+    let groupEnd = -1
+    const flush = () => {
+      const ends = [] // 나눈 칸마다 마지막으로 끝나는 시각
+      const placed = group.map((s) => {
+        const st = toMin(s.start_time)
+        let sub = ends.findIndex((e) => e <= st)
+        if (sub < 0) { sub = ends.length; ends.push(0) }
+        ends[sub] = toMin(s.end_time)
+        return { s, sub }
+      })
+      placed.forEach(({ s, sub }) => out.push({ s, col: Number(col), cols, sub, subs: ends.length }))
+      group = []
+      groupEnd = -1
+    }
+    list.forEach((s) => {
+      if (group.length && toMin(s.start_time) >= groupEnd) flush()
+      group.push(s)
+      groupEnd = Math.max(groupEnd, toMin(s.end_time))
+    })
+    if (group.length) flush()
+  })
+  return out
 }
 
 
@@ -906,7 +938,9 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                 )
               })}
 
-              {layout(items, weekNames).map(({ s, col, cols }) => {
+              {layout(items, weekNames).map(({ s, col, cols: laneCols, sub, subs }) => {
+                // 겹쳐서 나눈 칸은 그만큼 좁은 칸으로 취급 (글씨 크기 등)
+                const cols = laneCols * subs
                 // 배경은 선생님 색, 결강·취소는 빗금과 취소선으로 구분합니다
                 const tone = toneOf ? toneOf(s.staff_name) : styleOf(s)
                 const tc = colorOf(s.staff_name)
@@ -923,8 +957,8 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                     style={{
                       position: 'absolute',
                       top: (toMin(s.start_time) - DAY_START) * PX,
-                      left: `calc(${col * w}% + 2px)`,
-                      width: `calc(${w}% - 4px)`,
+                      left: `calc(${(col * subs + sub) * w}% + ${subs > 1 && sub > 0 ? 1 : 2}px)`,
+                      width: `calc(${w}% - ${subs > 1 ? 3 : 4}px)`,
                       height: Math.max(h - 2, 18),
                       background: off
                         ? `repeating-linear-gradient(135deg, ${tone.bg}, ${tone.bg} 5px, #FFFFFF 5px, #FFFFFF 10px)`
@@ -978,7 +1012,7 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                     )}
                     {s.status === '결강' && h > 52 && (
                       <div style={{ fontSize: 9.5, fontWeight: 700, color: C.danger }}>
-                        {s.needs_makeup ? '결강 · 미보강' : '결강 · 보강완료'}
+                        {subs > 1 ? '결강' : s.needs_makeup ? '결강 · 미보강' : '결강 · 보강완료'}
                       </div>
                     )}
                     {s.status === '결강' && h <= 52 && !narrow && (
