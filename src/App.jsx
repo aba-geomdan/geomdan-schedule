@@ -444,6 +444,35 @@ async function loadHome(ym) {
   return Array.isArray(r) ? r[0] || null : r
 }
 
+// ---- 확인 문구 (원장님 ↔ 선생님) — notices.sql 을 실행해야 동작합니다 ----
+async function loadNotices() {
+  // 아직 notices.sql 을 실행하기 전이면 표가 없어서 오류 → 빈 목록으로 (앱은 그대로 돌아감)
+  //   확인 안 한 문구는 오래돼도 모두, 확인한 것은 최근 2주만 (쌓여도 미확인 문구가 밀려나지 않게)
+  const since = new Date(Date.now() - 14 * 86400000).toISOString()
+  const { data, error } = await supabase
+    .from('notices')
+    .select('*')
+    .or(`confirmed_at.is.null,created_at.gte.${since}`)
+    .order('created_at', { ascending: false })
+    .limit(1000)
+  return error ? [] : data || []
+}
+async function notifyStaff(to, kind, message, sessionRef, payload) {
+  return ok(await supabase.rpc('notify_staff', {
+    p_to: String(to), p_kind: kind, p_message: message,
+    p_session: sessionRef == null ? null : String(sessionRef), p_payload: payload ?? null,
+  }))
+}
+async function reportMakeup(sessionRef, message, payload) {
+  return ok(await supabase.rpc('report_makeup', { p_session: String(sessionRef), p_message: message, p_payload: payload ?? null }))
+}
+async function confirmNotice(id) {
+  return ok(await supabase.rpc('confirm_notice', { p_id: id }))
+}
+async function withdrawNotice(id) {
+  return ok(await supabase.rpc('withdraw_notice', { p_id: id }))
+}
+
 async function loadRecentSessions(days = 7) {
   return ok(await supabase.rpc('recent_sessions', { p_days: days }))
 }
@@ -844,6 +873,286 @@ function WeekAgenda({ days, sessions, holidayMap, outByDay, showTeacher, colorOf
           </Card>
         )
       })}
+    </div>
+  )
+}
+
+/* ================= 확인 문구 (원장님 ↔ 선생님) ================= */
+// 10/21(수)
+const mdw = (d) => (d ? `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}(${'일월화수목금토'[new Date(d + 'T00:00:00').getDay()]})` : '')
+const NOTICE_KIND = {
+  absent: { label: '결강', bg: '#FDECEF', fg: '#AE2340' },
+  makeup: { label: '보강', bg: MAKEUP, fg: '#fff' },
+  unmakeup: { label: '보강 취소', bg: '#F2F3F5', fg: '#4B5057' },
+  undo: { label: '되돌림', bg: '#F2F3F5', fg: '#4B5057' },
+  uncancel: { label: '되돌림', bg: '#F2F3F5', fg: '#4B5057' },
+  cancel: { label: '취소', bg: '#F2F3F5', fg: '#4B5057' },
+  report: { label: '보강 체크', bg: MAKEUP, fg: '#fff' },
+}
+function NoticeChip({ kind }) {
+  const k = NOTICE_KIND[kind] || { label: '알림', bg: '#F2F3F5', fg: '#4B5057' }
+  return (
+    <span style={{ fontSize: 11.5, fontWeight: 700, color: k.fg, background: k.bg, borderRadius: 99, padding: '2px 8px', whiteSpace: 'nowrap', flexShrink: 0 }}>
+      {k.label}
+    </span>
+  )
+}
+const ago = (ts) => {
+  const m = Math.round((Date.now() - new Date(ts).getTime()) / 60000)
+  if (m < 1) return '방금'
+  if (m < 60) return `${m}분 전`
+  if (m < 60 * 24) return `${Math.round(m / 60)}시간 전`
+  return `${Math.round(m / 1440)}일 전`
+}
+
+// 선생님 화면 맨 위: 원장님이 바꾼 일정 (확인할 때까지 떠 있음)
+function TeacherNotices({ items, onConfirm, busy }) {
+  if (!items.length) return null
+  return (
+    <Card className="no-print" style={{ padding: '12px 14px', marginBottom: 14, border: '1.5px solid #F0C27A', background: '#FFFBF2' }}>
+      <div style={{ fontSize: 14.5, fontWeight: 800, color: '#8A4B00', marginBottom: 8 }}>
+        원장님이 일정을 바꿨습니다 · 확인해 주세요 ({items.length}건)
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {items.map((n) => (
+          <div key={n.id} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', background: '#fff', borderRadius: 8, padding: '8px 10px', border: `1px solid ${C.line}` }}>
+            <NoticeChip kind={n.kind} />
+            <span style={{ flex: '1 1 180px', minWidth: 0, fontSize: 13.5, color: C.ink, lineHeight: 1.45 }}>{n.message}</span>
+            <span style={{ fontSize: 11.5, color: C.mut }}>{ago(n.created_at)}</span>
+            <Btn variant="primary" disabled={busy} onClick={() => onConfirm(n.id)} style={{ padding: '6px 12px', fontSize: 13 }}>
+              확인했어요
+            </Btn>
+          </div>
+        ))}
+      </div>
+    </Card>
+  )
+}
+
+// 원장님 화면 맨 위: 선생님이 체크한 보강 + 선생님이 아직 확인 안 한 문구
+function AdminNotices({ reports, waiting, nameOf, onBook, onConfirm, onDrop, busy }) {
+  const [openWait, setOpenWait] = useState(false)
+  if (!reports.length && !waiting.length) return null
+  return (
+    <div className="no-print" style={{ marginBottom: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {reports.length > 0 && (
+        <Card style={{ padding: '12px 14px', border: '1.5px solid #F0C27A', background: '#FFFBF2' }}>
+          <div style={{ fontSize: 14.5, fontWeight: 800, color: '#8A4B00', marginBottom: 8 }}>
+            선생님이 보강을 체크했습니다 · 확인해 주세요 ({reports.length}건)
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {reports.map((n) => (
+              <div key={n.id} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', background: '#fff', borderRadius: 8, padding: '8px 10px', border: `1px solid ${C.line}` }}>
+                <NoticeChip kind="report" />
+                <span style={{ fontSize: 13, fontWeight: 700, color: C.ink, whiteSpace: 'nowrap' }}>{nameOf(n.from_staff)} 선생님</span>
+                <span style={{ flex: '1 1 220px', minWidth: 0, fontSize: 13.5, color: C.ink, lineHeight: 1.45 }}>{n.message}</span>
+                <span style={{ fontSize: 11.5, color: C.mut }}>{ago(n.created_at)}</span>
+                <Btn variant="primary" disabled={busy} onClick={() => onBook(n)} style={{ padding: '6px 12px', fontSize: 13 }}>
+                  보강 등록
+                </Btn>
+                <Btn disabled={busy} onClick={() => onConfirm(n.id)} style={{ padding: '6px 12px', fontSize: 13 }} title="등록 없이 확인만 (이미 등록한 경우 등)">
+                  확인만
+                </Btn>
+                <Btn variant="ghost" disabled={busy} onClick={() => onDrop(n)} style={{ padding: '6px 8px', fontSize: 12.5 }} title="잘못 체크한 것 — 지웁니다">
+                  지우기
+                </Btn>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+      {waiting.length > 0 && (
+        <div style={{ fontSize: 12.5, color: C.sub }}>
+          <button
+            onClick={() => setOpenWait(!openWait)}
+            style={{ border: 'none', background: 'none', padding: 0, cursor: 'pointer', color: C.sub, fontSize: 12.5 }}
+          >
+            {openWait ? '▾' : '▸'} 선생님이 아직 확인 안 한 일정 변경 {waiting.length}건
+          </button>
+          {openWait && (
+            <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {waiting.map((n) => (
+                <div key={n.id} style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
+                  <NoticeChip kind={n.kind} />
+                  <b style={{ color: C.ink }}>{nameOf(n.to_staff)}</b>
+                  <span>{n.message}</span>
+                  <span style={{ color: C.mut }}>· {ago(n.created_at)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// 선생님: 10분씩 나눠 한 보강 체크 → 원장님 화면에 문구
+function TeacherMakeupCheck({ unmade, reports, onReport, onWithdraw, busy }) {
+  const [openId, setOpenId] = useState(null)
+  const [d, setD] = useState(isoOf(new Date()))
+  const [start, setStart] = useState('')
+  const [mins, setMins] = useState(10)
+  const durOf = (u) => minutesBetween(u.start_time, u.end_time)
+  const rows = [...unmade].sort((a, b) => a.d.localeCompare(b.d) || a.start_time.localeCompare(b.start_time))
+  return (
+    <Card style={{ padding: '12px 14px', marginBottom: 14 }}>
+      <div style={{ fontSize: 14.5, fontWeight: 800, color: C.ink }}>보강 했어요 체크</div>
+      <div style={{ fontSize: 12.5, color: C.sub, margin: '3px 0 9px', lineHeight: 1.5 }}>
+        수업을 10분씩 늘려서 보강했다면 여기서 체크해 주세요. 원장님이 확인하면 보강으로 기록됩니다.
+      </div>
+      {!rows.length && <div style={{ fontSize: 13, color: C.mut, padding: '6px 0' }}>보강할 결강이 없습니다.</div>}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {rows.map((u) => {
+          const left = Math.max(durOf(u) - (Number(u.made_min) || 0), 0)
+          const mine = reports.filter((n) => n.session_ref === String(u.id))
+          const pend = mine.filter((n) => !n.confirmed_at)
+          const pendMin = pend.reduce((a, n) => a + (Number(n.payload?.minutes) || 0), 0)
+          const open = openId === u.id
+          return (
+            <div key={u.id} style={{ border: `1px solid ${C.line}`, borderRadius: 9, padding: '9px 11px', background: open ? '#FFFBF2' : '#fff' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 14.5, fontWeight: 700, color: C.ink }}>{u.student_name}</span>
+                <span style={{ fontSize: 12.5, color: C.sub }}>{mdw(u.d)} 결강 · 남은 보강 {left}분</span>
+                <span style={{ flex: 1 }} />
+                {!open && (
+                  <Btn
+                    disabled={busy || left - pendMin <= 0}
+                    onClick={() => {
+                      setOpenId(u.id)
+                      setD(isoOf(new Date()))
+                      setStart('')
+                      setMins(Math.min(10, left - pendMin))
+                    }}
+                    style={{ padding: '6px 12px', fontSize: 13 }}
+                  >
+                    보강 했어요
+                  </Btn>
+                )}
+              </div>
+              {pend.map((n) => (
+                <div key={n.id} style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 6, fontSize: 12.5, color: '#8A4B00' }}>
+                  <span>
+                    {mdw(n.payload?.d)} {n.payload?.start ? `${clock(n.payload.start)}부터 ` : ''}
+                    {n.payload?.minutes}분 체크함 · 원장님 확인 기다리는 중
+                  </span>
+                  <Btn variant="ghost" disabled={busy} onClick={() => onWithdraw(n.id)} style={{ padding: '2px 6px', fontSize: 12, whiteSpace: 'nowrap', flexShrink: 0 }}>
+                    취소
+                  </Btn>
+                </div>
+              ))}
+              {open && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap', marginTop: 9 }}>
+                  <input type="date" value={d} min={u.d} max={isoOf(new Date())} onChange={(e) => setD(e.target.value)}
+                    style={{ padding: '6px 8px', border: `1px solid ${C.line}`, borderRadius: 7, fontSize: 13.5 }} />
+                  <input type="time" value={start} onChange={(e) => setStart(e.target.value)} title="보강 시작 시각 (모르면 비워 두세요)"
+                    style={{ padding: '6px 8px', border: `1px solid ${C.line}`, borderRadius: 7, fontSize: 13.5 }} />
+                  <select value={mins} onChange={(e) => setMins(Number(e.target.value))}
+                    style={{ padding: '6px 8px', border: `1px solid ${C.line}`, borderRadius: 7, fontSize: 13.5 }}>
+                    {Array.from({ length: Math.max(1, Math.floor((left - pendMin) / 10)) }, (_, i) => (i + 1) * 10)
+                      .concat((left - pendMin) % 10 ? [left - pendMin] : [])
+                      .filter((m) => m > 0 && m <= left - pendMin)
+                      .map((m) => (
+                        <option key={m} value={m}>{m}분</option>
+                      ))}
+                  </select>
+                  <Btn
+                    variant="primary"
+                    disabled={busy || !d || !mins}
+                    onClick={async () => {
+                      const msg = `${mdw(d)} ${start ? clock(start) + '부터 ' : ''}${mins}분 보강 — ${u.student_name} ${mdw(u.d)} 결강분`
+                      const ok2 = await onReport(u, msg, { d, start: start || null, minutes: mins, student_name: u.student_name, absent_d: u.d })
+                      if (ok2) setOpenId(null)
+                    }}
+                    style={{ padding: '6px 12px', fontSize: 13 }}
+                  >
+                    원장님께 보내기
+                  </Btn>
+                  <Btn variant="ghost" onClick={() => setOpenId(null)} style={{ padding: '6px 8px', fontSize: 13 }}>닫기</Btn>
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </Card>
+  )
+}
+
+// 선생님 '시간표' — 컴퓨터는 한 달 시간표 표, 휴대폰은 날짜별 목록
+function TeacherMonth({ ym, me, staff, sessions, unmade, loadHolidays, toneOf, colorOf, onPrevYm, onNextYm }) {
+  const phone = useNarrow()
+  const [y, m] = ym.split('-').map(Number)
+  const days = useMemo(() => {
+    const last = new Date(y, m, 0).getDate()
+    return Array.from({ length: last }, (_, i) => new Date(y, m - 1, i + 1)).filter((d) => d.getDay() !== 0)
+  }, [y, m])
+  const [hols, setHols] = useState([])
+  useEffect(() => {
+    if (!phone) return
+    const last = new Date(y, m, 0).getDate()
+    loadHolidays(`${ym}-01`, `${ym}-${String(last).padStart(2, '0')}`).then((h) => setHols(h || [])).catch(() => {})
+  }, [phone, ym])
+  const holidayMap = useMemo(() => {
+    const o = {}
+    hols.forEach((h) => { if (!h.staff_id) o[h.d] = h.label || '휴무' })
+    return o
+  }, [hols])
+  // 휴대폰 목록: 이번 달이면 이번 주부터 보여 주고, 지난 날짜는 눌러야 펼침 (선생님은 앞으로 있을 수업이 중요)
+  const [showPast, setShowPast] = useState(false)
+  const weekStartIso = isoOf(mondayOf(new Date()))
+  const withClass = days.filter((d) => sessions.some((s) => s.d === isoOf(d)) || holidayMap[isoOf(d)])
+  const isCur = ym === ymOf(new Date())
+  const pastCount = isCur ? withClass.filter((d) => isoOf(d) < weekStartIso).length : 0
+  const shownDays = !isCur || showPast ? withClass : withClass.filter((d) => isoOf(d) >= weekStartIso)
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+        <Btn onClick={onPrevYm} style={{ padding: '6px 11px' }}>←</Btn>
+        <div style={{ fontSize: 15, fontWeight: 700, minWidth: 96, textAlign: 'center' }}>{y}년 {m}월</div>
+        <Btn onClick={onNextYm} style={{ padding: '6px 11px' }}>→</Btn>
+      </div>
+      {phone && pastCount > 0 && (
+        <button
+          onClick={() => setShowPast(!showPast)}
+          style={{ width: '100%', marginBottom: 10, padding: '9px 0', border: `1px dashed ${C.line}`, borderRadius: 9, background: '#fff', color: C.sub, fontSize: 13, cursor: 'pointer' }}
+        >
+          {showPast ? '지난 날짜 접기' : `지난 날짜 ${pastCount}일 보기`}
+        </button>
+      )}
+      {phone ? (
+        shownDays.length ? (
+          <WeekAgenda
+            days={shownDays}
+            sessions={sessions}
+            holidayMap={holidayMap}
+            outByDay={{}}
+            showTeacher={false}
+            colorOf={colorOf}
+            onPick={() => {}}
+            today={isoOf(new Date())}
+          />
+        ) : (
+          <Empty>이 달 수업이 없습니다.</Empty>
+        )
+      ) : (
+        <TimetablePrint
+          key={ym + me.name}
+          inline
+          ym={ym}
+          staff={staff}
+          sessions={sessions}
+          outside={[]}
+          ownerName={null}
+          loadHolidays={loadHolidays}
+          toneOf={toneOf}
+          colorOf={colorOf}
+          onlyTeacher={me.name}
+          unmade={unmade}
+          say={() => {}}
+          onClose={() => {}}
+        />
+      )}
     </div>
   )
 }
@@ -1312,6 +1621,8 @@ function MonthView({
 
   return (
     <div style={{ maxWidth: 560, margin: '0 auto' }}>
+      {/* 월 이동이 없으면(선생님 마감 화면 아래) 이동 줄을 감춥니다 — 위 마감 화면의 달을 따라감 */}
+      {onPrevYm && (
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
         <Btn onClick={onPrevYm} style={{ padding: '6px 12px' }}>←</Btn>
         <div style={{ flex: 1, textAlign: 'center', fontSize: 15, fontWeight: 700 }}>
@@ -1319,6 +1630,7 @@ function MonthView({
         </div>
         <Btn onClick={onNextYm} style={{ padding: '6px 12px' }}>→</Btn>
       </div>
+      )}
 
       {isAdmin && staff && (
         <div style={{ display: 'flex', gap: 5, marginBottom: 12, flexWrap: 'wrap' }}>
@@ -1459,7 +1771,7 @@ function MonthView({
                           · 결강과 연결 안 된 보강 {g.loose} (빨간 ! 칸 — 실수로 넣은 거면 지우고, 결강의 보강이면 지운 뒤 결강 칸에서 '보강 잡기'로)
                         </span>
                       )}
-                      <span style={{ marginLeft: 7 }}>· 날짜를 눌러 결강 처리</span>
+                      {onMark && <span style={{ marginLeft: 7 }}>· 날짜를 눌러 결강 처리</span>}
                     </div>
                     <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
                       {g.list.map((s) => {
@@ -1467,7 +1779,7 @@ function MonthView({
                         return (
                           <button
                             key={s.id}
-                            disabled={busy}
+                            disabled={busy || !onMark}
                             title={`${s.d.slice(5)} (${s.weekday}) ${clock(s.start_time)}~${clock(s.end_time)} · ${s.status}${
                               s.status === '보강'
                                 ? s.makeup_for
@@ -1478,12 +1790,12 @@ function MonthView({
                                   : ' (결강과 연결 안 됨)'
                                 : ''
                             }`}
-                            onClick={() => onMark(s.id, s.status === '결강' ? '진행' : '결강')}
+                            onClick={() => onMark && onMark(s.id, s.status === '결강' ? '진행' : '결강')}
                             style={{
                               width: 34, height: 34, borderRadius: 8,
                               border: `1px solid ${c.bd}`, background: c.bg, color: c.fg,
                               fontSize: 12.5, fontWeight: 700, padding: 0,
-                              cursor: busy ? 'default' : 'pointer', position: 'relative',
+                              cursor: busy || !onMark ? 'default' : 'pointer', position: 'relative',
                             }}
                           >
                             {Number(s.d.slice(-2))}
@@ -5077,7 +5389,7 @@ function MarkView({ onLoad, onMark, busy, say }) {
                       disabled={busy}
                       variant={off ? 'default' : 'danger'}
                       onClick={async () => {
-                        await onMark(r.id, off ? '진행' : '결강')
+                        await onMark(r.id, off ? '진행' : '결강', r)
                         reload()
                       }}
                       style={{ padding: '5px 12px', fontSize: 12.5 }}
@@ -6298,7 +6610,8 @@ function MakeupLog({ rows, staffOrder = [], ownerName, toneOf, busy, isAdmin, un
   )
 }
 
-function AddSessionModal({ students, staff, programs, absent, pairs = [], onClose, onSave, busy }) {
+function AddSessionModal({ students, staff, programs, absent, preset = null, pairs = [], onClose, onSave, busy }) {
+  // preset: 선생님이 '보강 했어요'로 보낸 날짜 · 시작 · 분을 미리 채워 둡니다
   const linked = !!absent
   const [staffId, setStaffId] = useState(absent?.staff_id || staff[0]?.id || '')
 
@@ -6323,7 +6636,7 @@ function AddSessionModal({ students, staff, programs, absent, pairs = [], onClos
   const [pcode, setPcode] = useState(absent?.program_code || programs[0]?.code || '')
 
   const [status, setStatus] = useState(linked ? '보강' : '보강')
-  const [date, setDate] = useState(isoOf(new Date()))
+  const [date, setDate] = useState(preset?.d || isoOf(new Date()))
 
   // 고른 날짜의 '요일'에 그 아이가 하는 정규 수업 시간·종류로 채웁니다 (고칠 수 있습니다)
   //   그 요일에 정규 수업이 없으면 건드리지 않습니다.
@@ -6339,7 +6652,7 @@ function AddSessionModal({ students, staff, programs, absent, pairs = [], onClos
     if (regular.start_time) setStart(hhmm(regular.start_time))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [regular])
-  const [start, setStart] = useState(absent ? hhmm(absent.start_time) : '19:00')
+  const [start, setStart] = useState(preset?.start ? hhmm(preset.start) : absent ? hhmm(absent.start_time) : '19:00')
   // 길이는 프로그램이 정합니다. 보강은 결강 수업에서 '남은 시간'까지 — 나눠서(예: 10분씩) 할 수도 있습니다.
   const absentMin = useMemo(() => {
     if (!absent) return 0
@@ -6349,8 +6662,8 @@ function AddSessionModal({ students, staff, programs, absent, pairs = [], onClos
   }, [absent])
   const madeMin = absent ? Number(absent.made_min) || 0 : 0
   const leftMin = Math.max(absentMin - madeMin, 0)
-  const [partMin, setPartMin] = useState(null) // null = 남은 시간 전부
-  const [typed, setTyped] = useState('') // 직접 입력한 분
+  const [partMin, setPartMin] = useState(preset?.minutes || null) // null = 남은 시간 전부
+  const [typed, setTyped] = useState(preset?.minutes && ![10, 20, 30].includes(preset.minutes) ? String(preset.minutes) : '') // 직접 입력한 분
   const mins = useMemo(() => {
     if (absent) return partMin && partMin < leftMin ? partMin : leftMin
     return programs.find((p) => p.code === pcode)?.minutes ?? 50
@@ -7961,7 +8274,7 @@ function App() {
   const [staff, setStaff] = useState([])
   const [isAdmin, setIsAdmin] = useState(false)
 
-  const [tab, setTab] = useState('today')
+  const [tab, setTab] = useState('') // 계정 정보를 불러온 뒤 정해짐 (원장 'home' · 선생님 'tmonth')
   const [weekStart, setWeekStart] = useState(() => mondayOf(new Date()))
   const [ym, setYm] = useState(() => ymOf(new Date()))
   const [closeYm, setCloseYm] = useState(defaultClosingYm)
@@ -7999,6 +8312,8 @@ function App() {
   const [receiptExtras, setReceiptExtras] = useState([])
   const [payHistory, setPayHistory] = useState([])
   const [makeupLog, setMakeupLog] = useState([])
+  const [notices, setNotices] = useState([]) // 원장님 ↔ 선생님 확인 문구
+  const [makeupPreset, setMakeupPreset] = useState(null) // 선생님 보강 체크로 보강 등록할 때 미리 채울 값
 
   // 어느 선생님이 어느 아이를 가르치는지 (수업 추가 창에서 아이 목록을 고르는 데 씁니다)
   // 선생님·아이·요일별 정규 수업 (수업 추가 창에서 시간·수업 종류를 채우는 데 씁니다)
@@ -8091,7 +8406,7 @@ function App() {
         setIsAdmin(isAdmin)
         setStaff(staff)
         setMe(me)
-        setTab(isAdmin ? 'home' : 'today')
+        setTab(isAdmin ? 'home' : 'tmonth')
       })
       .catch(fail)
   }, [session])
@@ -8107,9 +8422,10 @@ function App() {
   }, [weekStart])
 
   const reloadCommon = useCallback(async () => {
-    const [t, u] = await Promise.all([loadToday(), loadUnmadeUp()])
+    const [t, u, nt] = await Promise.all([loadToday(), loadUnmadeUp(), loadNotices()])
     setToday(t)
     setUnmadeUp(u)
+    setNotices(nt)
   }, [])
 
   const reloadMonthSessions = useCallback(async () => {
@@ -8176,6 +8492,40 @@ function App() {
     if (session && staff.length) reloadAll()
   }, [session, staff.length, weekStart, ym, closeYm, ym])
 
+  // 선생님 마감 화면: 아래 출결 목록이 위 마감과 같은 달을 보도록 하고,
+  //   시간표로 돌아오면 보던 달로 되돌립니다
+  const tYmBack = useRef(null)
+  useEffect(() => {
+    if (isAdmin) return
+    if (tab === 'myclose') {
+      if (ym !== closeYm) {
+        if (tYmBack.current === null) tYmBack.current = ym
+        setYm(closeYm)
+      }
+    } else if (tYmBack.current !== null) {
+      setYm(tYmBack.current)
+      tYmBack.current = null
+    }
+  }, [isAdmin, tab, closeYm])
+
+  // 확인 문구는 1분마다, 그리고 창으로 돌아올 때 새로 불러옵니다 (상대방이 보낸 것이 바로 보이게)
+  useEffect(() => {
+    if (!session || !staff.length) return
+    let on = true
+    const pull = async () => {
+      const nt = await loadNotices()
+      if (on) setNotices(nt)
+    }
+    const iv = setInterval(pull, 60000)
+    const vis = () => document.visibilityState === 'visible' && pull()
+    document.addEventListener('visibilitychange', vis)
+    return () => {
+      on = false
+      clearInterval(iv)
+      document.removeEventListener('visibilitychange', vis)
+    }
+  }, [session, staff.length])
+
   // 공휴일은 앱이 알아서 채워 둡니다 (2026~2030, 대체공휴일·일요일 제외)
   useEffect(() => {
     // 휴무일 목록을 실제로 한 번 읽은 뒤에 판단합니다.
@@ -8222,11 +8572,42 @@ function App() {
   }, [isAdmin, loading, billing.length, ym, staff.length])
 
   /* ---- 동작 ---- */
+  // 원장님이 선생님 수업을 바꾸면 그 선생님 화면에 확인 문구를 띄웁니다 (notices.sql 실행 전이면 조용히 넘어감)
+  const findSession = (id) => [...sessions, ...monthSessions, ...today].find((x) => x.id === id) || null
+  const tellTeacher = async (s, kind, extra = '') => {
+    if (!isAdmin || !s || s.staff_id == null) return
+    if (me && String(s.staff_id) === String(me.id)) return // 원장님 본인 수업
+    const when = `${mdw(s.d)} ${clock(s.start_time)}~${clock(s.end_time)}`
+    const msg = {
+      absent: `${when} ${s.student_name} 수업을 결강으로 처리했습니다`,
+      undo: `${when} ${s.student_name} 결강 처리를 되돌렸습니다 (정상 수업)`,
+      cancel: `${when} ${s.student_name} 수업을 취소했습니다`,
+      makeup: `${s.student_name} 보강을 잡았습니다 — ${when}${extra}`,
+      unmakeup: `${when} ${s.student_name} 보강을 지웠습니다`,
+      uncancel: `${when} ${s.student_name} 수업 취소를 되돌렸습니다 (정상 수업)`,
+    }[kind]
+    if (!msg) return
+    try {
+      await notifyStaff(s.staff_id, kind, msg, s.id ?? null, { d: s.d, start: s.start_time, end: s.end_time, student_name: s.student_name })
+    } catch (e) {
+      // 문구를 못 보내도 결강 · 보강 처리는 그대로 된 상태
+    }
+  }
+  const tellMark = async (before, status) => {
+    if (!before) return
+    if (status === '결강') await tellTeacher(before, 'absent')
+    else if (status === '취소') await tellTeacher(before, 'cancel')
+    else if (status === '진행' && before.status === '결강') await tellTeacher(before, 'undo')
+    else if (status === '진행' && before.status === '취소') await tellTeacher(before, 'uncancel')
+  }
+
   const doMark = async (id, status) => {
     setBusy(true)
     try {
       // 원장님도 선생님과 같은 규칙(정산 잠금·보강 연결 확인)을 거칩니다
+      const before = findSession(id)
       await markAttendance(id, status)
+      await tellMark(before, status)
       await Promise.all([reloadWeek(), reloadCommon(), reloadMonth(), reloadMonthSessions()])
       setPick(null)
     } catch (e) {
@@ -8247,6 +8628,7 @@ function App() {
     setBusy(true)
     try {
       const msg = await cancelWithCarry(p.id, reason)
+      await tellTeacher(p, 'cancel')
       say(msg || '취소했습니다')
       await Promise.all([reloadWeek(), reloadCommon(), reloadMonth(), reloadMonthSessions()])
       setPick(null)
@@ -8288,6 +8670,7 @@ function App() {
     setBusy(true)
     try {
       const msg = await removeSession(p.id)
+      if (p.status === '보강') await tellTeacher(p, 'unmakeup')
       say(msg || '지웠습니다')
       await Promise.all([reloadWeek(), reloadCommon(), reloadMonth(), reloadMonthSessions()])
       setPick(null)
@@ -8379,14 +8762,8 @@ function App() {
         },
       ]
     : [
-        {
-          key: 'sched',
-          label: '수업',
-          items: [
-            ['today', '오늘'],
-            ['month', '시간표'],
-          ],
-        },
+        // 선생님 화면은 두 칸만: 시간표(보는 곳) · 마감 — 결강 · 보강 처리는 원장님이 합니다
+        { key: 'sched', label: '시간표', items: [['tmonth', '시간표']] },
         { key: 'money', label: '마감', items: [['myclose', '마감']] },
       ]
 
@@ -8584,6 +8961,108 @@ function App() {
 
         {loading && <Loading />}
 
+        {/* 확인 문구 — 원장님: 선생님이 체크한 보강 / 선생님: 원장님이 바꾼 일정 */}
+        {!loading && isAdmin && (
+          <AdminNotices
+            reports={notices.filter((n) => n.kind === 'report' && !n.confirmed_at)}
+            waiting={notices.filter((n) => n.to_staff && !n.confirmed_at)}
+            nameOf={(id) => staff.find((x) => String(x.id) === String(id))?.name || '?'}
+            busy={busy}
+            onBook={(n) => {
+              const absent = unmadeUp.find((u) => String(u.id) === String(n.session_ref))
+              if (!absent) {
+                say('이미 보강이 끝났거나 찾을 수 없는 결강입니다. 확인만 눌러 주세요.')
+                return
+              }
+              setMakeupPreset({ d: n.payload?.d, start: n.payload?.start, minutes: Number(n.payload?.minutes) || null, noticeId: n.id })
+              setMakeupFor(absent)
+            }}
+            onConfirm={async (id) => {
+              setBusy(true)
+              try {
+                await confirmNotice(id)
+                setNotices(await loadNotices())
+              } catch (e) {
+                fail(e)
+              }
+              setBusy(false)
+            }}
+            onDrop={async (n) => {
+              if (!confirm('이 보강 체크를 지울까요? 선생님 화면에서도 사라집니다.')) return
+              setBusy(true)
+              try {
+                await withdrawNotice(n.id)
+                setNotices(await loadNotices())
+              } catch (e) {
+                fail(e)
+              }
+              setBusy(false)
+            }}
+          />
+        )}
+        {!loading && !isAdmin && me && (
+          <TeacherNotices
+            items={notices.filter((n) => String(n.to_staff) === String(me.id) && !n.confirmed_at)}
+            busy={busy}
+            onConfirm={async (id) => {
+              setBusy(true)
+              try {
+                await confirmNotice(id)
+                setNotices(await loadNotices())
+              } catch (e) {
+                fail(e)
+              }
+              setBusy(false)
+            }}
+          />
+        )}
+
+        {!loading && tab === 'tmonth' && !isAdmin && me && (
+          <>
+            <TeacherMakeupCheck
+              unmade={unmadeUp.filter((u) => String(u.staff_id) === String(me.id) || u.staff_name === me.name)}
+              reports={notices.filter((n) => n.kind === 'report' && String(n.from_staff) === String(me.id))}
+              busy={busy}
+              onReport={async (u, msg, payload) => {
+                setBusy(true)
+                try {
+                  await reportMakeup(u.id, msg, payload)
+                  say('원장님께 보냈습니다')
+                  setNotices(await loadNotices())
+                  setBusy(false)
+                  return true
+                } catch (e) {
+                  fail(e)
+                  setBusy(false)
+                  return false
+                }
+              }}
+              onWithdraw={async (id) => {
+                setBusy(true)
+                try {
+                  await withdrawNotice(id)
+                  setNotices(await loadNotices())
+                } catch (e) {
+                  fail(e)
+                }
+                setBusy(false)
+              }}
+            />
+            <TeacherMonth
+              ym={ym}
+              me={me}
+              staff={staff}
+              sessions={monthSessions.filter((s) => s.staff_name === me.name && s.status !== '취소')}
+              unmade={unmadeUp.filter((u) => String(u.staff_id) === String(me.id) || u.staff_name === me.name)}
+              loadHolidays={loadHolidays}
+              toneOf={toneOf}
+              colorOf={colorOf}
+              onPrevYm={() => setYm(shiftYm(ym, -1))}
+              onNextYm={() => setYm(shiftYm(ym, 1))}
+            />
+          </>
+        )}
+
         {!loading && tab === 'today' && (
           <TodayView today={today} weekMinutes={weekMinutes} onMark={doMark} busy={busy} />
         )}
@@ -8625,10 +9104,12 @@ function App() {
             busy={busy}
             say={say}
             onLoad={loadRecentSessions}
-            onMark={async (id, status) => {
+            onMark={async (id, status, row) => {
               setBusy(true)
               try {
+                const before = row || findSession(id)
                 await markAttendance(id, status)
+                await tellMark(before, status)
                 say(status === '결강' ? '결강으로 표시했습니다' : '진행으로 되돌렸습니다')
                 await reloadAll()
               } catch (e) {
@@ -8708,6 +9189,27 @@ function App() {
               setBusy(false)
             }}
           />
+        )}
+        {/* 선생님 마감: 아래에 그 달 출결 목록 (보기만 — 결강 처리는 원장님) */}
+        {!loading && tab === 'myclose' && !isAdmin && ym === closeYm && (
+          <div style={{ marginTop: 18 }}>
+            <div style={{ maxWidth: 560, margin: '0 auto 8px', fontSize: 14.5, fontWeight: 800, color: C.ink }}>
+              {Number(ym.slice(5))}월 출결 확인
+            </div>
+            <MonthView
+              ym={ym}
+              staff={null}
+              filter={null}
+              onFilter={() => {}}
+              colorOf={colorOf}
+              sessions={monthSessions.filter((s) => !me || s.staff_name === me.name)}
+              busy={busy}
+              isAdmin={false}
+              onPrevYm={null}
+              onNextYm={null}
+              onMark={null}
+            />
+          </div>
         )}
 
         {!loading && tab === 'month' && schedView === 'week' && (
@@ -9231,6 +9733,7 @@ function App() {
       {(makeupFor || addOpen) && (
         <AddSessionModal
           absent={makeupFor}
+          preset={makeupPreset}
           students={students.filter((x) => x.status === '재원')}
           staff={staff.filter((x) => x.active)}
           pairs={teacherKidPairs}
@@ -9239,15 +9742,27 @@ function App() {
           onClose={() => {
             setMakeupFor(null)
             setAddOpen(false)
+            setMakeupPreset(null)
           }}
           onSave={async (v) => {
             setBusy(true)
             try {
               await addSession(v)
+              if (v.status === '보강') {
+                const kid = students.find((k) => String(k.id) === String(v.student_id))
+                await tellTeacher(
+                  { staff_id: v.staff_id, d: v.d, start_time: v.start_time, end_time: v.end_time, student_name: kid?.name || makeupFor?.student_name || '' },
+                  'makeup',
+                  makeupFor ? ` (${mdw(makeupFor.d)} 결강분)` : ''
+                )
+              }
+              // 선생님이 체크한 보강을 등록한 거면 그 문구는 확인 처리
+              if (makeupPreset?.noticeId) await confirmNotice(makeupPreset.noticeId).catch(() => {})
               say(v.status === '보강' ? '보강을 등록했습니다' : '수업을 추가했습니다')
               await reloadAll()
               setMakeupFor(null)
               setAddOpen(false)
+              setMakeupPreset(null)
             } catch (e) {
               fail(e)
             }
