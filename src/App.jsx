@@ -919,19 +919,21 @@ function closeStateOf(notices, staffId, ym, row) {
   const req = notices.filter((n) => n.kind === 'close_req' && String(n.to_staff) === sid && n.payload?.ym === ym).sort(byNew)[0] || null
   if (!req) return { st: 'none' }
   const ans = notices.filter((n) => n.kind === 'close_ans' && String(n.from_staff) === sid && n.payload?.ym === ym && n.created_at >= req.created_at).sort(byNew)[0] || null
-  if (!ans) return { st: 'wait', req }
-  const agree = !!ans.payload?.agree
-  // 선생님이 '맞아요' 한 뒤에 숫자가 바뀌었으면 다시 확인 필요
+  // 요청을 보낸 뒤 급여 숫자가 바뀌었는지 (보낼 때와 같은 방식으로 숫자를 맞춰 비교)
+  const num = (x) => Number(x) || 0
   const snap = req.payload || {}
   const changed =
-    row && (Number(snap.units) !== Number(row.units) || Number(snap.makeups) !== Number(row.makeup_units || 0) || Number(snap.unmade) !== Number(row.unmade_up || 0))
+    !!row && (num(snap.units) !== num(row.units) || num(snap.makeups) !== num(row.makeup_units) || num(snap.unmade) !== num(row.unmade_up))
+  // 답을 기다리는 중이든 '맞아요' 뒤든, 숫자가 바뀌었으면 다시 요청해야 함
+  if (!ans) return { st: changed ? 'changed' : 'wait', req }
+  const agree = !!ans.payload?.agree
   return { st: agree ? (changed ? 'changed' : 'agree') : 'disagree', req, ans }
 }
 function CloseCheckPill({ s }) {
   const sty = (bg, fg) => ({ fontSize: 11.5, fontWeight: 700, borderRadius: 99, padding: '2px 9px', background: bg, color: fg, whiteSpace: 'nowrap' })
   if (s.st === 'wait') return <span style={sty('#F2F3F5', C.sub)}>확인 요청함 · 답 기다리는 중</span>
   if (s.st === 'agree') return <span style={sty('#EDF7F1', '#1F5B3A')}>✓ 선생님 확인: 같음</span>
-  if (s.st === 'changed') return <span style={sty('#FEF6E7', '#8A5A00')}>같다고 한 뒤 숫자가 바뀜 · 다시 요청</span>
+  if (s.st === 'changed') return <span style={sty('#FEF6E7', '#8A5A00')}>{s.ans ? '같다고 한 뒤 숫자가 바뀜' : '요청 뒤 숫자가 바뀜'} · 다시 요청</span>
   if (s.st === 'disagree')
     return (
       <span style={{ ...sty('#FDECEF', '#AE2340'), whiteSpace: 'normal' }} title={s.ans?.payload?.reason || ''}>
@@ -9376,7 +9378,7 @@ function App() {
               <Btn onClick={() => setCloseYm(shiftYm(closeYm, 1))} style={{ padding: '6px 11px' }}>→</Btn>
             </div>
             <TeacherCloseCheck
-              key={closeYm}
+              key={closeYm + ':' + (closeStateOf(notices, me.id, closeYm, null).req?.id ?? '')}
               ym={closeYm}
               state={closeStateOf(notices, me.id, closeYm, null)}
               busy={busy}
@@ -9664,6 +9666,12 @@ function App() {
                 setBusy(true)
                 try {
                   const msg = await closeMonth(ym, sid, undo)
+                  // 마감하면 그 선생님에게 남아 있는 '답 안 한 마감 확인 요청'은 지웁니다 (선생님 화면 배너가 계속 남지 않게)
+                  if (!undo) {
+                    const open = notices.filter((n) => n.kind === 'close_req' && !n.confirmed_at && String(n.to_staff) === String(sid) && n.payload?.ym === ym)
+                    for (const n of open) await withdrawNotice(n.id).catch(() => {})
+                    if (open.length) setNotices(await loadNotices())
+                  }
                   say(msg || (undo ? '마감을 취소했습니다' : '마감했습니다'))
                   await Promise.all([reloadMonth(), reloadMonthSessions(), reloadWeek()])
                 } catch (e) {
