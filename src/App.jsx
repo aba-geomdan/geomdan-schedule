@@ -829,7 +829,8 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '48px repeat(6, 1fr)' }}>
-        <div style={{ position: 'relative', height, background: '#FBFBFC' }}>
+        {/* 맨 아래 시각(8시) 글씨가 잘리지 않게 아래로 조금 여유 */}
+        <div style={{ position: 'relative', height: height + 8, background: '#FBFBFC' }}>
           {Array.from(
             { length: Math.floor((DAY_END - DAY_START) / 60) + 1 },
             (_, i) => DAY_START + i * 60
@@ -949,6 +950,8 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                 const h = (toMin(s.end_time) - toMin(s.start_time)) * PX
                 const w = 100 / cols
                 const narrow = cols > 1
+                // 30분 남짓한 짧은 수업(나눠 보강 등)은 칸이 낮아서 두 줄이 안 들어갑니다 → 딱지 · 이름 · 시간을 한 줄로
+                const short = h < 36
                 return (
                   <button
                     key={s.id}
@@ -959,7 +962,7 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                       top: (toMin(s.start_time) - DAY_START) * PX,
                       left: `calc(${(col * subs + sub) * w}% + ${subs > 1 && sub > 0 ? 1 : 2}px)`,
                       width: `calc(${w}% - ${subs > 1 ? 3 : 4}px)`,
-                      height: Math.max(h - 2, 18),
+                      height: Math.max(h - 2, short ? 20 : 18),
                       background: off
                         ? `repeating-linear-gradient(135deg, ${tone.bg}, ${tone.bg} 5px, #FFFFFF 5px, #FFFFFF 10px)`
                         : isMakeup
@@ -969,18 +972,22 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                       borderLeft: `3px solid ${tc}`,
                       opacity: off ? 0.75 : 1,
                       borderRadius: 5,
-                      padding: cols >= 3 ? '2px 1px' : narrow ? '2px 3px' : '3px 5px',
+                      padding: short ? (narrow ? '0 3px' : '0 5px') : cols >= 3 ? '2px 1px' : narrow ? '2px 3px' : '3px 5px',
                       textAlign: 'left',
                       cursor: 'pointer',
                       overflow: 'hidden',
-                      display: 'block',
+                      display: short ? 'flex' : 'block',
+                      alignItems: 'center',
+                      gap: 4,
+                      zIndex: short ? 1 : undefined,
                     }}
                   >
                     {isMakeup && (
                       <span
                         style={{
                           display: 'inline-block', fontSize: narrow ? 8.5 : 9.5, fontWeight: 700, color: '#fff',
-                          background: MAKEUP, borderRadius: 99, padding: narrow ? '0 4px' : '0 6px', marginBottom: 1,
+                          background: MAKEUP, borderRadius: 99, padding: narrow ? '0 4px' : '0 6px', marginBottom: short ? 0 : 1,
+                          flexShrink: 0, lineHeight: 1.35,
                         }}
                       >
                         보강
@@ -996,10 +1003,16 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                         whiteSpace: 'nowrap',
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
+                        minWidth: 0,
                       }}
                     >
                       {s.student_name}
                     </div>
+                    {short && !narrow && (
+                      <span style={{ fontSize: 10, color: tone.fg, opacity: 0.75, whiteSpace: 'nowrap', flexShrink: 0 }}>
+                        {clock(s.start_time)}~{clock(s.end_time)}
+                      </span>
+                    )}
                     {h > 44 && !narrow && (
                       <div style={{ fontSize: 10, color: tone.fg, opacity: 0.75 }}>
                         {clock(s.start_time)}
