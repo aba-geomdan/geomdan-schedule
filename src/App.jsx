@@ -1171,12 +1171,12 @@ function TeacherCloseCheck({ ym, state, onAnswer: onAnswerRaw, busy, unmadeNow =
 }
 
 // 선생님 화면 맨 위: 원장님이 바꾼 일정 (확인할 때까지 떠 있음)
-function TeacherNotices({ items, onConfirm, busy }) {
+function TeacherNotices({ items, onConfirm, busy, title = '원장님이 일정을 바꿨습니다 · 확인해 주세요' }) {
   if (!items.length) return null
   return (
     <Card className="no-print" style={{ padding: '12px 14px', marginBottom: 14, border: '1.5px solid #F0C27A', background: '#FFFBF2' }}>
       <div style={{ fontSize: 14.5, fontWeight: 800, color: '#8A4B00', marginBottom: 8 }}>
-        원장님이 일정을 바꿨습니다 · 확인해 주세요 ({items.length}건)
+        {title} ({items.length}건)
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         {items.map((n) => (
@@ -8931,7 +8931,7 @@ function App() {
   const findSession = (id) => [...sessions, ...monthSessions, ...today].find((x) => x.id === id) || null
   const tellTeacher = async (s, kind, extra = '') => {
     if (!isAdmin || !s || s.staff_id == null) return
-    if (me && String(s.staff_id) === String(me.id)) return // 원장님 본인 수업
+    // 원장님 본인 수업도 똑같이 남깁니다 (원장님도 통합본 '내 일정'에서 결강 · 보강 변경을 확인)
     const when = `${mdw(s.d)} ${clock(s.start_time)}~${clock(s.end_time)}`
     const msg = {
       absent: `${when} ${s.student_name} 수업을 결강으로 처리했습니다`,
@@ -9342,7 +9342,7 @@ function App() {
               await confirmNotice(n.id).catch(() => {})
               setNotices(await loadNotices())
             }}
-            waiting={notices.filter((n) => n.to_staff && !n.confirmed_at && n.kind !== 'close_req')}
+            waiting={notices.filter((n) => n.to_staff && !n.confirmed_at && n.kind !== 'close_req' && !(me && String(n.to_staff) === String(me.id)))}
             nameOf={(id) => staff.find((x) => String(x.id) === String(id))?.name || '?'}
             busy={busy}
             onBook={(n) => {
@@ -9369,6 +9369,24 @@ function App() {
               setBusy(true)
               try {
                 await withdrawNotice(n.id)
+                setNotices(await loadNotices())
+              } catch (e) {
+                fail(e)
+              }
+              setBusy(false)
+            }}
+          />
+        )}
+        {/* 원장님 본인 수업의 일정 변경 (선생님 화면과 같은 방식으로 확인) */}
+        {!loading && isAdmin && me && (
+          <TeacherNotices
+            title="내 수업 일정이 바뀌었습니다 · 확인해 주세요"
+            items={notices.filter((n) => String(n.to_staff) === String(me.id) && !n.confirmed_at && n.kind !== 'close_req')}
+            busy={busy}
+            onConfirm={async (id) => {
+              setBusy(true)
+              try {
+                await confirmNotice(id)
                 setNotices(await loadNotices())
               } catch (e) {
                 fail(e)
