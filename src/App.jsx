@@ -13,8 +13,27 @@ const hasKey = !!ANON
 
 // 키가 없으면 createClient 가 예외를 던져 앱이 통째로 죽습니다.
 // 빈 화면 대신 안내를 띄우려고 더미 키로 만들어 둡니다.
+// 로그인은 그 창(탭)에서만 유지 — 창을 닫으면 풀립니다 (통합본과 같은 방식).
+//   공용 컴퓨터에서 원장님 로그인이 남아 다음 사람에게 원장님 화면이 열리는 일을 막습니다.
+const _tabStorage = (() => {
+  try {
+    const s = window.sessionStorage
+    const k = '__t'
+    s.setItem(k, '1')
+    s.removeItem(k)
+    return s
+  } catch (e) {
+    return undefined // sessionStorage를 못 쓰는 브라우저면 기본값(메모리) 사용
+  }
+})()
+// 예전 방식(창을 닫아도 유지)으로 남아 있던 로그인 기록은 지웁니다
+try {
+  Object.keys(window.localStorage)
+    .filter((k) => /^sb-.*-auth-token$/.test(k))
+    .forEach((k) => window.localStorage.removeItem(k))
+} catch (e) {}
 const supabase = createClient(SUPABASE_URL, ANON || 'missing-anon-key', {
-  auth: { persistSession: true, autoRefreshToken: true },
+  auth: { persistSession: true, autoRefreshToken: true, storage: _tabStorage },
 })
 
 // ---- 도메인 가드 ----
@@ -100,11 +119,16 @@ async function getSession() {
   return data.session
 }
 
+// 급여 비율(pay_rate)은 여기서 읽지 않습니다 — 원장님 전용 staff_pay_rates로만
+const STAFF_COLS = 'id, auth_user_id, name, role, active, sort_order, created_at, color_idx'
+
 async function loadMe() {
   const isAdmin = ok(await supabase.rpc('is_admin'))
-  const staff = ok(
-    await supabase.from('staff').select('*').order('sort_order')
+  let staff = ok(
+    await supabase.from('staff').select(STAFF_COLS).order('sort_order')
   )
+  // 원장님은 선생님 관리 화면용 급여 비율을 함께 (못 불러오면 비율 칸만 잠금)
+  if (isAdmin) staff = await withPayRates(staff).catch(() => staff)
   const { data: u } = await supabase.auth.getUser()
   const mine = staff.find((s) => s.auth_user_id === u?.user?.id) || null
   return { isAdmin: !!isAdmin, staff, me: mine }
@@ -225,8 +249,14 @@ async function staffLinkLogin(id, email) {
 async function loadStaffLogins() {
   return ok(await supabase.rpc('staff_logins'))
 }
+async function withPayRates(rows) {
+  const rates = ok(await supabase.rpc('staff_pay_rates'))
+  const byId = new Map((rates || []).map((r) => [String(r.staff_id), r.pay_rate]))
+  return (rows || []).map((x) => ({ ...x, pay_rate: byId.has(String(x.id)) ? byId.get(String(x.id)) : null }))
+}
 async function loadStaffList() {
-  return ok(await supabase.from('staff').select('*').order('sort_order'))
+  const rows = ok(await supabase.from('staff').select(STAFF_COLS).order('sort_order'))
+  return withPayRates(rows)
 }
 
 async function setPayRate(staffId, rate) {
@@ -7378,6 +7408,8 @@ function StaffManage({ staff, busy, onChanged, say, toneOf }) {
                   <td style={{ ...cell, whiteSpace: 'nowrap' }}>
                     {x.role === 'admin' ? (
                       <span style={{ color: C.mut }}>—</span>
+                    ) : x.pay_rate === undefined ? (
+                      <span style={{ fontSize: 12, color: C.mut }}>불러오지 못함</span>
                     ) : (
                       <>
                         <input
@@ -10459,10 +10491,17 @@ function Login({ say }) {
         <div style={{ fontSize: 13, color: C.sub, textAlign: 'center', marginTop: 4, marginBottom: 22 }}>
           수업 시간표
         </div>
+        {/* 크롬이 저장된 (관리자) 계정을 자동으로 채우지 않도록 — 통합본과 같은 방식.
+            맨 앞의 숨은 칸은 크롬의 자동 채우기를 받아내는 가짜 칸입니다. */}
+        <input type="text" name="username" tabIndex={-1} aria-hidden="true" autoComplete="username" readOnly
+          style={{ position: 'absolute', left: -9999, width: 1, height: 1, opacity: 0 }} />
+        <input type="password" name="password" tabIndex={-1} aria-hidden="true" autoComplete="current-password" readOnly
+          style={{ position: 'absolute', left: -9999, width: 1, height: 1, opacity: 0 }} />
         <input
           placeholder="이메일"
           type="email"
-          autoComplete="username"
+          name="sched-login-id"
+          autoComplete="off"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           style={{ width: '100%', fontSize: 14, padding: '11px 12px', border: '1px solid #DEE0E3', borderRadius: 8, marginBottom: 8 }}
@@ -10470,7 +10509,8 @@ function Login({ say }) {
         <input
           placeholder="비밀번호"
           type="password"
-          autoComplete="current-password"
+          name="sched-login-pw"
+          autoComplete="new-password"
           value={pw}
           onChange={(e) => setPw(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && go()}
