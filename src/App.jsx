@@ -956,11 +956,12 @@ function closeStateOf(notices, staffId, ym, row) {
   const req = notices.filter((n) => n.kind === 'close_req' && String(n.to_staff) === sid && n.payload?.ym === ym).sort(byNew)[0] || null
   if (!req) return { st: 'none' }
   const ans = notices.filter((n) => n.kind === 'close_ans' && String(n.from_staff) === sid && n.payload?.ym === ym && n.created_at >= req.created_at).sort(byNew)[0] || null
-  // 요청을 보낸 뒤 급여 숫자가 바뀌었는지 (보낼 때와 같은 방식으로 숫자를 맞춰 비교)
+  // 요청을 보낸 뒤 급여 숫자(회기 · 보강)가 바뀌었는지
+  //   미보강은 지난달 것까지 합친 참고 숫자라 비교하지 않습니다 (급여 금액과 무관)
   const num = (x) => Number(x) || 0
   const snap = req.payload || {}
   const changed =
-    !!row && (num(snap.units) !== num(row.units) || num(snap.makeups) !== num(row.makeup_units) || num(snap.unmade) !== num(row.unmade_up))
+    !!row && (num(snap.units) !== num(row.units) || num(snap.makeups) !== num(row.makeup_units))
   // 답을 기다리는 중이든 '맞아요' 뒤든, 숫자가 바뀌었으면 다시 요청해야 함
   if (!ans) return { st: changed ? 'changed' : 'wait', req }
   const agree = !!ans.payload?.agree
@@ -1014,8 +1015,7 @@ function TeacherCloseList({ ym, rows, snap }) {
   const same =
     snap &&
     Math.abs(total - (Number(snap.units) || 0)) < 0.001 &&
-    Math.abs(tot.makeup - (Number(snap.makeups) || 0)) < 0.001 &&
-    tot.unmade === (Number(snap.unmade) || 0)
+    Math.abs(tot.makeup - (Number(snap.makeups) || 0)) < 0.001
   const partial = rows.some((r) => r.status === '보강' && r.makeup_for && Number(r.units) === 0)
   const chip = (bg, fg, text, key) => (
     <span key={key} style={{ fontSize: 12.5, fontWeight: 600, borderRadius: 7, padding: '3px 8px', background: bg, color: fg, whiteSpace: 'nowrap' }}>
@@ -1084,7 +1084,7 @@ function TeacherCloseList({ ym, rows, snap }) {
 }
 
 // 선생님 마감 탭: 원장님 요청에 '맞아요 / 달라요'
-function TeacherCloseCheck({ ym, state, onAnswer: onAnswerRaw, busy }) {
+function TeacherCloseCheck({ ym, state, onAnswer: onAnswerRaw, busy, unmadeNow = null }) {
   const [mode, setMode] = useState(null) // null | 'no'
   const [why, setWhy] = useState('')
   // 빠르게 두 번 눌러도 한 번만 보냅니다
@@ -1125,9 +1125,11 @@ function TeacherCloseCheck({ ym, state, onAnswer: onAnswerRaw, busy }) {
         {cell('보강', fmtUnits(sn.makeups ?? 0) + '회기', '#254B8C')}
         {cell('합계', fmtUnits(sn.units ?? 0) + '회기')}
       </div>
-      <div style={{ fontSize: 12.5, marginTop: 7, color: Number(sn.unmade) ? C.danger : C.sub }}>
-        아직 보강 안 된 결강 {Number(sn.unmade) || 0}건
-      </div>
+      {unmadeNow != null && (
+        <div style={{ fontSize: 12.5, marginTop: 7, color: unmadeNow ? C.danger : C.sub }}>
+          {unmadeNow ? `아직 보강 안 된 결강 ${unmadeNow}건` : '아직 보강 안 된 결강 없음'}
+        </div>
+      )}
       {state.st === 'wait' ? (
         mode === 'no' ? (
           <div style={{ marginTop: 12 }}>
@@ -3512,7 +3514,7 @@ function RevenueMenu({ total, loadRevenueList }) {
   )
 }
 
-function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onPrintAll, onSetRate, onDetail, busy, closing, closings = [], closeCheck = null, onClose, staffOrder = [], ownerName, payHistory = [], onPayrollPaid, toneOf, allStaff = [], onSaveExtras, onSaveManual, onDeleteManual, loadCopay, loadRevenueList, say, group: groupProp, onGroup }) {
+function BillingView({ ym, lines, byStaff, payroll, unmadeAll = null, receipts, onOpenReceipt, onPrintAll, onSetRate, onDetail, busy, closing, closings = [], closeCheck = null, onClose, staffOrder = [], ownerName, payHistory = [], onPayrollPaid, toneOf, allStaff = [], onSaveExtras, onSaveManual, onDeleteManual, loadCopay, loadRevenueList, say, group: groupProp, onGroup }) {
   // 이 달 마감한 선생님
   const closedSet = useMemo(() => new Set((closings || []).filter((c) => c.status === '승인').map((c) => c.staff_name)), [closings])
   // 정산 화면 선생님 순서: 원장님은 맨 위 고정, 나머지는 등록 순서 (금액과 상관없이 늘 같은 자리)
@@ -3738,9 +3740,15 @@ function BillingView({ ym, lines, byStaff, payroll, receipts, onOpenReceipt, onP
                     <td style={{ padding: '9px 12px', textAlign: 'right', fontWeight: 700, fontSize: 14, color: r.pay != null ? C.pkd : C.mut }}>
                       {r.pay != null ? `${won(r.pay)}원` : '비율 없음'}
                     </td>
-                    <td style={{ padding: '9px 12px', textAlign: 'right', color: r.unmade_up ? C.danger : '#C9CCD1', fontWeight: r.unmade_up ? 700 : 400 }}>
-                      {r.unmade_up || '—'}
-                    </td>
+                    {(() => {
+                      // 보강 목록과 같은 기준: 지난달 것까지 아직 보강이 남은 결강
+                      const um = unmadeAll ? unmadeAll.filter((u) => String(u.staff_id) === String(r.staff_id)).length : Number(r.unmade_up) || 0
+                      return (
+                        <td style={{ padding: '9px 12px', textAlign: 'right', color: um ? C.danger : '#C9CCD1', fontWeight: um ? 700 : 400 }}>
+                          {um || '—'}
+                        </td>
+                      )
+                    })()}
                     <td style={{ padding: '9px 12px', textAlign: 'center', whiteSpace: 'nowrap' }}>
                       {closeCheck && !closedSet.has(r.staff_name) && (() => {
                         const s = closeCheck.stateOf(r)
@@ -8922,7 +8930,7 @@ function App() {
     const mm = Number(ym.slice(5))
     const units = Number(r.units) || 0
     const makeups = Number(r.makeup_units) || 0
-    const unmade = Number(r.unmade_up) || 0
+    const unmade = unmadeUp.filter((u) => String(u.staff_id) === String(r.staff_id)).length
     await notifyStaff(
       r.staff_id,
       'close_req',
@@ -9551,6 +9559,7 @@ function App() {
               key={closeYm + ':' + (closeStateOf(notices, me.id, closeYm, null).req?.id ?? '')}
               ym={closeYm}
               state={closeStateOf(notices, me.id, closeYm, null)}
+              unmadeNow={unmadeUp.filter((u) => String(u.staff_id) === String(me.id) || u.staff_name === me.name).length}
               busy={busy}
               onAnswer={async (agree, reason) => {
                 setBusy(true)
@@ -9802,6 +9811,7 @@ function App() {
             </div>
             <BillingView
               ym={ym}
+              unmadeAll={unmadeUp}
               closeCheck={{
                 stateOf: (r) => (me && String(r.staff_id) === String(me.id) ? { st: 'own' } : closeStateOf(notices, r.staff_id, ym, r)),
                 onRequest: async (r) => {
