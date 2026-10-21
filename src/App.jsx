@@ -789,6 +789,7 @@ function layout(items, names) {
     ;(byLane[col] = byLane[col] || []).push(s)
   })
   const out = []
+  let gid = 0
   Object.entries(byLane).forEach(([col, list]) => {
     list.sort((a, b) => toMin(a.start_time) - toMin(b.start_time) || rank(a) - rank(b))
     // 겹치는 수업끼리 한 묶음으로
@@ -803,7 +804,10 @@ function layout(items, names) {
         ends[sub] = toMin(s.end_time)
         return { s, sub }
       })
-      placed.forEach(({ s, sub }) => out.push({ s, col: Number(col), cols, sub, subs: ends.length }))
+      // g · ga · gb: 함께 나눈 묶음 번호와 그 묶음의 시작 · 끝 (옆 빈 줄로 넓힐 때 씀)
+      const ga = Math.min(...group.map((x) => toMin(x.start_time)))
+      gid += 1
+      placed.forEach(({ s, sub }) => out.push({ s, col: Number(col), cols, sub, subs: ends.length, g: gid, ga, gb: groupEnd }))
       group = []
       groupEnd = -1
     }
@@ -1586,6 +1590,15 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
           laid.forEach(({ s, col, subs }) => {
             if (s.status === '보강' && subs === 1) widen('s' + s.id, col, toMin(s.start_time), toMin(s.end_time))
           })
+          // 한 선생님 줄 안에서 결강 · 보강이 나란히 나뉜 묶음도, 옆 줄이 그 시간에 비어 있으면 넓혀서 나눕니다
+          //   (반으로 쪼갠 칸이 너무 좁아 이름이 세로로 잘리던 문제)
+          const doneG = new Set()
+          laid.forEach(({ col, subs, g, ga, gb }) => {
+            if (subs > 1 && !doneG.has(g)) {
+              doneG.add(g)
+              widen('g' + g, col, ga, gb)
+            }
+          })
           return (
             <div
               key={i}
@@ -1674,11 +1687,21 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                 )
               })}
 
-              {laid.map(({ s, col, cols: laneCols, sub, subs }) => {
-                // 위치 · 폭(%): 보통은 선생님 줄(겹치면 그 안을 나눈 칸), 넓힌 보강은 넓힌 줄 전체
+              {laid.map(({ s, col, cols: laneCols, sub, subs, g }) => {
+                // 위치 · 폭(%): 보통은 선생님 줄(겹치면 그 안을 나눈 칸), 넓힌 보강은 넓힌 줄 전체,
+                //   넓힌 묶음은 넓힌 줄 전체를 묶음 칸 수로 나눔
                 const sp = spanOf['s' + s.id]
-                const leftPct = sp ? (sp[0] * 100) / laneCols : ((col * subs + sub) * 100) / (laneCols * subs)
-                const widthPct = sp ? ((sp[1] - sp[0] + 1) * 100) / laneCols : 100 / (laneCols * subs)
+                const gsp = subs > 1 ? spanOf['g' + g] : null
+                const leftPct = sp
+                  ? (sp[0] * 100) / laneCols
+                  : gsp
+                    ? (sp0 => (sp0 * 100) / laneCols + (sub * (gsp[1] - gsp[0] + 1) * 100) / (laneCols * subs))(gsp[0])
+                    : ((col * subs + sub) * 100) / (laneCols * subs)
+                const widthPct = sp
+                  ? ((sp[1] - sp[0] + 1) * 100) / laneCols
+                  : gsp
+                    ? ((gsp[1] - gsp[0] + 1) * 100) / (laneCols * subs)
+                    : 100 / (laneCols * subs)
                 // 칸 폭에 맞춰 글씨 크기 등을 정합니다 (줄 1개 폭 = 1, 나눈 칸 = 2 …)
                 const cols = 100 / widthPct
                 // 배경은 선생님 색, 결강·취소는 빗금과 취소선으로 구분합니다
