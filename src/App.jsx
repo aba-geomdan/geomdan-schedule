@@ -32,6 +32,11 @@ try {
     .filter((k) => /^sb-.*-auth-token$/.test(k))
     .forEach((k) => window.localStorage.removeItem(k))
 } catch (e) {}
+// 통합본이 방금 넘겨준 로그인이 있으면, 이 창에 남은 예전 로그인은 시작 전에 지웁니다
+//   (다른 사람 로그인이 잠깐이라도 살아나지 않게)
+try {
+  if (window.sessionStorage.getItem('sched-handoff')) window.sessionStorage.removeItem('sb-vdubgrxwijydwfabwpnk-auth-token')
+} catch (e) {}
 const supabase = createClient(SUPABASE_URL, ANON || 'missing-anon-key', {
   auth: { persistSession: true, autoRefreshToken: true, storage: _tabStorage },
 })
@@ -109,15 +114,133 @@ const won = (n) => (n || 0).toLocaleString('ko-KR')
 
 // ---- 인증 ----
 async function signIn(email, password) {
+  setHandoffUser(null) // 직접 로그인하면 통합본에서 넘겨받은 로그인이 아님
   return ok(await supabase.auth.signInWithPassword({ email, password }))
 }
-async function signOut() {
-  await supabase.auth.signOut()
+// ---- 통합본 [시간표 앱 열기]로 넘겨받는 로그인 ----
+//   통합본은 로그인할 때 같은 계정으로 '시간표 앱 전용' 로그인을 하나 더 받아 자기 창에 두고,
+//   [시간표 앱 열기]를 누르면 그것을 이 창에 넘겨 줍니다 (비밀번호는 어디에도 저장하지 않음).
+const HANDOFF_KEY = 'sched-handoff'
+const TONG_KEY = 'sb-aba-auth-session' // 통합본 로그인 칸 (창을 열 때 브라우저가 복사해 오는 수가 있어 지움)
+const SB_KEY = 'sb-vdubgrxwijydwfabwpnk-auth-token' // 이 앱의 로그인 칸 (supabase 기본 이름)
+// 이 창의 로그인이 통합본에서 넘겨받은 것이면 그 사람 id (새로고침해도 남도록 창 저장소에)
+const HANDOFF_USER_KEY = 'sched-handoff-user'
+const getHandoffUser = () => {
+  try {
+    return window.sessionStorage.getItem(HANDOFF_USER_KEY) || null
+  } catch (e) {
+    return null
+  }
 }
-async function getSession() {
-  const { data } = await supabase.auth.getSession()
+const setHandoffUser = (id) => {
+  try {
+    if (id) window.sessionStorage.setItem(HANDOFF_USER_KEY, id)
+    else window.sessionStorage.removeItem(HANDOFF_USER_KEY)
+  } catch (e) {}
+}
+const readJSON = (st, k) => {
+  try {
+    return JSON.parse(st.getItem(k) || 'null')
+  } catch (e) {
+    return null
+  }
+}
+const ownSession = () => readJSON(window.sessionStorage, SB_KEY)
+
+async function signOut() {
+  if (getHandoffUser()) {
+    // 통합본에서 넘겨받은 로그인: 이 창에서만 지웁니다. 통합본은 그대로 로그인돼 있으므로
+    //   통합본에서 다시 [시간표 앱 열기]를 누르면 바로 열립니다 (통합본에서 로그아웃하면 그때 모두 끊김)
+    try {
+      window.sessionStorage.removeItem(SB_KEY)
+    } catch (e) {}
+    setHandoffUser(null)
+    window.location.reload()
+    return
+  }
+  // 직접 로그인한 경우: 이 창의 로그인만 끝냅니다 (통합본에 로그인된 것까지 끊지 않게)
+  await supabase.auth.signOut({ scope: 'local' })
+}
+
+async function takeHandoff() {
+  let h = null
+  try {
+    h = readJSON(window.sessionStorage, HANDOFF_KEY)
+    window.sessionStorage.removeItem(HANDOFF_KEY)
+    window.sessionStorage.removeItem(TONG_KEY)
+  } catch (e) {
+    h = null
+  }
+  if (!h || !h.access_token || !h.refresh_token) return null
+  // 넘겨받은 것이 있으면 그것이 우선입니다 (이 창에 다른 사람 로그인이 남아 있어도 바꿔 씀)
+  const { data, error } = await supabase.auth.setSession({ access_token: h.access_token, refresh_token: h.refresh_token })
+  if (error || !data?.session) return null
+  setHandoffUser(data.session.user?.id || null)
+  giveBackHandoff(data.session) // 넘겨받으며 열쇠가 바뀌었을 수 있어 바로 한 번 돌려줌
   return data.session
 }
+// 이 창의 열쇠가 갱신되면 통합본 창에도 새 열쇠를 돌려줍니다 (이 창을 닫았다 다시 열어도 바로 열리게).
+//   통합본 창에 지금 로그인된 사람이 이 창 사람과 같을 때만.
+function giveBackHandoff(session) {
+  try {
+    const handoffUser = getHandoffUser()
+    if (!session || !handoffUser || session.user?.id !== handoffUser) return
+    const op = window.opener
+    if (!op || op.closed) return
+    const tong = readJSON(op.sessionStorage, TONG_KEY)
+    if (!tong || tong.user?.id !== handoffUser) return
+    op.sessionStorage.setItem(
+      HANDOFF_KEY,
+      JSON.stringify({ access_token: session.access_token, refresh_token: session.refresh_token, user_id: handoffUser })
+    )
+  } catch (e) {}
+}
+async function getSession() {
+  // 통합본이 방금 넘겨준 로그인이 있으면 그것부터
+  let hasHandoff = false
+  try {
+    hasHandoff = !!window.sessionStorage.getItem(HANDOFF_KEY)
+  } catch (e) {}
+  if (hasHandoff) {
+    // 넘겨받기에 실패하면 로그인 화면 (이 창에 남아 있던 다른 로그인으로 돌아가지 않음)
+    return await takeHandoff().catch(() => null)
+  }
+  const { data } = await supabase.auth.getSession()
+  return data.session || null
+}
+// 통합본에서 로그아웃하면 통합본이 알려 줍니다 → 같은 사람이 로그인된 시간표 창은 로그인을 지움
+//   (통합본을 새로고침했거나 다른 탭에서 연 시간표 창도 받도록 같은 주소 전체에 알림)
+try {
+  const ch = new BroadcastChannel('aba-logout')
+  ch.onmessage = (ev) => {
+    const uid = ev?.data?.uid
+    const mine = ownSession()?.user?.id
+    if (uid && mine && uid === mine) {
+      try {
+        window.sessionStorage.removeItem(SB_KEY)
+        window.sessionStorage.removeItem(HANDOFF_USER_KEY)
+      } catch (e) {}
+      window.location.reload()
+    }
+  }
+} catch (e) {}
+// 창을 다시 볼 때 서버에서 로그인이 끊겼는지 확인 (통합본 로그아웃 알림을 못 받은 경우 대비)
+let _lastCheck = 0
+try {
+  document.addEventListener('visibilitychange', async () => {
+    if (document.visibilityState !== 'visible' || Date.now() - _lastCheck < 60000) return
+    _lastCheck = Date.now()
+    if (!ownSession()) return
+    const { error } = await supabase.auth.getUser()
+    if (error && (error.status === 401 || error.status === 403 || /session/i.test(error.message || ''))) {
+      try {
+        window.sessionStorage.removeItem(SB_KEY)
+        window.sessionStorage.removeItem(HANDOFF_USER_KEY)
+      } catch (e) {}
+      window.location.reload()
+    }
+  })
+} catch (e) {}
 
 // 급여 비율(pay_rate)은 여기서 읽지 않습니다 — 원장님 전용 staff_pay_rates로만
 const STAFF_COLS = 'id, auth_user_id, name, role, active, sort_order, created_at, color_idx'
@@ -8737,8 +8860,22 @@ function App() {
 
   /* ---- 인증 ---- */
   useEffect(() => {
-    getSession().then(setSession)
-    const { data } = supabase.auth.onAuthStateChange((_e, s) => setSession(s))
+    getSession()
+      .then(setSession)
+      .catch(() => setSession(null))
+    const { data } = supabase.auth.onAuthStateChange((e, s) => {
+      // 처음 상태는 위 getSession이 정합니다 (넘겨받는 중에 로그인 화면이 깜빡이지 않게)
+      if (e === 'INITIAL_SESSION') return
+      // 같은 주소의 다른 창(다른 사람일 수도 있음)에서 온 알림은 무시하고, 이 창 자기 로그인 변화만 반영
+      //   (창 저장소를 못 쓰는 브라우저면 비교할 수 없으니 예전처럼 모두 반영)
+      if (_tabStorage) {
+        const own = ownSession()
+        if ((own?.refresh_token || null) !== (s?.refresh_token || null)) return
+      }
+      setSession(s)
+      if (e === 'TOKEN_REFRESHED') giveBackHandoff(s)
+      if (e === 'SIGNED_OUT') setHandoffUser(null)
+    })
     return () => data.subscription.unsubscribe()
   }, [])
 
