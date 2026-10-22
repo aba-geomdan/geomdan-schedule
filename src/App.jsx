@@ -5823,7 +5823,7 @@ function HomeView({ ym, onPrevYm, onNextYm, onLoad, onGo, busy }) {
     const plan = {
       key: 'plan',
       state: madePlan ? 'done' : 'todo',
-      title: `${nextLabel} 시간표 짜기`,
+      title: `다음 달(${nextLabel}) 시간표 짜기`,
       desc: madePlan
         ? `수업 ${h.next_templates}개 · 회차 ${h.next_sessions}건 만들어짐`
         : '아직 안 짰습니다 · 이번 달 것에서 가져옵니다',
@@ -5832,7 +5832,7 @@ function HomeView({ ym, onPrevYm, onNextYm, onLoad, onGo, busy }) {
     const receipt = {
       key: 'receipt',
       state: allReceipts ? 'done' : 'todo',
-      title: `${nextLabel} 영수증 발행`,
+      title: `다음 달(${nextLabel}) 영수증 발행`,
       desc: h.next_students
         ? `${h.next_students}명 · ${h.next_receipts} / ${h.next_students}장 발행`
         : `${nextLabel} 회차를 먼저 만들어주세요`,
@@ -8996,6 +8996,8 @@ function App() {
   const [tab, setTab] = useState('') // 계정 정보를 불러온 뒤 정해짐 (원장 'home' · 선생님 'tmonth')
   const [weekStart, setWeekStart] = useState(() => mondayOf(new Date()))
   const [ym, setYm] = useState(() => ymOf(new Date()))
+  // 홈은 다른 화면에서 보던 달과 상관없이 늘 '이번 달' 기준으로 (영수증 화면이 다음 달로 넘어가 있어도 홈은 그대로)
+  const [homeYm, setHomeYm] = useState(() => ymOf(new Date()))
   const [closeYm, setCloseYm] = useState(defaultClosingYm)
   const [monthSessions, setMonthSessions] = useState([])
   const [autoGen, setAutoGen] = useState(false)
@@ -9951,16 +9953,18 @@ function App() {
 
         {!loading && tab === 'home' && isAdmin && (
           <HomeView
-            ym={ym}
+            ym={homeYm}
             busy={busy}
-            onPrevYm={() => setYm(shiftYm(ym, -1))}
-            onNextYm={() => setYm(shiftYm(ym, 1))}
+            onPrevYm={() => setHomeYm(shiftYm(homeYm, -1))}
+            onNextYm={() => setHomeYm(shiftYm(homeYm, 1))}
             onLoad={loadHome}
             onGo={(where) => {
+              // 홈에서 고른 달 기준으로 그 화면을 엽니다
+              if (where !== 'billing-next') setYm(homeYm)
               if (where === 'plan') {
                 setTab('plan')
               } else if (where === 'billing-next') {
-                setYm(shiftYm(ym, 1))
+                setYm(shiftYm(homeYm, 1))
                 setTab('billing')
                 setBillGroup('staff')
               } else if (where === 'makeup') {
