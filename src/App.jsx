@@ -922,6 +922,8 @@ const HOLIDAY = {
 }
 // 보강 — 어느 선생님이든 같은 표시 (흰 바탕 · 점선 · 주황 이름표)
 const MAKEUP = '#E07B00'
+// 결강 딱지 · 테두리 색 (보강 주황과 짝이 되게 빨강)
+const ABSENT = '#D6455F'
 // 원장 외부 일정 — 수업(연한 색)과 확실히 다르게 진한 회색
 // 외부 일정: 눈에 덜 띄게 연한 회색 (수업 · 결강 · 보강이 먼저 보이도록)
 const OUTSIDE = { bg: '#F1F2F4', bd: '#D9DCE1', fg: '#4B5563', tag: '#8A919C' }
@@ -1707,6 +1709,11 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
   }, [sessions, staffOrder, outside, ownerName, weekStart, dayKey])
   const height = (DAY_END - DAY_START) * PX
   const phone = useNarrow()
+  // 주 보기: 그 주 토요일에 수업 · 외부 일정이 하나도 없으면 토요일 칸을 얇게 접어 나머지 요일을 넓게 씁니다
+  //   (토요일에 일정이 생기면 저절로 다시 펼쳐짐)
+  const satIso = nDays === 6 ? isoOf(days.find((d) => d.getDay() === 6) || days[5]) : ''
+  const satFold = nDays === 6 && !sessions.some((s) => s.d === satIso) && !outside.some((e) => e.d === satIso)
+  const colsT = `48px ${days.map((d) => (satFold && d.getDay() === 6 ? '44px' : 'minmax(0, 1fr)')).join(' ')}`
 
   if (phone)
     return (
@@ -1724,7 +1731,7 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
 
   return (
     <Card style={{ overflow: 'hidden' }}>
-      <div style={{ display: 'grid', gridTemplateColumns: `48px repeat(${nDays}, 1fr)` }}>
+      <div style={{ display: 'grid', gridTemplateColumns: colsT }}>
         <div style={{ borderBottom: `1px solid ${C.line}`, background: '#FBFBFC' }} />
         {days.map((d, i) => {
           const isToday = isoOf(d) === today
@@ -1769,7 +1776,7 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
           </div>
         </div>
       )}
-      <div style={{ display: 'grid', gridTemplateColumns: `48px repeat(${nDays}, 1fr)` }}>
+      <div style={{ display: 'grid', gridTemplateColumns: colsT }}>
         {/* 맨 아래 시각(8시) 글씨가 잘리지 않게 아래로 조금 여유 */}
         <div style={{ position: 'relative', height: height + 8, background: '#FBFBFC' }}>
           {Array.from(
@@ -1800,9 +1807,10 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
           //   주 보기에서는 같은 아이 수업 앞뒤에 붙은 30분 미만 보강을 그 수업 칸에 '+보강 ○분'으로 붙입니다
           const dayItems = sessions.filter((s) => s.d === ds).map(clampToView)
           const items = nDays > 1 ? attachShortMakeups(dayItems) : dayItems
-          const laid = layout(items, weekNames)
-          // 보강 · 결강 · 외부 일정은 모두 자기 선생님 줄 안에만 그립니다 (옆 선생님 줄로 넓히지 않음)
-          const ownerLane = ownerName ? weekNames.indexOf(ownerName) : -1
+          const dayNames = weekNames
+          const laid = layout(items, dayNames)
+          // 보강 · 결강은 자기 선생님 줄 안에만 그립니다 (옆 선생님 줄로 넓히지 않음)
+          const ownerLane = ownerName ? dayNames.indexOf(ownerName) : -1
           const dayOut = outByDay[ds] || []
           // 외부 일정끼리 시간이 겹치면(같은 날 학교 두 곳 등) 원장 줄에 한 칸으로 모아 줄마다 적습니다 (반으로 쪼개면 글씨가 세로로 잘려서)
           const outGroups = []
@@ -1815,6 +1823,18 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                 last.b = Math.max(last.b, toMin(e.end_time))
               } else outGroups.push({ a: toMin(e.start_time), b: toMin(e.end_time), list: [e] })
             })
+          // 외부 일정은 원장 줄에 놓되, 주 보기에서는 그 시간에 수업이 없는 옆 선생님 줄까지 넓혀 이름이 읽히게 합니다
+          //   (l0 ~ l1: 차지하는 줄 범위 — 다른 칸을 아래로 늘릴 때도 이 범위를 피함)
+          outGroups.forEach((o) => {
+            o.l0 = Math.max(ownerLane, 0)
+            o.l1 = o.l0
+            if (nDays > 1 && ownerLane >= 0) {
+              const free = (l) => !laid.some((x) => x.col === l && toMin(x.s.start_time) < o.b && toMin(x.s.end_time) > o.a)
+              while (o.l1 + 1 < dayNames.length && free(o.l1 + 1)) o.l1++
+              while (o.l0 - 1 >= 0 && free(o.l0 - 1)) o.l0--
+            }
+          })
+          const outIn = (col) => outGroups.filter((o) => ownerLane >= 0 && col >= o.l0 && col <= o.l1)
           // 한 선생님 줄 안에서 결강 · 보강이 겹친 묶음은 반으로 쪼개면 이름이 잘리므로,
           //   한 칸에 이름 줄들이 다 들어가면 모아 그림 (안 들어가면 예전처럼 나란히) — 주 보기만
           const combined = new Set()
@@ -1870,15 +1890,32 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                   </span>
                 </div>
               )}
-              {outGroups.map(({ a: ga, b: gb, list }) => {
+              {outGroups.map(({ a: ga, b: gb, list, l0, l1 }) => {
                 const top = (ga - DAY_START) * PX
                 const eh = (gb - ga) * PX
-                // 원장 줄에만 놓습니다 (원장 수업과 같은 줄, 색만 다르게)
-                // (원장 줄이 없으면 그날 칸 전체 폭)
-                const nAll = ownerLane >= 0 ? Math.max(weekNames.length, 1) : 1
+                // 원장 줄(과 그 시간에 비어 있는 옆 줄)에 놓습니다 — 원장 줄이 없으면 그날 칸 전체 폭
+                const nAll = ownerLane >= 0 ? Math.max(dayNames.length, 1) : 1
                 const w = 100 / nAll
-                const n = nAll / WIDE // 줄이 좁을수록 글씨를 작게
+                const span = l1 - l0 + 1
+                const n = nAll / span / WIDE // 줄이 좁을수록 글씨를 작게
                 const one = list.length === 1
+                const wk = nDays > 1
+                // 주 보기: 좁은 줄이라 이름이 여러 줄로 접히고 시간도 두 줄("9:00" / "~10:00")로 적으므로,
+                //   다 들어갈 높이가 모자라면 바로 아래가 비어 있는 만큼 칸을 늘립니다 (시작 위치는 그대로)
+                let boxH = Math.max(eh - 3, 18)
+                // (옆 줄까지 넓힌 칸은 이름이 한두 줄에 들어가므로 늘리지 않음)
+                if (wk && span === 1) {
+                  const perLine = n >= 3 ? 2.5 : 7 // 한 줄에 들어가는 글자 수(대략, 넉넉하게)
+                  const need = 12 + list.reduce((t, e) => t + Math.ceil(String(e.label || '').length / perLine) * 13 + (n >= 3 ? 21 : 11) + 2, 0) + 4
+                  if (boxH < need) {
+                    const nextA = Math.min(
+                      DAY_END,
+                      ...laid.filter((o) => o.col >= l0 && o.col <= l1 && toMin(o.s.start_time) >= gb).map((o) => toMin(o.s.start_time)),
+                      ...outGroups.filter((o) => o.a >= gb && !(o.l1 < l0 || o.l0 > l1)).map((o) => o.a)
+                    )
+                    boxH = Math.max(boxH, Math.min(need, (nextA - ga) * PX - 4))
+                  }
+                }
                 return (
                   <div
                     key={'og' + list[0].id}
@@ -1886,9 +1923,9 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                     style={{
                       position: 'absolute',
                       top: top + 1,
-                      height: Math.max(eh - 3, 18),
-                      left: `calc(${Math.max(ownerLane, 0) * w}% + 2px)`,
-                      width: `calc(${w}% - 4px)`,
+                      height: boxH,
+                      left: `calc(${l0 * w}% + 2px)`,
+                      width: `calc(${span * w}% - 4px)`,
                       boxSizing: 'border-box', // 안쪽 여백까지 폭 · 높이 안에 (옆 칸 · 다음 수업을 덮지 않게)
                       borderRadius: 7,
                       background: OUTSIDE.bg,
@@ -1901,8 +1938,14 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                     <div style={{ fontSize: 9, fontWeight: 700, color: OUTSIDE.tag, letterSpacing: '0.02em' }}>외부</div>
                     {list.map((e) => (
                       <div key={e.id} style={{ marginBottom: one ? 0 : 2 }}>
-                        <div style={{ fontSize: n >= 3 ? 10 : 11.5, fontWeight: 700, color: OUTSIDE.fg, lineHeight: 1.25, wordBreak: 'keep-all' }}>{e.label}</div>
-                        {(one ? eh > 44 && n < 3 : eh > 30 + list.length * 38) && (
+                        {/* 띄어쓰기에서 줄을 바꾸고, 한 단어가 줄보다 길면 그 단어 안에서도 바꿈 (잘리지 않게) */}
+                        <div style={{ fontSize: n >= 3 ? 10 : 11.5, fontWeight: 700, color: OUTSIDE.fg, lineHeight: '13px', wordBreak: 'keep-all', overflowWrap: 'anywhere' }}>{e.label}</div>
+                        {wk ? (
+                          <div style={{ fontSize: 9, color: OUTSIDE.tag, marginTop: 1, lineHeight: '10px' }}>
+                            {clock(e.start_time)}
+                            <wbr />~{clock(e.end_time)}
+                          </div>
+                        ) : (one ? eh > 44 && n < 3 : eh > 30 + list.length * 38) && (
                           <div style={{ fontSize: 9.5, color: OUTSIDE.tag, marginTop: 1 }}>
                             {clock(e.start_time)}~{clock(e.end_time)}
                           </div>
@@ -1930,20 +1973,28 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                     // 모두 같은 시간이면 시간은 맨 아래 한 번만, 다르면 이름마다 시간
                     const tKey = (x) => (x.s._orig || x.s).start_time + (x.s._orig || x.s).end_time
                     const sameTime = rows.every((x) => tKey(x) === tKey(rows[0]))
-                    // '보강' 딱지(맨 위 한 번) · 이름 줄 · 시간(두 줄)을 다 적을 높이 — 모자라면 바로 아래가 비어 있는 만큼 칸을 늘립니다
-                    const needTag = (hasMk ? 13 : 0) + rows.length * 14 + 6
-                    const needAll = needTag + (sameTime ? 20 : rows.length * 20)
+                    // '보강' · '결강' 딱지(종류마다 한 번) · 이름 줄 · 시간(두 줄)을 다 적을 높이 — 모자라면 바로 아래가 비어 있는 만큼 칸을 늘립니다
+                    //   (줄 높이는 px로 고정: 딱지 11 · 이름 13 · 시간 한 줄 10, 사이 2)
+                    const nTags = (hasMk ? 1 : 0) + (hasAb ? 1 : 0)
+                    const needTag = nTags * 13 + rows.length * 15 + 8
+                    const needAll = needTag + (sameTime ? 22 : rows.length * 20)
                     const nextA = Math.min(
                       DAY_END,
                       ...laid.filter((o) => o.col === col && o.g !== g && toMin(o.s.start_time) >= gb).map((o) => toMin(o.s.start_time)),
-                      ...(col === ownerLane ? outGroups.filter((o) => o.a >= gb).map((o) => o.a) : [])
+                      ...outIn(col).filter((o) => o.a >= gb).map((o) => o.a)
                     )
                     const roomH = (nextA - ga) * PX - 3
                     const boxH = Math.max(baseH, Math.min(needAll, roomH))
-                    // 줄이 좁아 딱지 옆에 이름이 잘리므로, 자리가 있으면 '보강' 딱지를 맨 위에 한 번만 적고
-                    //   보강인 아이 이름은 주황 글씨로 (결강은 빨간 취소선)
-                    const headTag = hasMk && needTag <= boxH
-                    const showT = (headTag || !hasMk ? needTag : needTag - 13) + (sameTime ? 20 : rows.length * 20) <= boxH + 2
+                    // 줄이 좁아 딱지 옆에 이름이 잘리므로, 자리가 있으면 '보강' 딱지 아래에 보강 아이들,
+                    //   '결강' 딱지 아래에 결강 아이들을 적습니다 (보강은 주황 글씨, 결강은 빨간 취소선)
+                    const headTag = nTags > 0 && needTag <= boxH
+                    const showT = (headTag ? needTag : needTag - nTags * 13) + (sameTime ? 22 : rows.length * 20) <= boxH + 2
+                    const firstAb = rows.find((x) => x.s.status === '결강')
+                    const pill = (txt, bg) => (
+                      <div style={{ height: 11, lineHeight: '10px', flexShrink: 0 }}>
+                        <span style={{ display: 'inline-block', fontSize: 8.5, fontWeight: 800, color: '#fff', background: bg, borderRadius: 99, padding: '0 4px', lineHeight: '10px', whiteSpace: 'nowrap' }}>{txt}</span>
+                      </div>
+                    )
                     return (
                       <div
                         key={'grp' + g}
@@ -1956,8 +2007,8 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                           boxSizing: 'border-box',
                           borderRadius: 5,
                           // 안에 든 것에 맞춰: 보강 있으면 주황, 결강만 있으면 분홍 점선, 둘 다 없으면 선생님 색
-                          background: hasMk ? '#FFF4E5' : hasAb ? '#fff' : tn.bg,
-                          border: hasMk ? `2px solid ${MAKEUP}` : hasAb ? '1.5px dashed #E39AAB' : `1px solid ${tn.bd}`,
+                          background: hasMk ? '#FFF4E5' : hasAb ? '#FFF0F3' : tn.bg,
+                          border: hasMk ? `2px solid ${MAKEUP}` : hasAb ? `1.5px dashed ${ABSENT}` : `1px solid ${tn.bd}`,
                           borderLeft: `3px solid ${tc}`,
                           overflow: 'hidden',
                           padding: '2px 3px',
@@ -1967,31 +2018,30 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                           zIndex: boxH > baseH ? 1 : undefined,
                         }}
                       >
-                        {headTag && (
-                          <div style={{ lineHeight: 1 }}>
-                            <span style={{ display: 'inline-block', fontSize: 8.5, fontWeight: 800, color: '#fff', background: MAKEUP, borderRadius: 99, padding: '0 4px', lineHeight: 1.35 }}>보강</span>
-                          </div>
-                        )}
-                        {rows.map(({ s }) => {
+                        {headTag && hasMk && pill('보강', MAKEUP)}
+                        {rows.map((x) => {
+                          const { s } = x
                           const mk = s.status === '보강'
                           const ab = s.status === '결강'
                           const cx = s.status === '취소'
                           return (
+                            <React.Fragment key={s.id}>
+                            {headTag && x === firstAb && pill('결강', ABSENT)}
                             <button
                               key={s.id}
                               onClick={() => onPick(s._orig || s)}
                               title={`${mk ? '[보강] ' : ab ? '[결강] ' : ''}${s.student_name} · ${s.staff_name} · ${clock((s._orig || s).start_time)}-${clock((s._orig || s).end_time)}`}
                               style={{
                                 border: 'none', background: 'transparent', padding: 0, cursor: 'pointer', textAlign: 'left',
-                                display: 'block', width: '100%', minWidth: 0, lineHeight: 1.2,
+                                display: 'block', width: '100%', minWidth: 0, lineHeight: '13px', flexShrink: 0,
                                 whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', // 좁아도 한 줄로
                               }}
                             >
                               <div style={{ display: 'flex', alignItems: 'center', gap: 2, minWidth: 0 }}>
                                 {/* '보강' 딱지는 늘 보이고, 칸이 좁으면 이름이 줄어듭니다 */}
-                                {mk && !headTag && (
-                                  <span style={{ display: 'inline-block', fontSize: 8.5, fontWeight: 800, color: '#fff', background: MAKEUP, borderRadius: 99, padding: '0 3px', flexShrink: 0, lineHeight: 1.35 }}>
-                                    보강
+                                {(mk || ab) && !headTag && (
+                                  <span style={{ display: 'inline-block', fontSize: 8.5, fontWeight: 800, color: '#fff', background: ab ? ABSENT : MAKEUP, borderRadius: 99, padding: '0 3px', flexShrink: 0, lineHeight: '10px' }}>
+                                    {ab ? '결강' : '보강'}
                                   </span>
                                 )}
                                 <span
@@ -2017,18 +2067,19 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                                   ))}
                               </div>
                               {!sameTime && showT && (
-                                <div style={{ fontSize: 8.5, letterSpacing: '-0.3px', color: C.sub, textDecoration: ab || cx ? 'line-through' : 'none', whiteSpace: 'normal', lineHeight: 1.1 }}>
-                                  {clock((s._orig || s).start_time)}~<wbr />
-                                  {clock((s._orig || s).end_time)}
+                                <div style={{ fontSize: 8.5, letterSpacing: '-0.3px', color: C.sub, textDecoration: ab || cx ? 'line-through' : 'none', whiteSpace: 'normal', lineHeight: '10px' }}>
+                                  {clock((s._orig || s).start_time)}
+                                  <wbr />~{clock((s._orig || s).end_time)}
                                 </div>
                               )}
                             </button>
+                            </React.Fragment>
                           )
                         })}
                         {sameTime && showT && (
-                          <div style={{ fontSize: 8.5, letterSpacing: '-0.3px', color: C.sub, whiteSpace: 'normal', lineHeight: 1.1 }}>
-                            {clock((rows[0].s._orig || rows[0].s).start_time)}~<wbr />
-                            {clock((rows[0].s._orig || rows[0].s).end_time)}
+                          <div style={{ fontSize: 8.5, letterSpacing: '-0.3px', color: C.sub, whiteSpace: 'normal', lineHeight: '10px', flexShrink: 0 }}>
+                            {clock((rows[0].s._orig || rows[0].s).start_time)}
+                            <wbr />~{clock((rows[0].s._orig || rows[0].s).end_time)}
                           </div>
                         )}
                       </div>
@@ -2060,13 +2111,13 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                 let dispH = Math.max(h - 2, short ? 20 : 18)
                 let full = !short
                 if (nDays > 1 && narrow) {
-                  const need = (isMakeup ? 11 : 0) + 12 + 20 + (s._plus ? 12 : 0) + (isMakeup ? 6 : 6)
+                  const need = (isMakeup || isAbsent ? 11 : 0) + 12 + 20 + (s._plus ? 12 : 0) + 6
                   if (dispH < need) {
                     const end = toMin(s.end_time)
                     const nextA = Math.min(
                       DAY_END,
                       ...laid.filter((o) => o.col === col && o.s !== s && toMin(o.s.start_time) >= end).map((o) => toMin(o.s.start_time)),
-                      ...(col === ownerLane ? outGroups.filter((o) => o.a >= end).map((o) => o.a) : [])
+                      ...outIn(col).filter((o) => o.a >= end).map((o) => o.a)
                     )
                     dispH = Math.max(dispH, Math.min(need, (nextA - toMin(s.start_time)) * PX - 3))
                   }
@@ -2076,23 +2127,25 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                 const dayView = nDays === 1
                 const orig = s._orig || s
                 const timeTxt = `${clock(orig.start_time)}~${clock(orig.end_time)}`
-                // 좁은 줄에서는 '~' 뒤에서 줄을 바꿔 끝 시각까지 보이게 (말줄임 대신)
+                // 좁은 줄에서는 '시작' / '~끝' 두 줄로 (첫 줄이 짧아 말줄임 없이 다 보이게)
                 const timeWrap = (
                   <>
-                    {clock(orig.start_time)}~<wbr />
-                    {clock(orig.end_time)}
+                    {clock(orig.start_time)}
+                    <wbr />~{clock(orig.end_time)}
                   </>
                 )
-                // '보강' 딱지 — 칸이 좁아도 늘 보이고, 이름이 대신 줄어듭니다
-                const tag = isMakeup && (
+                // 주 보기 좁은 줄은 글꼴과 상관없이 줄 높이를 px로 고정 (컴퓨터마다 글자가 겹치거나 잘리지 않게)
+                const fixLH = narrow && !dayView
+                // '보강'(주황) · '결강'(빨강) 딱지 — 칸이 좁아도 늘 보입니다
+                const tag = (isMakeup || isAbsent) && (
                   <span
                     style={{
                       display: 'inline-block', fontSize: narrow ? 8.5 : 9.5, fontWeight: 700, color: '#fff',
-                      background: MAKEUP, borderRadius: 99, padding: narrow ? '0 3px' : '0 6px',
-                      flexShrink: 0, lineHeight: narrow && !dayView ? 1.2 : 1.35, whiteSpace: 'nowrap',
+                      background: isAbsent ? ABSENT : MAKEUP, borderRadius: 99, padding: narrow ? '0 3px' : '0 6px',
+                      flexShrink: 0, lineHeight: fixLH ? '10px' : 1.35, whiteSpace: 'nowrap',
                     }}
                   >
-                    보강
+                    {isAbsent ? '결강' : '보강'}
                   </span>
                 )
                 const nameEl = (
@@ -2102,7 +2155,7 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                       fontWeight: isMakeup || isAbsent ? 800 : 600,
                       color: isAbsent ? '#B04A60' : isMakeup ? '#7A4100' : tone.fg,
                       textDecoration: off ? 'line-through' : 'none',
-                      lineHeight: dayView ? 1.2 : 1.15,
+                      lineHeight: fixLH ? '12px' : dayView ? 1.2 : 1.15,
                       whiteSpace: 'nowrap',
                       overflow: 'hidden',
                       textOverflow: 'ellipsis',
@@ -2146,18 +2199,18 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                       height: dispH,
                       // 정상 수업은 연하게, 결강 · 보강만 눈에 띄게
                       background: isAbsent
-                        ? '#FFFFFF'
+                        ? '#FFF0F3'
                         : off
                           ? `repeating-linear-gradient(135deg, ${tone.bg}, ${tone.bg} 5px, #FFFFFF 5px, #FFFFFF 10px)`
                           : isMakeup
                             ? '#FFF4E5'
                             : tone.bg,
-                      border: isAbsent ? '1.5px dashed #E39AAB' : isMakeup ? `2px solid ${MAKEUP}` : `1px solid ${tone.bd}`,
+                      border: isAbsent ? `1.5px dashed ${ABSENT}` : isMakeup ? `2px solid ${MAKEUP}` : `1px solid ${tone.bd}`,
                       borderLeft: `3px solid ${tc}`, // 어느 선생님 수업인지 왼쪽 색 띠는 늘 그대로
                       opacity: off && !isAbsent ? 0.75 : 1,
                       borderRadius: 5,
                       // (주 보기 좁은 보강 칸은 테두리가 두꺼워서 위아래 여백을 1px로 — 딱지 · 이름 · 시간 두 줄이 다 들어가게)
-                      padding: !full ? (narrow ? '0 3px' : '0 5px') : cols >= 3 ? '2px 1px' : narrow ? (isMakeup && !dayView ? '1px 3px' : '2px 3px') : '3px 5px',
+                      padding: !full ? (narrow ? '0 3px' : '0 5px') : cols >= 3 ? '2px 1px' : narrow ? ((isMakeup || isAbsent) && !dayView ? '1px 3px' : '2px 3px') : '3px 5px',
                       textAlign: 'left',
                       cursor: 'pointer',
                       overflow: 'hidden',
@@ -2178,29 +2231,23 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                     ) : dayView && !short ? (
                       // 하루 보기: 지금 모양 그대로, 시간만 시작~끝으로
                       <>
-                        {isMakeup && h > 56 && <div style={{ marginBottom: 1 }}>{tag}</div>}
-                        {isMakeup && h <= 56 ? (
+                        {/* 하루 보기는 칸이 넓어서 '보강' · '결강' 딱지를 늘 이름 옆에 (칸 높이와 상관없이 같은 모양) */}
+                        {tag ? (
                           <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 }}>{tag}{nameEl}</div>
                         ) : (
                           nameEl
                         )}
                         <div style={timeStyle}>{timeTxt}</div>
                         {plusEls.length > 0 && <div>{plusEls}</div>}
-                        {isAbsent && h > 52 && (
-                          <div style={{ fontSize: 9.5, fontWeight: 700, color: C.danger }}>
-                            {subs > 1 ? '결강' : s.needs_makeup ? '결강 · 미보강' : '결강 · 보강완료'}
-                          </div>
-                        )}
-                        {isAbsent && h <= 52 && !narrow && <div style={{ fontSize: 9.5, fontWeight: 700, color: C.danger }}>결강</div>}
                         {s.status === '취소' && h > 40 && <div style={{ fontSize: 9.5, fontWeight: 700, color: C.mut }}>취소</div>}
                       </>
                     ) : (
                       // 주 보기: 모든 칸을 같은 모양으로 — 1줄 (보강 딱지) 이름 / 2줄 시작~끝 / (+보강 ○분)
                       <>
                         {/* 좁은 줄에서 딱지와 이름을 한 줄에 쓰면 이름이 잘리므로, 딱지는 이름 위에 따로 */}
-                        {tag && <div style={{ lineHeight: 1 }}>{tag}</div>}
+                        {tag && <div style={{ lineHeight: fixLH ? '10px' : 1, marginBottom: 1 }}>{tag}</div>}
                         {nameEl}
-                        <div style={{ ...timeStyle, whiteSpace: 'normal', overflowWrap: 'normal', lineHeight: 1.1 }}>{timeWrap}</div>
+                        <div style={{ ...timeStyle, whiteSpace: 'normal', overflowWrap: 'normal', textOverflow: 'clip', lineHeight: fixLH ? '10px' : 1.1 }}>{timeWrap}</div>
                         {plusEls.length > 0 && <div style={{ whiteSpace: 'nowrap', overflow: 'hidden' }}>{plusEls}</div>}
                       </>
                     )}
@@ -7050,7 +7097,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
         .tt-gblk.tt-gab { text-decoration: none; opacity: 1; border: 2px solid #D93025 !important; color: #B3261E !important;
           background: repeating-linear-gradient(135deg, #FDE3E0 0, #FDE3E0 6px, #fff 6px, #fff 12px) !important; }
         .tt-gblk.tt-gab small { font-weight: 800; opacity: 1 !important; }
-        .tt-gout { background: #3F4652; color: #fff; border-radius: 2px; padding: 2px 3px; margin-bottom: 1px; line-height: 1.15; }
+        .tt-gout { background: #F1F2F4; color: #4B5563; border: 1px solid #D9DCE1; border-radius: 2px; padding: 2px 3px; margin-bottom: 1px; line-height: 1.15; }
         .tt-gout b { display: block; font-size: 8.5px; } .tt-gout small { font-size: 7.5px; opacity: .9; }
         .tt-page { width: 297mm; height: 210mm; margin: 0 auto 10mm; background: #fff; padding: 6mm 8mm;
           box-shadow: 0 1px 4px rgba(0,0,0,.12); display: flex; flex-direction: column; box-sizing: border-box; color: ${C.ink}; }
@@ -9180,6 +9227,14 @@ function App() {
   const [printAll, setPrintAll] = useState(null)
   const [needRegen, setNeedRegen] = useState(false)
   const [schedView, setSchedView] = useState('month')
+  // 왼쪽 메뉴 접기 (원장 화면) — 이 컴퓨터에 기억
+  const [navFold, setNavFoldRaw] = useState(() => {
+    try { return localStorage.getItem('sched-nav-fold') === '1' } catch { return false }
+  })
+  const setNavFold = (v) => {
+    setNavFoldRaw(v)
+    try { localStorage.setItem('sched-nav-fold', v ? '1' : '0') } catch {}
+  }
   const [billGroup, setBillGroup] = useState('staff') // 정산 화면: 영수증 · 급여 · 연말정산 (왼쪽 메뉴)
   const [weekMode, setWeekMode] = useState('week') // 시간표 화면: 하루 | 이번 주 | 한 달
   const [dayIso, setDayIso] = useState(null) // '하루' 보기에서 보는 날 (없으면 오늘 · 그 주 월요일)
@@ -9770,10 +9825,28 @@ function App() {
           ]
         : null
   const SIDE_W = 176
+  // 시간표(주 · 하루)는 선생님 줄이 많아 칸이 좁으므로 화면 폭을 다 씁니다 (다른 화면은 지금처럼 가운데 1200px)
+  const wideMain = isAdmin && tab === 'month' && schedView === 'week'
+  const MAIN_W = wideMain ? 'none' : 1200
+  const sideW = isAdmin && !navFold ? SIDE_W : 0
 
   return (
-    <div style={{ minHeight: '100vh', background: C.bg, paddingLeft: isAdmin ? SIDE_W : 0 }} className={`${printAll ? 'app-hidden-on-print' : ''}${isAdmin ? ' app-with-side' : ''}`}>
-      {isAdmin && (
+    <div style={{ minHeight: '100vh', background: C.bg, paddingLeft: sideW }} className={`${printAll ? 'app-hidden-on-print' : ''}${isAdmin ? ' app-with-side' : ''}`}>
+      {/* 왼쪽 메뉴를 접었을 때: 왼쪽 위 작은 버튼으로 다시 펼침 */}
+      {isAdmin && navFold && (
+        <button
+          className="no-print"
+          onClick={() => setNavFold(false)}
+          title="메뉴 펼치기"
+          style={{
+            position: 'fixed', left: 8, top: 10, zIndex: 25, border: `1px solid ${C.line}`, background: '#fff', borderRadius: 8,
+            padding: '6px 10px', fontSize: 13, fontWeight: 700, color: C.ink, cursor: 'pointer', boxShadow: '0 1px 3px rgba(0,0,0,.08)',
+          }}
+        >
+          ☰ 메뉴
+        </button>
+      )}
+      {isAdmin && !navFold && (
         <nav
           className="no-print"
           style={{
@@ -9782,7 +9855,17 @@ function App() {
           }}
         >
           <style>{`@media print { .app-with-side { padding-left: 0 !important; } }`}</style>
-          <div style={{ fontSize: 16, fontWeight: 800, padding: '2px 8px 14px' }}>검단ABA 시간표</div>
+          <div style={{ display: 'flex', alignItems: 'center', padding: '2px 4px 14px 8px' }}>
+            <div style={{ fontSize: 16, fontWeight: 800 }}>검단ABA 시간표</div>
+            {/* 메뉴 접기 — 시간표 칸을 넓게 보고 싶을 때 */}
+            <button
+              onClick={() => setNavFold(true)}
+              title="메뉴 접기 (시간표를 넓게)"
+              style={{ marginLeft: 'auto', border: 'none', background: 'transparent', color: C.mut, fontSize: 15, cursor: 'pointer', padding: '2px 6px' }}
+            >
+              «
+            </button>
+          </div>
           {side.map((g, gi) => (
             <div key={gi} style={{ marginBottom: 8 }}>
               {g.h && <div style={{ fontSize: 11.5, color: C.mut, fontWeight: 700, padding: '10px 8px 4px' }}>{g.h}</div>}
@@ -9811,7 +9894,7 @@ function App() {
         </nav>
       )}
       <div className="no-print" style={{ background: '#fff', borderBottom: `1px solid ${C.line}`, padding: '12px 16px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', maxWidth: 1200, margin: '0 auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', maxWidth: MAIN_W, margin: '0 auto', paddingLeft: isAdmin && navFold ? 76 : 0 }}>
           {!isAdmin && <div style={{ fontSize: 16, fontWeight: 700 }}>검단ABA 시간표</div>}
 
           {!isAdmin && (
@@ -9862,7 +9945,7 @@ function App() {
           className="no-print"
           style={{ background: '#fff', borderBottom: `1px solid ${C.line}`, padding: '0 16px' }}
         >
-          <div style={{ display: 'flex', gap: 2, maxWidth: 1200, margin: '0 auto', overflowX: 'auto' }}>
+          <div style={{ display: 'flex', gap: 2, maxWidth: MAIN_W, margin: '0 auto', overflowX: 'auto' }}>
             {activeGroup.items.map(([k, label]) => (
               <button
                 key={k}
@@ -9883,7 +9966,7 @@ function App() {
         </div>
       )}
 
-      <div style={{ padding: 16, maxWidth: 1200, margin: '0 auto' }}>
+      <div style={{ padding: 16, maxWidth: MAIN_W, margin: '0 auto' }}>
         {!loading && isAdmin && needRegen && (
           <div
             className="no-print"
