@@ -1624,7 +1624,7 @@ function clampToView(s) {
   return { ...s, start_time: hm(na), end_time: hm(nb), _orig: s, student_name: '⚠' + s.student_name }
 }
 
-// 같은 날 · 같은 선생님 · 같은 아이 수업 바로 앞이나 뒤에 붙은 30분 미만 보강은 따로 칸을 만들지 않고
+// 같은 날 · 같은 선생님 · 같은 아이 수업 바로 앞이나 뒤에 붙은 40분 이하 보강은 따로 칸을 만들지 않고
 //   그 수업 칸에 '+보강 ○분'으로 붙입니다 (수업 칸은 보강 시간까지 늘려 그림, 원래 수업은 _orig, 붙은 보강은 _plus)
 //   그 보강 시간에 같은 선생님의 결강이 겹쳐 있으면 붙이지 않습니다 (결강 표시가 가려지지 않게)
 function attachShortMakeups(list) {
@@ -1635,7 +1635,7 @@ function attachShortMakeups(list) {
     if (m.status !== '보강') return
     const a = toMin(m.start_time)
     const b = toMin(m.end_time)
-    if (!(b > a) || b - a >= 30) return
+    if (!(b > a) || b - a > 40) return
     if (list.some((x) => x.status === '결강' && x.staff_name === m.staff_name && x.d === m.d && toMin(x.start_time) < b && toMin(x.end_time) > a)) return
     const host = list.find(
       (x) =>
@@ -1804,7 +1804,7 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
           const isHoliday = !!hol
           // 화면 시간(오전 9시~저녁 8시) 밖으로 잘못 들어간 수업(예: 오후 12:10을 새벽 0:10으로)도
           //   맨 위나 맨 아래에 붙여 보여 줍니다 — 눌러서 고치거나 지울 수 있게 (이름 앞에 ⚠)
-          //   주 보기에서는 같은 아이 수업 앞뒤에 붙은 30분 미만 보강을 그 수업 칸에 '+보강 ○분'으로 붙입니다
+          //   주 보기에서는 같은 아이 수업 앞뒤에 붙은 40분 이하 보강을 그 수업 칸에 '+보강 ○분'으로 붙입니다
           const dayItems = sessions.filter((s) => s.d === ds).map(clampToView)
           const items = nDays > 1 ? attachShortMakeups(dayItems) : dayItems
           const dayNames = weekNames
@@ -1976,7 +1976,7 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                     // '보강' · '결강' 딱지(종류마다 한 번) · 이름 줄 · 시간(두 줄)을 다 적을 높이 — 모자라면 바로 아래가 비어 있는 만큼 칸을 늘립니다
                     //   (줄 높이는 px로 고정: 딱지 11 · 이름 13 · 시간 한 줄 10, 사이 2)
                     const nTags = (hasMk ? 1 : 0) + (hasAb ? 1 : 0)
-                    const needTag = nTags * 13 + rows.length * 15 + 8
+                    const needTag = nTags * 13 + rows.length * 15 + rows.filter((x) => x.s._plus).length * 12 + 8
                     const needAll = needTag + (sameTime ? 22 : rows.length * 20)
                     const nextA = Math.min(
                       DAY_END,
@@ -2054,7 +2054,15 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                                   {s.student_name}
                                 </span>
                                 {cx && <span style={{ fontSize: 9, fontWeight: 700, color: C.mut, flexShrink: 0 }}>취소</span>}
-                                {s._plus &&
+                              </div>
+                              {!sameTime && showT && (
+                                <div style={{ fontSize: 8.5, letterSpacing: '-0.3px', color: C.sub, textDecoration: ab || cx ? 'line-through' : 'none', whiteSpace: 'normal', lineHeight: '10px' }}>
+                                  {clock((s._orig || s).start_time)}
+                                  <wbr />~{clock((s._orig || s).end_time)}
+                                </div>
+                              )}
+                              {/* 붙은 짧은 보강(+○분)은 이름이 잘리지 않게 이름 아래 줄에 */}
+                              {s._plus && <div style={{ lineHeight: '11px' }}>{s._plus &&
                                   s._plus.map((m) => (
                                     <span
                                       key={m.id}
@@ -2064,14 +2072,7 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                                     >
                                       +{toMin((m._orig || m).end_time) - toMin((m._orig || m).start_time)}분
                                     </span>
-                                  ))}
-                              </div>
-                              {!sameTime && showT && (
-                                <div style={{ fontSize: 8.5, letterSpacing: '-0.3px', color: C.sub, textDecoration: ab || cx ? 'line-through' : 'none', whiteSpace: 'normal', lineHeight: '10px' }}>
-                                  {clock((s._orig || s).start_time)}
-                                  <wbr />~{clock((s._orig || s).end_time)}
-                                </div>
-                              )}
+                                  ))}</div>}
                             </button>
                             </React.Fragment>
                           )
@@ -6374,7 +6375,7 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
   const blocksOf = (dIso, holOnly = false) => {
     let items = [
       ...outside.filter((e) => e.d === dIso).map((x) => ({ x, out: true })),
-      // 같은 아이 수업 바로 앞뒤에 붙은 30분 미만 보강은 그 수업 칸에 '+보강 ○분'으로 붙입니다
+      // 같은 아이 수업 바로 앞뒤에 붙은 40분 이하 보강은 그 수업 칸에 '+보강 ○분'으로 붙입니다
       ...attachShortMakeups(sessions.filter((x) => x.d === dIso && (!holOnly || x.status === '보강' || x.status === '진행')))
         .map((x) => ({ x, out: false })),
     ]
