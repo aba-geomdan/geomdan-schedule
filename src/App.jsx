@@ -1497,8 +1497,7 @@ function TeacherMakeupCheck({ unmade, reports, onReport, onWithdraw, busy }) {
                   <input type="date" value={d} min={u.d} max={isoOf(new Date())} onChange={(e) => setD(e.target.value)}
                     style={{ padding: '6px 8px', border: `1px solid ${C.line}`, borderRadius: 7, fontSize: 13.5 }} />
                   {/* 몇 시에 했는지 원장님이 알 수 있게 시작 시각은 꼭 넣습니다 */}
-                  <input type="time" value={start} onChange={(e) => setStart(e.target.value)} title="보강 시작 시각"
-                    style={{ padding: '6px 8px', border: `1px solid ${start ? C.line : '#E39AAB'}`, borderRadius: 7, fontSize: 13.5 }} />
+                  <TimePick value={start} onChange={setStart} style={{ padding: '6px 8px', fontSize: 13.5, borderColor: start ? C.line : '#E39AAB' }} />
                   <select value={mins} onChange={(e) => setMins(Number(e.target.value))}
                     style={{ padding: '6px 8px', border: `1px solid ${C.line}`, borderRadius: 7, fontSize: 13.5 }}>
                     {Array.from({ length: Math.max(1, Math.floor((left - pendMin) / 10)) }, (_, i) => (i + 1) * 10)
@@ -7328,6 +7327,48 @@ function MakeupLog({ rows, staffOrder = [], ownerName, toneOf, busy, isAdmin, un
   )
 }
 
+// 시작 시각 고르기: 목록(오전 9시 ~ 오후 8시, 5분 단위)으로 골라서 오전·오후를 헷갈릴 일이 없게.
+//   그 밖의 시간이 필요할 때만 '그 외 시간 직접 입력'으로 적습니다.
+const TP_HOURS = [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+const tpHourLabel = (h) => (h < 12 ? `오전 ${h}시` : h === 12 ? '낮 12시' : `오후 ${h - 12}시`)
+function TimePick({ value, onChange, style }) {
+  const [h, m] = (value || '').split(':').map(Number)
+  const inList = value && TP_HOURS.includes(h) && m % 5 === 0
+  const [direct, setDirect] = useState(!!value && !inList)
+  const sel = { padding: '8px 10px', border: `1px solid ${C.line}`, borderRadius: 8, fontSize: 14, background: '#fff', ...style }
+  const pad = (n) => String(n).padStart(2, '0')
+  if (direct)
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <input type="time" step={300} value={value || ''} onChange={(e) => onChange(e.target.value)} style={sel} />
+        <button type="button" onClick={() => { setDirect(false); if (!inList) onChange('') }}
+          style={{ border: 'none', background: 'none', color: C.sub, fontSize: 12, cursor: 'pointer', textDecoration: 'underline', padding: 0 }}>
+          목록에서 고르기
+        </button>
+      </span>
+    )
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+      <select value={inList ? String(h) : ''} onChange={(e) => onChange(e.target.value ? `${pad(Number(e.target.value))}:${pad(inList ? m : 0)}` : '')} style={sel}>
+        <option value="">시</option>
+        {TP_HOURS.map((x) => (
+          <option key={x} value={x}>{tpHourLabel(x)}</option>
+        ))}
+      </select>
+      <select value={inList ? String(m) : ''} disabled={!inList} onChange={(e) => onChange(`${pad(h)}:${pad(Number(e.target.value))}`)} style={sel}>
+        <option value="">분</option>
+        {Array.from({ length: 12 }, (_, i) => i * 5).map((x) => (
+          <option key={x} value={x}>{pad(x)}분</option>
+        ))}
+      </select>
+      <button type="button" onClick={() => setDirect(true)}
+        style={{ border: 'none', background: 'none', color: C.sub, fontSize: 12, cursor: 'pointer', textDecoration: 'underline', padding: 0 }}>
+        그 외 시간 직접 입력
+      </button>
+    </span>
+  )
+}
+
 function AddSessionModal({ students, staff, programs, absent, preset = null, pairs = [], onClose, onSave, busy }) {
   // preset: 선생님이 '보강 했어요'로 보낸 날짜 · 시작 · 분을 미리 채워 둡니다
   const linked = !!absent
@@ -7508,7 +7549,7 @@ function AddSessionModal({ students, staff, programs, absent, preset = null, pai
 
         <AddField label={`시작 시각 (${mins}분${linked ? ' 보강' : ' 수업'})`}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-            <input type="time" step={300} value={start} onChange={(e) => setStart(e.target.value)} style={{ ...addInp, width: 'auto', borderColor: start && start < '07:00' ? C.danger : undefined }} />
+            <TimePick value={start} onChange={setStart} style={start && start < '07:00' ? { borderColor: C.danger } : undefined} />
             <span style={{ fontSize: 13, color: C.sub }}>~ {clock(end)}</span>
           </div>
           {/* 오후 12시대를 '오전 12시'(새벽 0시)로 넣는 실수 막기 — 새벽 시간은 저장되지 않게 */}
