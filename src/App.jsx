@@ -6220,7 +6220,7 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
 
   // holOnly: 빨간 날(휴무)에는 따로 잡은 수업(보강 · 진행)만 그립니다 (결강 · 취소 처리된 원래 수업은 빼고)
   const blocksOf = (dIso, holOnly = false) => {
-    const items = [
+    let items = [
       ...outside.filter((e) => e.d === dIso).map((x) => ({ x, out: true })),
       ...sessions
         .filter((x) => x.d === dIso && (!holOnly || x.status === '보강' || x.status === '진행'))
@@ -6232,6 +6232,36 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
         return { ...k, a, b }
       })
       .sort((p, q) => p.a - q.a || q.b - p.b)
+    // 결강한 수업 자리에 보강이 겹치면, 반으로 쪼개면 둘 다 글씨가 작아지므로
+    //   결강은 따로 그리지 않고 그 보강 칸에 '○○ 결강'으로 함께 적습니다
+    const absentHit = new Set()
+    items.forEach((k) => {
+      if (k.out || k.x.status !== '결강') return
+      let best = null
+      let bestOv = 0
+      items.forEach((o) => {
+        if (o.out || o.x.status !== '보강') return
+        const ov = Math.min(o.b, k.b) - Math.max(o.a, k.a)
+        if (ov > bestOv) { bestOv = ov; best = o }
+      })
+      if (best) {
+        best.notes = [...(best.notes || []), k.x.student_name]
+        absentHit.add(k)
+      }
+    })
+    // 외부 일정끼리 겹치면 한 칸에 이어서 적습니다 (반쪽 칸 두 개보다 크게)
+    const outs = items.filter((k) => k.out)
+    const outGone = new Set()
+    outs.forEach((k) => {
+      if (outGone.has(k)) return
+      outs.forEach((o) => {
+        if (o === k || outGone.has(o) || o.a >= k.b || o.b <= k.a) return
+        k.x = { ...k.x, label: `${k.x.label} · ${o.x.label}`, end_time: ttMin(o.x.end_time) > ttMin(k.x.end_time) ? o.x.end_time : k.x.end_time }
+        k.b = Math.max(k.b, o.b)
+        outGone.add(o)
+      })
+    })
+    items = items.filter((k) => !absentHit.has(k) && !outGone.has(k))
     // 겹치는 묶음마다 줄(lane) 나누기
     let group = []
     let groupEnd = -1
@@ -6262,6 +6292,19 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
         room = Math.min(room, yOf(o.a))
       })
       k.room = room - yOf(k.a) - 1
+    })
+    // 위쪽 빈자리: 짧은 칸 바로 아래에 다른 칸이 붙어 있어 아래로 못 늘릴 때 위로 늘림
+    items.forEach((k) => {
+      const x0 = k.lane / k.lanes
+      const x1 = (k.lane + 1) / k.lanes
+      let floor = 0
+      items.forEach((o) => {
+        if (o === k || o.b > k.a) return
+        if (o.lane / o.lanes >= x1 || (o.lane + 1) / o.lanes <= x0) return
+        const shown = Math.max(yOf(o.b), yOf(o.a) + Math.min(MIN_BLK, o.room))
+        floor = Math.max(floor, shown)
+      })
+      k.above = Math.max(0, yOf(k.a) - floor - 1)
     })
     return items
   }
@@ -6389,8 +6432,13 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
                       )
                     })}
                     {(hol ? holBlocks : blocksOf(dIso)).map((k) => {
-                      const top = yOf(k.a)
-                      const hgt = Math.max(yOf(k.b) - top - 1, Math.min(MIN_BLK, k.room), 8)
+                      let top = yOf(k.a)
+                      let hgt = Math.max(yOf(k.b) - top - 1, Math.min(MIN_BLK, k.room), 8)
+                      if (hgt < MIN_BLK && k.above > 0) {
+                        const up = Math.min(MIN_BLK - hgt, k.above)
+                        top -= up
+                        hgt += up
+                      }
                       const pos = {
                         top, height: hgt,
                         left: `calc(${(k.lane / k.lanes) * 100}% + 1px)`,
@@ -6419,7 +6467,10 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
                             {mk && <span className="tt-gtag">보강</span>}
                             {s2.student_name}
                           </b>
-                          <small>{ab ? '결강' : `${clock(s2.start_time)}~${clock(s2.end_time)}`}</small>
+                          <small>
+                            {ab ? '결강' : `${clock(s2.start_time)}~${clock(s2.end_time)}`}
+                            {k.notes && <span className="tt-gnote"> · {k.notes.join('·')} 결강</span>}
+                          </small>
                         </div>
                       )
                     })}
@@ -6857,6 +6908,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
         .tt-gblk.tt-g1 b { flex: 0 1 auto; min-width: 0; }
         .tt-gblk.tt-g1 small { flex: none; }
         .tt-gblk .tt-gtag { font-size: 10.5px !important; padding: 0 3px; margin-right: 3px; }
+        .tt-gblk .tt-gnote { color: #B3261E; font-weight: 800; }
         .tt-gblk.tt-gout b { font-size: 14.5px !important; } .tt-gblk.tt-gout small { font-size: 12.5px !important; }
         .tt-gblk.tt-gsm b { font-size: 14.5px !important; } .tt-gblk.tt-gsm small { font-size: 12px !important; }
         .tt-gblk.tt-gxs b { font-size: 12.5px !important; } .tt-gblk.tt-gxs small { font-size: 10.5px !important; }
@@ -7090,7 +7142,6 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
             outside={t.name === ownerName ? outside.filter((e) => e.d.slice(0, 7) === ym) : []}
             endHour={Math.ceil(gEnAll / 60)}
             unmade={unmade.filter((u) => u.staff_name === t.name)}
-            screen={inline}
           />
         ))}
         {mode === 'grid' && !shown.length && (
