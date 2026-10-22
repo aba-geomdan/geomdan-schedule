@@ -532,13 +532,21 @@ async function unlockReceipt(ym, studentId) {
 }
 
 async function saveAdjust(ym, studentId, amount, reason) {
-  return ok(
-    await supabase
-      .from('receipts')
-      .update({ adjustment: amount, adjust_reason: reason })
-      .eq('ym', ym)
-      .eq('student_id', studentId)
-  )
+  // 서버 함수(set_receipt_adjust)로 저장 — 영수증 줄이 아직 없어도 만들어서 감액을 적어 둡니다
+  //   (그래야 처음 발행하는 영수증도 감액이 선입금 계산에 들어감)
+  const { error } = await supabase.rpc('set_receipt_adjust', { p_ym: ym, p_student: studentId, p_amount: amount, p_reason: reason })
+  if (!error) return null
+  // 서버에 함수를 아직 안 넣었으면 예전 방식으로 (영수증 줄이 있을 때만 저장됨)
+  if (/set_receipt_adjust|could not find|schema cache|does not exist/i.test(error.message || '')) {
+    return ok(
+      await supabase
+        .from('receipts')
+        .update({ adjustment: amount, adjust_reason: reason })
+        .eq('ym', ym)
+        .eq('student_id', studentId)
+    )
+  }
+  throw error
 }
 
 async function loadTemplates() {
@@ -9663,7 +9671,8 @@ function App() {
       isAdmin ? loadPayroll(ym) : Promise.resolve([]),
       isAdmin ? Promise.resolve(null) : loadMyClosing(closeYm),
       isAdmin ? loadReceiptExtras(ym).catch(() => []) : Promise.resolve([]),
-      loadPayrollHistory().catch(() => []),
+      // 급여 기록은 원장 화면에서만 씀 — 선생님 계정에서는 불러오지 않음 (선생님 화면에는 급여 금액을 보여주지 않음)
+      isAdmin ? loadPayrollHistory().catch(() => []) : Promise.resolve([]),
       loadMakeupLog(null).catch(() => []),
     ])
     setBilling(b)
@@ -11703,15 +11712,14 @@ function App() {
           onIssue={async (sid, amount, reason) => {
             setBusy(true)
             try {
-              // 감액을 먼저 저장하고 발행합니다 (0원·빈 사유도 저장 — 지운 감액이 남지 않게)
+              // 감액을 먼저 저장하고 발행합니다 (0원·빈 사유도 저장 — 지운 감액이 남지 않게).
+              //   발행하면 그 순간 감액을 넣어 선입금 사용액을 계산하고 잠그므로, 발행 뒤에는 저장하지 않습니다
+              //   (감액 저장에 실패하면 발행하지 않음)
               const adj = Number(amount) || 0
               const why = String(reason || '').trim() || null
               await saveAdjust(ym, sid, adj, why)
               await issueReceipt(ym, sid)
-              // 영수증 줄이 발행하면서 처음 생긴 경우에도 같은 값이 들어가도록 한 번 더 저장
-              const adjOk = await saveAdjust(ym, sid, adj, why).then(() => true).catch(() => false)
-              if (adjOk) say('발행했습니다')
-              else say('발행은 됐지만 감액을 저장하지 못했습니다. 잠금 해제 후 다시 발행해 주세요', 'err')
+              say('발행했습니다')
               await reloadMonth()
               setReceiptFor(null)
             } catch (e) {
