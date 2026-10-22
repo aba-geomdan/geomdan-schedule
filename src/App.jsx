@@ -115,6 +115,7 @@ const won = (n) => (n || 0).toLocaleString('ko-KR')
 // ---- 인증 ----
 async function signIn(email, password) {
   setHandoffUser(null) // 직접 로그인하면 통합본에서 넘겨받은 로그인이 아님
+  handoffNote = ''
   return ok(await supabase.auth.signInWithPassword({ email, password }))
 }
 // ---- 통합본 [시간표 앱 열기]로 넘겨받는 로그인 ----
@@ -162,6 +163,8 @@ async function signOut() {
   await supabase.auth.signOut({ scope: 'local' })
 }
 
+// 로그인 화면 아래에 띄우는 '통합본에서 넘겨받기' 상태 (문제 찾기용)
+let handoffNote = ''
 async function takeHandoff() {
   let h = null
   try {
@@ -171,10 +174,16 @@ async function takeHandoff() {
   } catch (e) {
     h = null
   }
-  if (!h || !h.access_token || !h.refresh_token) return null
+  if (!h || !h.access_token || !h.refresh_token) {
+    handoffNote = '통합본에서 넘겨받기: 받은 열쇠가 비어 있음'
+    return null
+  }
   // 넘겨받은 것이 있으면 그것이 우선입니다 (이 창에 다른 사람 로그인이 남아 있어도 바꿔 씀)
   const { data, error } = await supabase.auth.setSession({ access_token: h.access_token, refresh_token: h.refresh_token })
-  if (error || !data?.session) return null
+  if (error || !data?.session) {
+    handoffNote = `통합본에서 넘겨받기: 열쇠는 받았지만 로그인 실패 (${error?.status || ''} ${error?.message || '세션 없음'})`
+    return null
+  }
   setHandoffUser(data.session.user?.id || null)
   giveBackHandoff(data.session) // 넘겨받으며 열쇠가 바뀌었을 수 있어 바로 한 번 돌려줌
   return data.session
@@ -203,9 +212,20 @@ async function getSession() {
   } catch (e) {}
   if (hasHandoff) {
     // 넘겨받기에 실패하면 로그인 화면 (이 창에 남아 있던 다른 로그인으로 돌아가지 않음)
-    return await takeHandoff().catch(() => null)
+    return await takeHandoff().catch((e) => {
+      handoffNote = `통합본에서 넘겨받기: 오류 (${e?.message || e})`
+      return null
+    })
   }
   const { data } = await supabase.auth.getSession()
+  if (!data.session) {
+    let opened = false
+    try {
+      opened = !!window.opener
+    } catch (e) {}
+    // 통합본에서 연 창일 때만 안내 (직접 연 사람에게는 띄우지 않음)
+    handoffNote = opened ? '통합본에서 넘겨받기: 창은 통합본에서 열렸지만 열쇠가 전달되지 않음' : ''
+  }
   return data.session || null
 }
 // 통합본에서 로그아웃하면 통합본이 알려 줍니다 → 같은 사람이 로그인된 시간표 창은 로그인을 지움
@@ -818,6 +838,23 @@ function Empty({ children }) {
   )
 }
 
+// 원장님이 마지막에 보던 메뉴 (localStorage · 계정별). 화면 위치만 담고 데이터는 담지 않습니다
+const LAST_VIEW_TABS = ['home', 'month', 'plan', 'payment', 'billing', 'staff', 'mark']
+function loadLastView(uid) {
+  try {
+    const v = JSON.parse(window.localStorage.getItem('sched-last-view:' + (uid || '')) || 'null')
+    if (!v || !LAST_VIEW_TABS.includes(v.tab)) return null
+    return v
+  } catch (e) {
+    return null
+  }
+}
+function saveLastView(uid, v) {
+  try {
+    window.localStorage.setItem('sched-last-view:' + (uid || ''), JSON.stringify(v))
+  } catch (e) {}
+}
+
 function Loading() {
   return <div style={{ padding: 40, textAlign: 'center', color: C.mut, fontSize: 13 }}>불러오는 중…</div>
 }
@@ -886,7 +923,8 @@ const HOLIDAY = {
 // 보강 — 어느 선생님이든 같은 표시 (흰 바탕 · 점선 · 주황 이름표)
 const MAKEUP = '#E07B00'
 // 원장 외부 일정 — 수업(연한 색)과 확실히 다르게 진한 회색
-const OUTSIDE = { bg: '#3F4652', bd: '#2B3038', fg: '#FFFFFF', tag: '#C9CED6' }
+// 외부 일정: 눈에 덜 띄게 연한 회색 (수업 · 결강 · 보강이 먼저 보이도록)
+const OUTSIDE = { bg: '#F1F2F4', bd: '#D9DCE1', fg: '#4B5563', tag: '#8A919C' }
 const DAY_END = 1200 // 20:00
 const PX = 1.02
 
@@ -1000,7 +1038,7 @@ function WeekAgenda({ days, sessions, holidayMap, outByDay, showTeacher, colorOf
                       {clock(e.start_time)}~{clock(e.end_time)}
                     </span>
                     <span style={{ flex: 1, minWidth: 0, fontSize: 14.5, fontWeight: 700, color: C.ink }}>{e.label}</span>
-                    {chip(OUTSIDE.bg, '#fff', '외부')}
+                    {chip(OUTSIDE.bg, OUTSIDE.fg, '외부')}
                   </div>
                 )
               }
@@ -1570,16 +1608,22 @@ function TeacherMonth({ ym, me, staff, sessions, unmade, loadHolidays, toneOf, c
   )
 }
 
-function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colorOf, toneOf, staffOrder = [], onPick, today }) {
+function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colorOf, toneOf, staffOrder = [], onPick, today, dayOnly = null }) {
+  const dayKey = dayOnly ? isoOf(dayOnly) : ''
   const days = useMemo(
     () =>
-      [...Array(6)].map((_, i) => {
-        const d = new Date(weekStart)
-        d.setDate(d.getDate() + i)
-        return d
-      }),
-    [weekStart]
+      dayOnly
+        ? [new Date(dayOnly)]
+        : [...Array(6)].map((_, i) => {
+            const d = new Date(weekStart)
+            d.setDate(d.getDate() + i)
+            return d
+          }),
+    [weekStart, dayKey]
   )
+  const nDays = days.length
+  // 하루 보기는 칸이 6배 넓으므로, 글씨 크기 등을 정할 때 그만큼 넓게 칩니다
+  const WIDE = nDays === 1 ? 6 : 1
 
   const holidayMap = useMemo(() => {
     const m = {}
@@ -1600,15 +1644,15 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
 
   // 주 전체에서 수업이 있는 선생님을 순서대로 — 모든 날이 같은 폭, 같은 줄을 씁니다
   const weekNames = useMemo(() => {
-    const seen = new Set(sessions.map((s) => s.staff_name))
+    const seen = new Set((dayOnly ? sessions.filter((s) => s.d === dayKey) : sessions).map((s) => s.staff_name))
     const weekIso = new Set(Array.from({ length: 6 }, (_, i) => {
       const x = new Date(weekStart); x.setDate(x.getDate() + i); return isoOf(x)
     }))
-    if (ownerName && outside.some((e) => weekIso.has(e.d))) seen.add(ownerName)
+    if (ownerName && outside.some((e) => (dayOnly ? e.d === dayKey : weekIso.has(e.d)))) seen.add(ownerName)
     const ordered = staffOrder.filter((n) => seen.has(n))
     const rest = [...seen].filter((n) => !staffOrder.includes(n)).sort((a, b) => a.localeCompare(b, 'ko'))
     return [...ordered, ...rest]
-  }, [sessions, staffOrder, outside, ownerName, weekStart])
+  }, [sessions, staffOrder, outside, ownerName, weekStart, dayKey])
   const height = (DAY_END - DAY_START) * PX
   const phone = useNarrow()
 
@@ -1628,7 +1672,7 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
 
   return (
     <Card style={{ overflow: 'hidden' }}>
-      <div style={{ display: 'grid', gridTemplateColumns: '48px repeat(6, 1fr)' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: `48px repeat(${nDays}, 1fr)` }}>
         <div style={{ borderBottom: `1px solid ${C.line}`, background: '#FBFBFC' }} />
         {days.map((d, i) => {
           const isToday = isoOf(d) === today
@@ -1662,7 +1706,18 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
         })}
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '48px repeat(6, 1fr)' }}>
+      {/* 하루 보기: 선생님 이름을 줄마다 위에 */}
+      {nDays === 1 && weekNames.length > 0 && (
+        <div style={{ display: 'grid', gridTemplateColumns: '48px 1fr', borderBottom: `1px solid ${C.line}` }}>
+          <div style={{ background: '#FBFBFC' }} />
+          <div style={{ display: 'grid', gridTemplateColumns: `repeat(${weekNames.length}, 1fr)`, borderLeft: `2px solid ${C.line}` }}>
+            {weekNames.map((n) => (
+              <div key={n} style={{ textAlign: 'center', padding: '7px 0', fontSize: 13.5, fontWeight: 800, color: colorOf(n) }}>{n}</div>
+            ))}
+          </div>
+        </div>
+      )}
+      <div style={{ display: 'grid', gridTemplateColumns: `48px repeat(${nDays}, 1fr)` }}>
         {/* 맨 아래 시각(8시) 글씨가 잘리지 않게 아래로 조금 여유 */}
         <div style={{ position: 'relative', height: height + 8, background: '#FBFBFC' }}>
           {Array.from(
@@ -1709,9 +1764,10 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
             for (let l = l0; l <= l1; l++) if (l !== lane) occ.push({ key, lane: l, a, b })
             spanOf[key] = [l0, l1]
           }
-          dayOut.forEach((e) => widen('o' + e.id, ownerLane, toMin(e.start_time), toMin(e.end_time)))
+          // 하루 보기는 줄이 넓고 위에 선생님 이름이 있어서, 옆 선생님 줄로 넓히지 않습니다
+          if (nDays > 1) dayOut.forEach((e) => widen('o' + e.id, ownerLane, toMin(e.start_time), toMin(e.end_time)))
           laid.forEach(({ s, col, subs }) => {
-            if (s.status === '보강' && subs === 1) widen('s' + s.id, col, toMin(s.start_time), toMin(s.end_time))
+            if (nDays > 1 && s.status === '보강' && subs === 1) widen('s' + s.id, col, toMin(s.start_time), toMin(s.end_time))
           })
           // 한 선생님 줄 안에서 결강 · 보강이 나란히 나뉜 묶음도, 옆 줄이 그 시간에 비어 있으면 넓혀서 나눕니다
           //   (반으로 쪼갠 칸이 너무 좁아 이름이 세로로 잘리던 문제)
@@ -1719,9 +1775,19 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
           laid.forEach(({ col, subs, g, ga, gb }) => {
             if (subs > 1 && !doneG.has(g)) {
               doneG.add(g)
-              widen('g' + g, col, ga, gb)
+              if (nDays > 1) widen('g' + g, col, ga, gb)
             }
           })
+          // 넓히지 못한 묶음 중, 한 칸에 이름 줄들이 다 들어가는 것만 모아 그림 (안 들어가면 예전처럼 나란히)
+          const combined = new Set()
+          if (nDays > 1)
+            [...new Set(laid.filter((x) => x.subs > 1).map((x) => x.g))].forEach((g) => {
+              const gsp = spanOf['g' + g]
+              if (gsp && gsp[1] > gsp[0]) return
+              const ms = laid.filter((x) => x.g === g)
+              const boxH = Math.max((ms[0].gb - ms[0].ga) * PX - 2, 20)
+              if (ms.length * 15 + 8 <= boxH) combined.add(g)
+            })
           return (
             <div
               key={i}
@@ -1777,7 +1843,7 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                 const w = 100 / nAll
                 const sp = spanOf['o' + e.id] || [lane, lane]
                 const span = sp[1] - sp[0] + 1
-                const n = nAll / span // 넓힌 만큼 덜 좁은 칸으로 취급 (글씨 크기 · 시간 표시)
+                const n = nAll / span / WIDE // 넓힌 만큼 덜 좁은 칸으로 취급 (글씨 크기 · 시간 표시)
                 return (
                   <div
                     key={e.id}
@@ -1810,7 +1876,86 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                 )
               })}
 
+              {/* 결강 · 보강이 한 선생님 줄에서 겹치는데 옆 줄이 비어 있지 않아 넓힐 수 없을 때:
+                  반으로 쪼개면 이름이 세로로 잘리므로, 줄 폭 그대로 한 칸에 모아 줄마다 보여 줍니다 (주 보기만) */}
+              {nDays > 1 &&
+                [...combined]
+                  .map((g) => {
+                    const members = laid.filter((x) => x.g === g)
+                    const { col, cols: laneCols, ga, gb } = members[0]
+                    const boxH = Math.max((gb - ga) * PX - 2, 20)
+                    // 줄마다 시간까지 적을 자리가 있을 때만 시간 표시
+                    const showTimes = members.length * 26 + 8 <= boxH
+                    const hasAb = members.some((x) => x.s.status === '결강')
+                    const tn = toneOf ? toneOf(members[0].s.staff_name) : styleOf(members[0].s)
+                    const order = (x) => (x.s.status === '보강' ? 0 : x.s.status === '결강' || x.s.status === '취소' ? 2 : 1)
+                    const rows = [...members].sort((p, q) => order(p) - order(q) || toMin(p.s.start_time) - toMin(q.s.start_time))
+                    const tc = colorOf(members[0].s.staff_name)
+                    const hasMk = rows.some((x) => x.s.status === '보강')
+                    return (
+                      <div
+                        key={'grp' + g}
+                        style={{
+                          position: 'absolute',
+                          top: (ga - DAY_START) * PX,
+                          height: boxH,
+                          left: `calc(${(col * 100) / laneCols}% + 2px)`,
+                          width: `calc(${100 / laneCols}% - 4px)`,
+                          boxSizing: 'border-box',
+                          borderRadius: 5,
+                          // 안에 든 것에 맞춰: 보강 있으면 주황, 결강만 있으면 분홍 점선, 둘 다 없으면 선생님 색
+                          background: hasMk ? '#FFF4E5' : hasAb ? '#fff' : tn.bg,
+                          border: hasMk ? `2px solid ${MAKEUP}` : hasAb ? '1.5px dashed #E39AAB' : `1px solid ${tn.bd}`,
+                          borderLeft: `3px solid ${tc}`,
+                          overflow: 'hidden',
+                          padding: '2px 3px',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 2,
+                        }}
+                      >
+                        {rows.map(({ s }) => {
+                          const mk = s.status === '보강'
+                          const ab = s.status === '결강'
+                          const cx = s.status === '취소'
+                          const whole = toMin(s.start_time) === ga && toMin(s.end_time) === gb
+                          return (
+                            <button
+                              key={s.id}
+                              onClick={() => onPick(s)}
+                              title={`${mk ? '[보강] ' : ab ? '[결강] ' : ''}${s.student_name} · ${s.staff_name} · ${clock(s.start_time)}-${clock(s.end_time)}`}
+                              style={{
+                                border: 'none', background: 'transparent', padding: 0, cursor: 'pointer', textAlign: 'left',
+                                display: 'block', width: '100%', minWidth: 0, lineHeight: 1.2,
+                                whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', // 좁아도 한 줄로
+                              }}
+                            >
+                              {mk && (
+                                <span style={{ display: 'inline-block', fontSize: 8.5, fontWeight: 800, color: '#fff', background: MAKEUP, borderRadius: 99, padding: '0 4px', marginRight: 2 }}>
+                                  보강
+                                </span>
+                              )}
+                              <span
+                                style={{
+                                  fontSize: 10.5, fontWeight: 800, whiteSpace: 'nowrap',
+                                  color: ab ? '#B04A60' : mk ? '#7A4100' : cx ? C.mut : C.ink,
+                                  textDecoration: ab || cx ? 'line-through' : 'none',
+                                }}
+                              >
+                                {s.student_name}
+                              </span>
+                              {(ab || cx) && <span style={{ fontSize: 9, fontWeight: 700, color: ab ? C.danger : C.mut, marginLeft: 2 }}>{ab ? '결강' : '취소'}</span>}
+                              {!whole && showTimes && <div style={{ fontSize: 9, color: C.sub }}>{clock(s.start_time)}~{clock(s.end_time)}</div>}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    )
+                  })}
+
               {laid.map(({ s, col, cols: laneCols, sub, subs, g }) => {
+                // 모아 그린 묶음(위)은 따로 그리지 않음
+                if (combined.has(g)) return null
                 // 위치 · 폭(%): 보통은 선생님 줄(겹치면 그 안을 나눈 칸), 넓힌 보강은 넓힌 줄 전체,
                 //   넓힌 묶음은 넓힌 줄 전체를 묶음 칸 수로 나눔
                 const sp = spanOf['s' + s.id]
@@ -1826,12 +1971,13 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                     ? ((gsp[1] - gsp[0] + 1) * 100) / (laneCols * subs)
                     : 100 / (laneCols * subs)
                 // 칸 폭에 맞춰 글씨 크기 등을 정합니다 (줄 1개 폭 = 1, 나눈 칸 = 2 …)
-                const cols = 100 / widthPct
+                const cols = 100 / widthPct / WIDE
                 // 배경은 선생님 색, 결강·취소는 빗금과 취소선으로 구분합니다
                 const tone = toneOf ? toneOf(s.staff_name) : styleOf(s)
                 const tc = colorOf(s.staff_name)
                 const off = s.status === '결강' || s.status === '취소'
                 const isMakeup = s.status === '보강'
+                const isAbsent = s.status === '결강'
                 const h = (toMin(s.end_time) - toMin(s.start_time)) * PX
                 const narrow = cols > 1.01
                 // 30분 남짓한 짧은 수업(나눠 보강 등)은 칸이 낮아서 두 줄이 안 들어갑니다 → 딱지 · 이름 · 시간을 한 줄로
@@ -1847,14 +1993,17 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                       left: `calc(${leftPct}% + ${subs > 1 && sub > 0 ? 1 : 2}px)`,
                       width: `calc(${widthPct}% - ${subs > 1 ? 3 : 4}px)`,
                       height: Math.max(h - 2, short ? 20 : 18),
-                      background: off
-                        ? `repeating-linear-gradient(135deg, ${tone.bg}, ${tone.bg} 5px, #FFFFFF 5px, #FFFFFF 10px)`
-                        : isMakeup
-                          ? '#FFFFFF'
-                          : tone.bg,
-                      border: isMakeup ? `1.5px dashed ${MAKEUP}` : `1px solid ${tone.bd}`,
-                      borderLeft: `3px solid ${tc}`,
-                      opacity: off ? 0.75 : 1,
+                      // 정상 수업은 연하게, 결강 · 보강만 눈에 띄게
+                      background: isAbsent
+                        ? '#FFFFFF'
+                        : off
+                          ? `repeating-linear-gradient(135deg, ${tone.bg}, ${tone.bg} 5px, #FFFFFF 5px, #FFFFFF 10px)`
+                          : isMakeup
+                            ? '#FFF4E5'
+                            : tone.bg,
+                      border: isAbsent ? '1.5px dashed #E39AAB' : isMakeup ? `2px solid ${MAKEUP}` : `1px solid ${tone.bd}`,
+                      borderLeft: `3px solid ${tc}`, // 어느 선생님 수업인지 왼쪽 색 띠는 늘 그대로
+                      opacity: off && !isAbsent ? 0.75 : 1,
                       borderRadius: 5,
                       padding: short ? (narrow ? '0 3px' : '0 5px') : cols >= 3 ? '2px 1px' : narrow ? '2px 3px' : '3px 5px',
                       textAlign: 'left',
@@ -1880,8 +2029,8 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                     <div
                       style={{
                         fontSize: cols >= 3 ? 9.5 : narrow ? 10.5 : 12,
-                        fontWeight: 700,
-                        color: tone.fg,
+                        fontWeight: isMakeup || isAbsent ? 800 : 600,
+                        color: isAbsent ? '#B04A60' : isMakeup ? '#7A4100' : tone.fg,
                         textDecoration: off ? 'line-through' : 'none',
                         lineHeight: 1.2,
                         whiteSpace: 'nowrap',
@@ -8708,6 +8857,22 @@ function PrintAll({ ym, students, receipts, extras = [], onClose, say }) {
 
 /* ═════════════════ App.jsx ═════════════════ */
 
+// '하루' 보기의 날: 고른 날이 지금 보는 주 안이면 그날, 아니면 (오늘이 그 주면) 오늘, 아니면 그 주 월요일
+function dayOf(iso, weekStart) {
+  const ws = new Date(weekStart)
+  ws.setHours(0, 0, 0, 0)
+  const we = new Date(ws)
+  we.setDate(we.getDate() + 5)
+  const inWeek = (d) => d >= ws && d <= we
+  if (iso) {
+    const d = new Date(iso + 'T00:00:00')
+    if (inWeek(d)) return d
+  }
+  const t = new Date()
+  t.setHours(0, 0, 0, 0)
+  if (inWeek(t) && t.getDay() !== 0) return t
+  return ws
+}
 const mondayOf = (d) => {
   const x = new Date(d)
   const day = x.getDay()
@@ -8771,7 +8936,8 @@ function App() {
   const [needRegen, setNeedRegen] = useState(false)
   const [schedView, setSchedView] = useState('month')
   const [billGroup, setBillGroup] = useState('staff') // 정산 화면: 영수증 · 급여 · 연말정산 (왼쪽 메뉴)
-  const [weekMode, setWeekMode] = useState('week') // 시간표 화면: 이번 주 | 한 달
+  const [weekMode, setWeekMode] = useState('week') // 시간표 화면: 하루 | 이번 주 | 한 달
+  const [dayIso, setDayIso] = useState(null) // '하루' 보기에서 보는 날 (없으면 오늘 · 그 주 월요일)
   const [editStudent, setEditStudent] = useState(null)
   const [ttPrint, setTtPrint] = useState(false)
   const [receiptExtras, setReceiptExtras] = useState([])
@@ -8872,7 +9038,9 @@ function App() {
         const own = ownSession()
         if ((own?.refresh_token || null) !== (s?.refresh_token || null)) return
       }
-      setSession(s)
+      // 같은 사람 그대로면(열쇠만 새로 바뀐 경우 — 창을 비웠다 돌아오면 자주 생김) 화면을 처음으로 되돌리지 않도록
+      //   기존 상태를 그대로 둡니다 (supabase가 새 열쇠를 알아서 씀)
+      setSession((prev) => (prev && s && prev.user?.id === s.user?.id ? prev : s))
       if (e === 'TOKEN_REFRESHED') giveBackHandoff(s)
       if (e === 'SIGNED_OUT') setHandoffUser(null)
     })
@@ -8886,10 +9054,23 @@ function App() {
         setIsAdmin(isAdmin)
         setStaff(staff)
         setMe(me)
-        setTab(isAdmin ? 'home' : 'tmonth')
+        // 원장님은 마지막에 보던 메뉴로 (다시 열어도 그 화면부터)
+        const saved = isAdmin ? loadLastView(session?.user?.id) : null
+        if (saved) {
+          if (saved.schedView) setSchedView(saved.schedView)
+          if (saved.billGroup) setBillGroup(saved.billGroup)
+          if (['day', 'week', 'month'].includes(saved.weekMode)) setWeekMode(saved.weekMode)
+        }
+        setTab(isAdmin ? saved?.tab || 'home' : 'tmonth')
       })
       .catch(fail)
   }, [session])
+
+  // 원장님: 보던 메뉴를 기억해 둡니다 (이 컴퓨터 · 이 계정)
+  useEffect(() => {
+    if (!isAdmin || !tab) return
+    saveLastView(session?.user?.id, { tab, schedView, billGroup, weekMode })
+  }, [isAdmin, tab, schedView, billGroup, weekMode])
 
   /* ---- 데이터 ---- */
   const reloadWeek = useCallback(async () => {
@@ -9275,28 +9456,45 @@ function App() {
 
   const activeGroup = groups.find((g) => g.items.some(([k]) => k === tab)) || groups[0]
 
-  // 원장님 화면: 왼쪽 메뉴 하나로 모든 화면을 한 번에 (컴퓨터 기준)
+  // 원장님이 확인할 것 (선생님 마감 답 · 보강 체크 · 내 수업 일정 변경) — 홈에서 처리
+  const adminTodo = isAdmin
+    ? notices.filter(
+        (n) =>
+          !n.confirmed_at &&
+          (n.kind === 'report' || n.kind === 'close_ans' || (me && String(n.to_staff) === String(me.id) && n.kind !== 'close_req'))
+      ).length
+    : 0
+  // 원장님 화면: 왼쪽 메뉴 5개 — 비슷한 화면은 안쪽 버튼으로 묶었습니다
+  const inSched = (tab === 'month' && (schedView === 'week' || schedView === 'month')) || tab === 'plan' || tab === 'mark'
+  const inMoney = tab === 'payment' || tab === 'billing'
   const side = [
-    { h: null, items: [{ k: 'home', label: '홈', on: tab === 'home', go: () => setTab('home') }] },
     {
-      h: '수업',
+      h: null,
       items: [
-        { k: 'att', label: '출결', on: tab === 'month' && schedView === 'month', go: () => { setTab('month'); setSchedView('month') } },
-        { k: 'week', label: '시간표', on: tab === 'month' && schedView === 'week', go: () => { setTab('month'); setSchedView('week') } },
+        { k: 'home', label: '홈', badge: adminTodo, on: tab === 'home', go: () => setTab('home') },
+        { k: 'week', label: '시간표', on: inSched, go: () => { setTab('month'); setSchedView('week') } },
         { k: 'mk', label: '보강', badge: unmadeUp.length, on: tab === 'month' && schedView === 'makeup', go: () => { setTab('month'); setSchedView('makeup') } },
-        { k: 'plan', label: '시간표 짜기', on: tab === 'plan', go: () => setTab('plan') },
+        { k: 'money', label: '돈', badge: unpaidCount, on: inMoney, go: () => setTab('payment') },
+        { k: 'staff', label: '관리', on: tab === 'staff', go: () => setTab('staff') },
       ],
     },
-    {
-      h: '돈',
-      items: [
-        { k: 'pay', label: '수강료', badge: unpaidCount, on: tab === 'payment' || (tab === 'billing' && billGroup === 'staff'), go: () => setTab('payment') },
-        { k: 'pr', label: '급여', on: tab === 'billing' && billGroup === 'payroll', go: () => { setTab('billing'); setBillGroup('payroll') } },
-        { k: 'cp', label: '연말정산', on: tab === 'billing' && billGroup === 'copay', go: () => { setTab('billing'); setBillGroup('copay') } },
-      ],
-    },
-    { h: '관리', items: [{ k: 'staff', label: '선생님 관리', on: tab === 'staff', go: () => setTab('staff') }] },
   ]
+  // 묶은 메뉴 안의 버튼
+  const subTabs = !isAdmin
+    ? null
+    : inSched
+      ? [
+          { k: 'week', label: '시간표', on: tab === 'month' && schedView === 'week', go: () => { setTab('month'); setSchedView('week') } },
+          { k: 'att', label: '출결', on: (tab === 'month' && schedView === 'month') || tab === 'mark', go: () => { setTab('month'); setSchedView('month') } },
+          { k: 'plan', label: '시간표 짜기', on: tab === 'plan', go: () => setTab('plan') },
+        ]
+      : inMoney
+        ? [
+            { k: 'pay', label: '수강료', badge: unpaidCount, on: tab === 'payment' || (tab === 'billing' && billGroup === 'staff'), go: () => setTab('payment') },
+            { k: 'pr', label: '급여', on: tab === 'billing' && billGroup === 'payroll', go: () => { setTab('billing'); setBillGroup('payroll') } },
+            { k: 'cp', label: '연말정산', on: tab === 'billing' && billGroup === 'copay', go: () => { setTab('billing'); setBillGroup('copay') } },
+          ]
+        : null
   const SIDE_W = 176
 
   return (
@@ -9435,7 +9633,44 @@ function App() {
           </div>
         )}
 
-        {!loading && isAdmin && unmadeUp.length > 0 && (
+        {isAdmin && subTabs && (
+          <div className="no-print" style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }}>
+            {subTabs.map((t) => (
+              <button
+                key={t.k}
+                onClick={t.go}
+                style={{
+                  border: 'none', cursor: 'pointer', padding: '7px 15px', borderRadius: 99, fontSize: 13.5,
+                  fontWeight: t.on ? 800 : 600, background: t.on ? C.ink : '#F0F1F3', color: t.on ? '#fff' : C.sub,
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                }}
+              >
+                {t.label}
+                {t.badge > 0 && (
+                  <span style={{ fontSize: 11, fontWeight: 700, borderRadius: 99, padding: '0 6px', background: C.pkd, color: '#fff' }}>{t.badge}</span>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* 홈이 아닌 화면: 확인할 것은 한 줄로만 (자세한 건 홈에서) */}
+        {!loading && isAdmin && tab !== 'home' && adminTodo > 0 && (
+          <button
+            className="no-print"
+            onClick={() => setTab('home')}
+            style={{
+              width: '100%', display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', textAlign: 'left',
+              border: '1px solid #F0D29A', background: '#FFF8EC', borderRadius: 10, padding: '8px 13px',
+              fontSize: 13, color: '#7A4B00', marginBottom: 12,
+            }}
+          >
+            🔔 <b>확인할 것 {adminTodo}건</b>
+            <span style={{ marginLeft: 'auto', fontSize: 12, border: '1px solid #E8C98A', borderRadius: 7, padding: '3px 9px', background: '#fff' }}>홈에서 보기</span>
+          </button>
+        )}
+
+        {!loading && isAdmin && tab === 'home' && unmadeUp.length > 0 && (
           <div className="no-print" style={{ marginBottom: 14 }}>
             <button
               onClick={() => {
@@ -9468,10 +9703,13 @@ function App() {
         {loading && <Loading />}
 
         {/* 확인 문구 — 원장님: 선생님이 체크한 보강 / 선생님: 원장님이 바꾼 일정 */}
-        {!loading && isAdmin && (
+        {!loading && isAdmin && tab === 'home' && (
           <AdminNotices
             reports={notices.filter((n) => n.kind === 'report' && !n.confirmed_at)}
-            closings={notices.filter((n) => n.kind === 'close_ans' && !n.confirmed_at)}
+            // 마감 '다름'을 먼저
+            closings={notices
+              .filter((n) => n.kind === 'close_ans' && !n.confirmed_at)
+              .sort((a, b) => (a.payload?.agree ? 1 : 0) - (b.payload?.agree ? 1 : 0))}
             onOpenClosing={async (n) => {
               if (n.payload?.ym) setYm(n.payload.ym)
               setTab('billing')
@@ -9515,7 +9753,7 @@ function App() {
           />
         )}
         {/* 원장님 본인 수업의 일정 변경 (선생님 화면과 같은 방식으로 확인) */}
-        {!loading && isAdmin && me && (
+        {!loading && isAdmin && me && tab === 'home' && (
           <TeacherNotices
             title="내 수업 일정이 바뀌었습니다 · 확인해 주세요"
             items={notices.filter((n) => String(n.to_staff) === String(me.id) && !n.confirmed_at && n.kind !== 'close_req')}
@@ -9635,6 +9873,7 @@ function App() {
               } else if (where === 'billing-next') {
                 setYm(shiftYm(ym, 1))
                 setTab('billing')
+                setBillGroup('staff')
               } else if (where === 'makeup') {
                 setTab('month')
                 setSchedView('makeup')
@@ -9647,6 +9886,7 @@ function App() {
                 setTab('plan')
               } else if (where === 'closing' || where === 'payroll') {
                 setTab('billing')
+                setBillGroup('payroll')
               } else {
                 setTab(where)
               }
@@ -9792,7 +10032,7 @@ function App() {
             <div className="no-print" style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 12, flexWrap: 'wrap' }}>
               {isAdmin && (
                 <div style={{ display: 'flex', gap: 3, background: '#F2F3F5', padding: 3, borderRadius: 9 }}>
-                  {[['week', '이번 주'], ['month', '한 달']].map(([k, l]) => (
+                  {[['day', '하루'], ['week', '이번 주'], ['month', '한 달']].map(([k, l]) => (
                     <button
                       key={k}
                       onClick={() => setWeekMode(k)}
@@ -9813,6 +10053,38 @@ function App() {
                   <div style={{ fontSize: 14.5, fontWeight: 700, minWidth: 96, textAlign: 'center' }}>{ym.replace('-', '년 ')}월</div>
                   <Btn onClick={() => setYm(shiftYm(ym, 1))} style={{ padding: '6px 11px' }}>→</Btn>
                 </>
+              ) : isAdmin && weekMode === 'day' ? (
+                (() => {
+                  const cur = dayOf(dayIso, weekStart)
+                  const move = (n) => {
+                    const d = new Date(cur)
+                    do d.setDate(d.getDate() + n)
+                    while (d.getDay() === 0) // 일요일은 건너뜀
+                    setDayIso(isoOf(d))
+                    // 같은 주 안에서 움직이면 다시 불러오지 않음 (깜빡임 없이)
+                    if (isoOf(mondayOf(d)) !== isoOf(weekStart)) goWeek(mondayOf(d))
+                  }
+                  return (
+                    <>
+                      <Btn onClick={() => move(-1)} style={{ padding: '6px 11px' }}>←</Btn>
+                      <div style={{ fontSize: 14.5, fontWeight: 700, minWidth: 118, textAlign: 'center' }}>
+                        {cur.getMonth() + 1}월 {cur.getDate()}일 ({'일월화수목금토'[cur.getDay()]})
+                      </div>
+                      <Btn onClick={() => move(1)} style={{ padding: '6px 11px' }}>→</Btn>
+                      <Btn
+                        onClick={() => {
+                          const t = new Date()
+                          if (t.getDay() === 0) t.setDate(t.getDate() + 1)
+                          setDayIso(isoOf(t))
+                          if (isoOf(mondayOf(t)) !== isoOf(weekStart)) goWeek(mondayOf(t))
+                        }}
+                        style={{ padding: '6px 11px' }}
+                      >
+                        오늘
+                      </Btn>
+                    </>
+                  )
+                })()
               ) : (
               <>
               <Btn
@@ -9895,6 +10167,31 @@ function App() {
               />
             ) : (
             <>
+            {isAdmin && (() => {
+              // 이번 주(또는 그날) 한 줄 요약 — 손볼 것(결강 · 보강 · 미보강)이 먼저 보이게
+              const dIso = weekMode === 'day' ? isoOf(dayOf(dayIso, weekStart)) : null
+              const list = dIso ? visible.filter((x) => x.d === dIso) : visible
+              const cnt = (st) => list.filter((x) => x.status === st).length
+              const lessons = list.filter((x) => x.status !== '취소' && x.status !== '결강').length
+              const um = filter ? unmadeUp.filter((u) => u.staff_name === filter).length : unmadeUp.length
+              const pill = (bg, fg, t, onClick) => (
+                <span
+                  onClick={onClick}
+                  style={{ fontSize: 12.5, fontWeight: 700, borderRadius: 99, padding: '3px 10px', background: bg, color: fg, cursor: onClick ? 'pointer' : 'default' }}
+                >
+                  {t}
+                </span>
+              )
+              return (
+                <div className="no-print" style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap', marginBottom: 10, padding: '8px 12px', background: '#fff', border: `1px solid ${C.line}`, borderRadius: 10 }}>
+                  <b style={{ fontSize: 13 }}>{dIso ? '이날' : '이번 주'}</b>
+                  {pill('#F2F3F5', C.ink, `수업 ${lessons}`)}
+                  {pill('#FDECEF', '#B04A60', `결강 ${cnt('결강')}`)}
+                  {pill('#FFF1DF', '#A35A00', `보강 ${cnt('보강')}`)}
+                  {pill('#FDECEF', '#C0394F', `미보강 ${um}`, um ? () => setSchedView('makeup') : null)}
+                </div>
+              )
+            })()}
             <WeekGrid
               weekStart={weekStart}
               sessions={visible}
@@ -9906,6 +10203,7 @@ function App() {
               ownerName={staff.find((x) => x.role === 'admin')?.name}
               onPick={setPick}
               today={isoOf(new Date())}
+              dayOnly={isAdmin && weekMode === 'day' ? dayOf(dayIso, weekStart) : null}
             />
 
             {/* 휴대폰 목록 보기에서는 색 칸이 없어서 아래 색 안내를 숨깁니다 */}
@@ -9936,7 +10234,19 @@ function App() {
                       'repeating-linear-gradient(135deg, #EFEFF1, #EFEFF1 3px, #FFFFFF 3px, #FFFFFF 6px)',
                   }}
                 />
-                <span style={{ textDecoration: 'line-through' }}>결강 · 취소</span>
+                <span style={{ textDecoration: 'line-through' }}>취소</span>
+              </span>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                <span style={{ width: 12, height: 12, borderRadius: 3, border: '1.5px dashed #E39AAB', background: '#fff' }} />
+                결강
+              </span>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                <span style={{ width: 12, height: 12, borderRadius: 3, border: `2px solid ${MAKEUP}`, background: '#FFF4E5' }} />
+                보강
+              </span>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                <span style={{ width: 12, height: 12, borderRadius: 3, border: `1px solid ${OUTSIDE.bd}`, background: OUTSIDE.bg }} />
+                외부 일정
               </span>
             </div>
             </>
@@ -10707,6 +11017,11 @@ function Login({ say }) {
         <Btn variant="primary" disabled={busy || !email || !pw} onClick={go} style={{ width: '100%', padding: '12px 0', fontSize: 15 }}>
           {busy ? '로그인 중…' : '로그인'}
         </Btn>
+        {handoffNote && (
+          <div style={{ fontSize: 11, color: C.mut, marginTop: 12, lineHeight: 1.5, textAlign: 'center', wordBreak: 'keep-all' }}>
+            {handoffNote}
+          </div>
+        )}
       </Card>
     </div>
   )
