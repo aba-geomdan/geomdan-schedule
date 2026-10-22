@@ -9569,7 +9569,7 @@ function App() {
         { k: 'home', label: '홈', badge: adminTodo, on: tab === 'home', go: () => setTab('home') },
         { k: 'week', label: '시간표', on: inSched, go: () => { setTab('month'); setSchedView('week') } },
         { k: 'mk', label: '보강', badge: unmadeUp.length, on: tab === 'month' && schedView === 'makeup', go: () => { setTab('month'); setSchedView('makeup') } },
-        { k: 'money', label: '돈', badge: unpaidCount, on: inMoney, go: () => setTab('payment') },
+        { k: 'money', label: '돈', badge: unpaidCount, on: inMoney, go: () => { if (!inMoney) setYm(defaultBillingYm()); setTab('payment') } },
         { k: 'staff', label: '관리', on: tab === 'staff', go: () => setTab('staff') },
       ],
     },
@@ -9585,8 +9585,37 @@ function App() {
         ]
       : inMoney
         ? [
-            { k: 'pay', label: '수강료', badge: unpaidCount, on: tab === 'payment' || (tab === 'billing' && billGroup === 'staff'), go: () => setTab('payment') },
-            { k: 'pr', label: '급여', on: tab === 'billing' && billGroup === 'payroll', go: () => { setTab('billing'); setBillGroup('payroll') } },
+            {
+              k: 'pay', label: '수강료', badge: unpaidCount, on: tab === 'payment' || (tab === 'billing' && billGroup === 'staff'),
+              // 수강료는 월초에 받으므로 20일부터는 다음 달로 엽니다
+              go: () => { if (!(tab === 'payment' || (tab === 'billing' && billGroup === 'staff'))) setYm(defaultBillingYm()); setTab('payment') },
+            },
+            {
+              k: 'pr', label: '급여', on: tab === 'billing' && billGroup === 'payroll',
+              // 급여는 수강료 화면에서 보던 달과 상관없이 '급여 달'로 엽니다:
+              //   지난달에 아직 마감 안 한 선생님이 있으면 지난달, 모두 마감했으면 이번 달
+              go: async () => {
+                const already = tab === 'billing' && billGroup === 'payroll'
+                setTab('billing')
+                setBillGroup('payroll')
+                if (already) return
+                const cur = ymOf(new Date())
+                const prev = shiftYm(cur, -1)
+                let target = cur
+                try {
+                  const [pr, cl, hist] = await Promise.all([loadPayroll(prev), loadClosings(prev), loadPayrollHistory(prev, prev).catch(() => [])])
+                  // 마감함 = 마감하기를 눌렀거나(승인) 급여 기록에 그 달 기록이 있음 (엑셀 · 직접 입력 포함)
+                  const done = new Set([
+                    ...(cl || []).filter((c) => c.status === '승인').map((c) => c.staff_name),
+                    ...(hist || []).filter((h) => h.ym === prev).map((h) => h.staff_name),
+                  ])
+                  if ((pr || []).some((r) => !done.has(r.staff_name))) target = prev
+                } catch (e) {
+                  target = defaultClosingYm()
+                }
+                setYm(target)
+              },
+            },
             { k: 'cp', label: '연말정산', on: tab === 'billing' && billGroup === 'copay', go: () => { setTab('billing'); setBillGroup('copay') } },
           ]
         : null
