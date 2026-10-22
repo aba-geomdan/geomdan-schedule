@@ -6329,7 +6329,7 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
     }
     // 외부 일정(검은 칸) · 시간이 겹쳐 반쪽이 된 칸 · '보강' 딱지가 붙은 칸은 안 들어갈 때만 그 칸을 따로 줄입니다
     el.querySelectorAll('.tt-gblk.tt-gout, .tt-gblk.tt-glane, .tt-gblk.tt-gmk, .tt-gblk.tt-gplus').forEach((blk) => {
-      const ALL = ['tt-gsm', 'tt-gxs', 'tt-g2t', 'tt-g2n']
+      const ALL = ['tt-gsm', 'tt-gxs', 'tt-g2t', 'tt-g2n', 'tt-g3']
       blk.classList.remove(...ALL)
       const over = () => {
         const bb = blk.querySelector('b')
@@ -6338,7 +6338,8 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
           (bb && bb.scrollWidth > bb.clientWidth + 1) || (sm && sm.scrollWidth > sm.clientWidth + 1) || tooWide(blk)
       }
       // 안 들어가면: 먼저 같은 크기로 두 줄(이름 / 시간) → 한 단계 작게 한 줄 → 두 줄 … 순서로 (글자가 겹치지 않게)
-      const steps = [['tt-g2n'], ['tt-gsm'], ['tt-g2n', 'tt-gsm'], ['tt-gxs'], ['tt-g2n', 'tt-gxs'], ['tt-g2t']]
+      //   (반쪽 칸처럼 폭이 좁으면 '보강' 딱지를 이름 위로 올린 세 줄도 시도)
+      const steps = [['tt-g2n'], ['tt-gsm'], ['tt-g2n', 'tt-gsm'], ['tt-g3', 'tt-gsm'], ['tt-gxs'], ['tt-g2n', 'tt-gxs'], ['tt-g3', 'tt-gxs'], ['tt-g2t']]
       for (const st of over() ? steps : []) {
         blk.classList.remove(...ALL)
         blk.classList.add(...st)
@@ -6395,10 +6396,9 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
         const ov = Math.min(o.b, k.b) - Math.max(o.a, k.a)
         if (ov > bestOv) { bestOv = ov; best = o }
       })
-      if (best) {
-        best.notes = [...(best.notes || []), k.x.student_name]
-        absentHit.add(k)
-      }
+      // 결강도 원래 결강 칸(빨간 테두리 · 빗금)으로 그대로 그리고, 같은 시간 보강은 옆에 칸을 나눠 그립니다
+      //   (예전에는 결강을 보강 칸에 '· ○○ 결강'으로 붙였는데 눈에 잘 안 띄어서)
+      void best
     })
     // 외부 일정끼리 겹치면 한 칸에 이어서 적습니다 (반쪽 칸 두 개보다 크게)
     const outs = items.filter((k) => k.out)
@@ -7061,6 +7061,10 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
         .tt-gblk.tt-g1 small { flex: none; }
         .tt-gblk .tt-gtag { font-size: 10.5px !important; padding: 0 3px; margin-right: 3px; }
         .tt-gblk .tt-gnote { color: #B3261E; font-weight: 800; }
+        /* 반쪽 칸(결강 옆 보강 등)이 좁을 때: '보강' 딱지 / 이름 / 시간 세 줄 */
+        .tt-gblk.tt-g3 { display: block !important; padding-top: 1px !important; line-height: 1.05 !important; }
+        .tt-gblk.tt-g3 b, .tt-gblk.tt-g3 small { display: block !important; }
+        .tt-gblk.tt-g3 .tt-gtag { display: table; margin: 0 0 1px 0 !important; }
         .tt-gblk .tt-gpl { color: #C25E00; font-weight: 800; }
         .tt-gblk.tt-gout b { font-size: 14.5px !important; } .tt-gblk.tt-gout small { font-size: 12.5px !important; }
         .tt-gblk.tt-gsm b { font-size: 14.5px !important; } .tt-gblk.tt-gsm small { font-size: 12px !important; }
