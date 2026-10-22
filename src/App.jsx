@@ -1765,7 +1765,36 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
             spanOf[key] = [l0, l1]
           }
           // 하루 보기는 줄이 넓고 위에 선생님 이름이 있어서, 옆 선생님 줄로 넓히지 않습니다
-          if (nDays > 1) dayOut.forEach((e) => widen('o' + e.id, ownerLane, toMin(e.start_time), toMin(e.end_time)))
+          // 외부 일정끼리 시간이 겹치면(같은 날 학교 두 곳 등) 한 묶음으로 넓힌 뒤 나란히 나눕니다 (서로 덮지 않게)
+          const outPos = {}
+          {
+            const sorted = [...dayOut].sort((p, q) => toMin(p.start_time) - toMin(q.start_time))
+            let grp = []
+            let gEnd = -1
+            let gi = 0
+            const flush = () => {
+              if (!grp.length) return
+              const ends = []
+              const ga = Math.min(...grp.map((e) => toMin(e.start_time)))
+              grp.forEach((e) => {
+                let k = ends.findIndex((x) => x <= toMin(e.start_time))
+                if (k < 0) { k = ends.length; ends.push(0) }
+                ends[k] = toMin(e.end_time)
+                outPos[e.id] = { g: gi, idx: k }
+              })
+              grp.forEach((e) => (outPos[e.id].n = ends.length))
+              if (nDays > 1) widen('og' + gi, ownerLane, ga, gEnd)
+              gi += 1
+              grp = []
+              gEnd = -1
+            }
+            sorted.forEach((e) => {
+              if (grp.length && toMin(e.start_time) >= gEnd) flush()
+              grp.push(e)
+              gEnd = Math.max(gEnd, toMin(e.end_time))
+            })
+            flush()
+          }
           laid.forEach(({ s, col, subs }) => {
             if (nDays > 1 && s.status === '보강' && subs === 1) widen('s' + s.id, col, toMin(s.start_time), toMin(s.end_time))
           })
@@ -1841,7 +1870,10 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                 const lane = ownerName ? weekNames.indexOf(ownerName) : -1
                 const nAll = Math.max(weekNames.length, 1)
                 const w = 100 / nAll
-                const sp = spanOf['o' + e.id] || [lane, lane]
+                const op = outPos[e.id] || { g: -1, idx: 0, n: 1 }
+                const sp0 = spanOf['og' + op.g] || [lane, lane]
+                // 겹친 외부 일정끼리는 넓힌 폭을 나눠 씀
+                const sp = [sp0[0] + ((sp0[1] - sp0[0] + 1) * op.idx) / op.n, sp0[0] + ((sp0[1] - sp0[0] + 1) * (op.idx + 1)) / op.n - 1]
                 const span = sp[1] - sp[0] + 1
                 const n = nAll / span / WIDE // 넓힌 만큼 덜 좁은 칸으로 취급 (글씨 크기 · 시간 표시)
                 return (
@@ -6041,7 +6073,9 @@ const GRID_COLORS = [
   ['#BEE3DC', '#11423B'], ['#F2C9B8', '#5B2716'], ['#CBD5E1', '#1E293B'],
   ['#E7C9F0', '#4A1157'],
 ]
-function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unmade = [], endHour = 19 }) {
+function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unmade = [], endHour = 19, screen = false }) {
+  // screen: 시간표 화면의 '한 달' 보기 — 종이 한 장에 맞추지 않고, 한 주씩 위아래로 크게 (인쇄는 그대로)
+  const SCREEN_W = 820
   const [y, m] = ym.split('-').map(Number)
   const lastDay = new Date(y, m, 0).getDate()
   const DOW = ['월', '화', '수', '목', '금', '토']
@@ -6089,8 +6123,8 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
   //   그림은 어떤 브라우저 · 종이 방향에서도 종이 폭에 맞춰 줄어들 뿐 잘리지 않습니다.
   const fitRef = useRef(null)
   const capRef = useRef(null)
-  const [GW, setGW] = useState(1070)
-  const [fit, setFit] = useState({ z: 1, x: 0 })
+  const [GW, setGW] = useState(screen ? SCREEN_W : 1070)
+  const [fit, setFit] = useState({ z: 1, x: 0, h: 0 })
   const tries = useRef(0)
   useEffect(() => {
     tries.current = 0
@@ -6102,8 +6136,8 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
     const h = el.offsetHeight
     const bw = box.clientWidth
     const bh = box.clientHeight
-    if (!(h > 0 && bw > 0 && bh > 0)) return
-    const w = Math.max(900, Math.min(2400, Math.round((h * bw) / bh)))
+    if (!(h > 0 && bw > 0 && (screen || bh > 0))) return
+    const w = screen ? SCREEN_W : Math.max(900, Math.min(2400, Math.round((h * bw) / bh)))
     if (Math.abs(w - GW) > 6 && tries.current < 6) {
       tries.current += 1
       setGW(w)
@@ -6160,9 +6194,11 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
         if (!over()) break
       }
     })
-    const z = Math.min(bw / GW, bh / h)
-    const x = Math.max(0, (bw - GW * z) / 2)
-    if (Math.abs(z - fit.z) > 0.002 || Math.abs(x - fit.x) > 1) setFit({ z, x })
+    // 화면 '한 달': 폭에 맞춰 키우고 높이는 내용만큼 (아래로 스크롤) / 인쇄 미리보기: 종이 한 장에 맞춤
+    const z = screen ? bw / GW : Math.min(bw / GW, bh / h)
+    const x = screen ? 0 : Math.max(0, (bw - GW * z) / 2)
+    const hh = screen ? Math.ceil(el.offsetHeight * z) : 0
+    if (Math.abs(z - fit.z) > 0.002 || Math.abs(x - fit.x) > 1 || Math.abs(hh - (fit.h || 0)) > 1) setFit({ z, x, h: hh })
   })
 
   // 시간 비례: 한 시간 = GH px. 수업은 시작 분 ~ 끝 분 위치에 그 길이만큼 그립니다.
@@ -6286,8 +6322,8 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
   }
 
   return (
-    <div className="tt-page tt-grid-page">
-      <div className="tt-gfit" ref={fitRef}>
+    <div className="tt-page tt-grid-page" style={screen ? { width: '100%', height: 'auto', padding: 14 } : undefined}>
+      <div className="tt-gfit" ref={fitRef} style={screen ? { height: fit.h || 400, flex: 'none' } : undefined}>
       <div className="tt-gscale" style={{ width: GW, transform: `translateX(${fit.x}px) scale(${fit.z})` }}>
       <div className="tt-gcap" ref={capRef} style={{ width: GW }} data-name={teacher.name}>
       <div className="tt-gh">
@@ -6300,9 +6336,9 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
       </div>
       <div className="tt-gwrap">
         {/* 날짜 순서대로 왼쪽 → 오른쪽, 다음 줄: 1주 | 2주 / 3주 | 4주 / 5주 | (보강) */}
-        {[weeks.filter((_, i) => i % 2 === 0), weeks.filter((_, i) => i % 2 === 1)].map((col, ci) => (
+        {(screen ? [weeks] : [weeks.filter((_, i) => i % 2 === 0), weeks.filter((_, i) => i % 2 === 1)]).map((col, ci) => (
         <div key={ci} className="tt-gcol">
-        {col.map((wk, wj) => { const wi = wj * 2 + ci; return (
+        {col.map((wk, wj) => { const wi = screen ? wj : wj * 2 + ci; return (
           <div key={wi} className="tt-gw" style={{ '--H': `${GH}px`, '--ND': DAYS.length }}>
             <div className="tt-gw-head">
               <div />
@@ -6394,12 +6430,13 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
           </div>
         ) })}
         {/* 주가 홀수(5주 등)면 오른쪽 아래 빈 자리에 */}
-        {ci === 1 && weeks.length % 2 === 1 && makeupBox}
+        {!screen && ci === 1 && weeks.length % 2 === 1 && makeupBox}
+        {screen && makeupBox}
         </div>
         ))}
       </div>
       {/* 주가 짝수면 빈 자리가 없어서 맨 아래 띠로 */}
-      {weeks.length % 2 === 0 && makeupBox && <div className="tt-mk-band">{makeupBox}</div>}
+      {!screen && weeks.length % 2 === 0 && makeupBox && <div className="tt-mk-band">{makeupBox}</div>}
       </div>
       </div>
       </div>
@@ -7053,6 +7090,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
             outside={t.name === ownerName ? outside.filter((e) => e.d.slice(0, 7) === ym) : []}
             endHour={Math.ceil(gEnAll / 60)}
             unmade={unmade.filter((u) => u.staff_name === t.name)}
+            screen={inline}
           />
         ))}
         {mode === 'grid' && !shown.length && (
