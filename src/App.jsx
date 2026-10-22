@@ -1496,8 +1496,9 @@ function TeacherMakeupCheck({ unmade, reports, onReport, onWithdraw, busy }) {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap', marginTop: 9 }}>
                   <input type="date" value={d} min={u.d} max={isoOf(new Date())} onChange={(e) => setD(e.target.value)}
                     style={{ padding: '6px 8px', border: `1px solid ${C.line}`, borderRadius: 7, fontSize: 13.5 }} />
-                  <input type="time" value={start} onChange={(e) => setStart(e.target.value)} title="보강 시작 시각 (모르면 비워 두세요)"
-                    style={{ padding: '6px 8px', border: `1px solid ${C.line}`, borderRadius: 7, fontSize: 13.5 }} />
+                  {/* 몇 시에 했는지 원장님이 알 수 있게 시작 시각은 꼭 넣습니다 */}
+                  <input type="time" value={start} onChange={(e) => setStart(e.target.value)} title="보강 시작 시각"
+                    style={{ padding: '6px 8px', border: `1px solid ${start ? C.line : '#E39AAB'}`, borderRadius: 7, fontSize: 13.5 }} />
                   <select value={mins} onChange={(e) => setMins(Number(e.target.value))}
                     style={{ padding: '6px 8px', border: `1px solid ${C.line}`, borderRadius: 7, fontSize: 13.5 }}>
                     {Array.from({ length: Math.max(1, Math.floor((left - pendMin) / 10)) }, (_, i) => (i + 1) * 10)
@@ -1509,7 +1510,7 @@ function TeacherMakeupCheck({ unmade, reports, onReport, onWithdraw, busy }) {
                   </select>
                   <Btn
                     variant="primary"
-                    disabled={busy || !d || !mins}
+                    disabled={busy || !d || !start || !mins}
                     onClick={async () => {
                       const msg = `${mdw(d)} ${start ? clock(start) + '부터 ' : ''}${mins}분 보강 — ${u.student_name} ${mdw(u.d)} 결강분`
                       const ok2 = await onReport(u, msg, { d, start: start || null, minutes: mins, student_name: u.student_name, absent_d: u.d })
@@ -1520,6 +1521,9 @@ function TeacherMakeupCheck({ unmade, reports, onReport, onWithdraw, busy }) {
                     원장님께 보내기
                   </Btn>
                   <Btn variant="ghost" onClick={() => setOpenId(null)} style={{ padding: '6px 8px', fontSize: 13 }}>닫기</Btn>
+                  {!start && (
+                    <div style={{ width: '100%', fontSize: 12, color: C.danger }}>보강을 시작한 시각을 넣어 주세요 (예: 오후 4:50)</div>
+                  )}
                 </div>
               )}
             </div>
