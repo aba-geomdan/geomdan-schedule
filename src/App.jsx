@@ -1622,6 +1622,44 @@ function clampToView(s) {
   return { ...s, start_time: hm(na), end_time: hm(nb), _orig: s, student_name: '⚠' + s.student_name }
 }
 
+// 같은 날 · 같은 선생님 · 같은 아이 수업 바로 앞이나 뒤에 붙은 30분 미만 보강은 따로 칸을 만들지 않고
+//   그 수업 칸에 '+보강 ○분'으로 붙입니다 (수업 칸은 보강 시간까지 늘려 그림, 원래 수업은 _orig, 붙은 보강은 _plus)
+//   그 보강 시간에 같은 선생님의 결강이 겹쳐 있으면 붙이지 않습니다 (결강 표시가 가려지지 않게)
+function attachShortMakeups(list) {
+  const isLesson = (x) => x.status !== '보강' && x.status !== '결강' && x.status !== '취소'
+  const plus = new Map()
+  const gone = new Set()
+  list.forEach((m) => {
+    if (m.status !== '보강') return
+    const a = toMin(m.start_time)
+    const b = toMin(m.end_time)
+    if (!(b > a) || b - a >= 30) return
+    if (list.some((x) => x.status === '결강' && x.staff_name === m.staff_name && x.d === m.d && toMin(x.start_time) < b && toMin(x.end_time) > a)) return
+    const host = list.find(
+      (x) =>
+        x !== m && isLesson(x) && x.d === m.d && x.staff_name === m.staff_name &&
+        (x._orig || x).student_name === (m._orig || m).student_name &&
+        (toMin(x.end_time) === a || toMin(x.start_time) === b)
+    )
+    if (!host) return
+    gone.add(m)
+    plus.set(host, [...(plus.get(host) || []), m])
+  })
+  if (!gone.size) return list
+  return list
+    .filter((x) => !gone.has(x))
+    .map((x) => {
+      const ms = plus.get(x)
+      if (!ms) return x
+      const all = [x, ...ms]
+      const first = all.reduce((p, q) => (toMin(q.start_time) < toMin(p.start_time) ? q : p))
+      const last = all.reduce((p, q) => (toMin(q.end_time) > toMin(p.end_time) ? q : p))
+      return { ...x, start_time: first.start_time, end_time: last.end_time, _orig: x._orig || x, _plus: ms }
+    })
+}
+// 붙은 보강들의 분 합계
+const plusMinOf = (s) => (s._plus || []).reduce((t, m) => t + toMin((m._orig || m).end_time) - toMin((m._orig || m).start_time), 0)
+
 function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colorOf, toneOf, staffOrder = [], onPick, today, dayOnly = null }) {
   const dayKey = dayOnly ? isoOf(dayOnly) : ''
   const days = useMemo(
@@ -1759,79 +1797,32 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
           const isHoliday = !!hol
           // 화면 시간(오전 9시~저녁 8시) 밖으로 잘못 들어간 수업(예: 오후 12:10을 새벽 0:10으로)도
           //   맨 위나 맨 아래에 붙여 보여 줍니다 — 눌러서 고치거나 지울 수 있게 (이름 앞에 ⚠)
-          const items = sessions.filter((s) => s.d === ds).map(clampToView)
+          //   주 보기에서는 같은 아이 수업 앞뒤에 붙은 30분 미만 보강을 그 수업 칸에 '+보강 ○분'으로 붙입니다
+          const dayItems = sessions.filter((s) => s.d === ds).map(clampToView)
+          const items = nDays > 1 ? attachShortMakeups(dayItems) : dayItems
           const laid = layout(items, weekNames)
-          // 외부 일정 · 보강은 글자가 길거나 칸이 낮아서 좁은 줄에서는 잘립니다.
-          //   그 시간에 비어 있는 옆 선생님 줄이 있으면 거기까지 넓혀 그립니다 (다른 수업 칸과는 겹치지 않게).
-          const nL = Math.max(weekNames.length, 1)
+          // 보강 · 결강 · 외부 일정은 모두 자기 선생님 줄 안에만 그립니다 (옆 선생님 줄로 넓히지 않음)
           const ownerLane = ownerName ? weekNames.indexOf(ownerName) : -1
-          const dayOut = ownerLane >= 0 ? outByDay[ds] || [] : []
-          const occ = [
-            ...laid.map(({ s, col }) => ({ key: 's' + s.id, lane: col, a: toMin(s.start_time), b: toMin(s.end_time) })),
-            ...dayOut.map((e) => ({ key: 'o' + e.id, lane: ownerLane, a: toMin(e.start_time), b: toMin(e.end_time) })),
-          ]
-          const spanOf = {}
-          const widen = (key, lane, a, b) => {
-            const free = (l) => !occ.some((o) => o.key !== key && o.lane === l && o.a < b && o.b > a)
-            let l0 = lane
-            let l1 = lane
-            while (l1 + 1 < nL && free(l1 + 1)) l1++
-            while (l0 - 1 >= 0 && free(l0 - 1)) l0--
-            for (let l = l0; l <= l1; l++) if (l !== lane) occ.push({ key, lane: l, a, b })
-            spanOf[key] = [l0, l1]
-          }
-          // 하루 보기는 줄이 넓고 위에 선생님 이름이 있어서, 옆 선생님 줄로 넓히지 않습니다
-          // 외부 일정끼리 시간이 겹치면(같은 날 학교 두 곳 등) 한 묶음으로 넓힌 뒤 나란히 나눕니다 (서로 덮지 않게)
-          const outPos = {}
-          {
-            const sorted = [...dayOut].sort((p, q) => toMin(p.start_time) - toMin(q.start_time))
-            let grp = []
-            let gEnd = -1
-            let gi = 0
-            const flush = () => {
-              if (!grp.length) return
-              const ends = []
-              const ga = Math.min(...grp.map((e) => toMin(e.start_time)))
-              grp.forEach((e) => {
-                let k = ends.findIndex((x) => x <= toMin(e.start_time))
-                if (k < 0) { k = ends.length; ends.push(0) }
-                ends[k] = toMin(e.end_time)
-                outPos[e.id] = { g: gi, idx: k }
-              })
-              grp.forEach((e) => (outPos[e.id].n = ends.length))
-              if (nDays > 1) widen('og' + gi, ownerLane, ga, gEnd)
-              gi += 1
-              grp = []
-              gEnd = -1
-            }
-            sorted.forEach((e) => {
-              if (grp.length && toMin(e.start_time) >= gEnd) flush()
-              grp.push(e)
-              gEnd = Math.max(gEnd, toMin(e.end_time))
+          const dayOut = outByDay[ds] || []
+          // 외부 일정끼리 시간이 겹치면(같은 날 학교 두 곳 등) 원장 줄에 한 칸으로 모아 줄마다 적습니다 (반으로 쪼개면 글씨가 세로로 잘려서)
+          const outGroups = []
+          ;[...dayOut]
+            .sort((p, q) => toMin(p.start_time) - toMin(q.start_time))
+            .forEach((e) => {
+              const last = outGroups[outGroups.length - 1]
+              if (last && toMin(e.start_time) < last.b) {
+                last.list.push(e)
+                last.b = Math.max(last.b, toMin(e.end_time))
+              } else outGroups.push({ a: toMin(e.start_time), b: toMin(e.end_time), list: [e] })
             })
-            flush()
-          }
-          laid.forEach(({ s, col, subs }) => {
-            if (nDays > 1 && s.status === '보강' && subs === 1) widen('s' + s.id, col, toMin(s.start_time), toMin(s.end_time))
-          })
-          // 한 선생님 줄 안에서 결강 · 보강이 나란히 나뉜 묶음도, 옆 줄이 그 시간에 비어 있으면 넓혀서 나눕니다
-          //   (반으로 쪼갠 칸이 너무 좁아 이름이 세로로 잘리던 문제)
-          const doneG = new Set()
-          laid.forEach(({ col, subs, g, ga, gb }) => {
-            if (subs > 1 && !doneG.has(g)) {
-              doneG.add(g)
-              if (nDays > 1) widen('g' + g, col, ga, gb)
-            }
-          })
-          // 넓히지 못한 묶음 중, 한 칸에 이름 줄들이 다 들어가는 것만 모아 그림 (안 들어가면 예전처럼 나란히)
+          // 한 선생님 줄 안에서 결강 · 보강이 겹친 묶음은 반으로 쪼개면 이름이 잘리므로,
+          //   한 칸에 이름 줄들이 다 들어가면 모아 그림 (안 들어가면 예전처럼 나란히) — 주 보기만
           const combined = new Set()
           if (nDays > 1)
             [...new Set(laid.filter((x) => x.subs > 1).map((x) => x.g))].forEach((g) => {
-              const gsp = spanOf['g' + g]
-              if (gsp && gsp[1] > gsp[0]) return
               const ms = laid.filter((x) => x.g === g)
               const boxH = Math.max((ms[0].gb - ms[0].ga) * PX - 2, 20)
-              if (ms.length * 15 + 8 <= boxH) combined.add(g)
+              if (ms.length * 14 + 6 <= boxH) combined.add(g)
             })
           return (
             <div
@@ -1879,29 +1870,25 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                   </span>
                 </div>
               )}
-              {(outByDay[ds] || []).map((e) => {
-                const top = (toMin(e.start_time) - DAY_START) * PX
-                const eh = (toMin(e.end_time) - toMin(e.start_time)) * PX
-                // 원장 줄에 놓습니다 (원장 수업과 같은 줄, 색만 다르게)
-                const lane = ownerName ? weekNames.indexOf(ownerName) : -1
-                const nAll = Math.max(weekNames.length, 1)
+              {outGroups.map(({ a: ga, b: gb, list }) => {
+                const top = (ga - DAY_START) * PX
+                const eh = (gb - ga) * PX
+                // 원장 줄에만 놓습니다 (원장 수업과 같은 줄, 색만 다르게)
+                // (원장 줄이 없으면 그날 칸 전체 폭)
+                const nAll = ownerLane >= 0 ? Math.max(weekNames.length, 1) : 1
                 const w = 100 / nAll
-                const op = outPos[e.id] || { g: -1, idx: 0, n: 1 }
-                const sp0 = spanOf['og' + op.g] || [lane, lane]
-                // 겹친 외부 일정끼리는 넓힌 폭을 나눠 씀
-                const sp = [sp0[0] + ((sp0[1] - sp0[0] + 1) * op.idx) / op.n, sp0[0] + ((sp0[1] - sp0[0] + 1) * (op.idx + 1)) / op.n - 1]
-                const span = sp[1] - sp[0] + 1
-                const n = nAll / span / WIDE // 넓힌 만큼 덜 좁은 칸으로 취급 (글씨 크기 · 시간 표시)
+                const n = nAll / WIDE // 줄이 좁을수록 글씨를 작게
+                const one = list.length === 1
                 return (
                   <div
-                    key={e.id}
-                    title={`${e.label}${e.memo ? ' · ' + e.memo : ''}`}
+                    key={'og' + list[0].id}
+                    title={list.map((e) => `${e.label} ${clock(e.start_time)}~${clock(e.end_time)}${e.memo ? ' · ' + e.memo : ''}`).join('\n')}
                     style={{
                       position: 'absolute',
                       top: top + 1,
                       height: Math.max(eh - 3, 18),
-                      left: lane >= 0 ? `calc(${sp[0] * w}% + 2px)` : 2,
-                      width: lane >= 0 ? `calc(${span * w}% - 4px)` : 'calc(100% - 4px)',
+                      left: `calc(${Math.max(ownerLane, 0) * w}% + 2px)`,
+                      width: `calc(${w}% - 4px)`,
                       boxSizing: 'border-box', // 안쪽 여백까지 폭 · 높이 안에 (옆 칸 · 다음 수업을 덮지 않게)
                       borderRadius: 7,
                       background: OUTSIDE.bg,
@@ -1912,14 +1899,16 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                     }}
                   >
                     <div style={{ fontSize: 9, fontWeight: 700, color: OUTSIDE.tag, letterSpacing: '0.02em' }}>외부</div>
-                    <div style={{ fontSize: n >= 3 ? 10 : 11.5, fontWeight: 700, color: OUTSIDE.fg, lineHeight: 1.25 }}>
-                      {e.label}
-                    </div>
-                    {eh > 44 && n < 3 && (
-                      <div style={{ fontSize: 9.5, color: OUTSIDE.tag, marginTop: 1 }}>
-                        {clock(e.start_time)}~{clock(e.end_time)}
+                    {list.map((e) => (
+                      <div key={e.id} style={{ marginBottom: one ? 0 : 2 }}>
+                        <div style={{ fontSize: n >= 3 ? 10 : 11.5, fontWeight: 700, color: OUTSIDE.fg, lineHeight: 1.25, wordBreak: 'keep-all' }}>{e.label}</div>
+                        {(one ? eh > 44 && n < 3 : eh > 30 + list.length * 38) && (
+                          <div style={{ fontSize: 9.5, color: OUTSIDE.tag, marginTop: 1 }}>
+                            {clock(e.start_time)}~{clock(e.end_time)}
+                          </div>
+                        )}
                       </div>
-                    )}
+                    ))}
                   </div>
                 )
               })}
@@ -1931,15 +1920,30 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                   .map((g) => {
                     const members = laid.filter((x) => x.g === g)
                     const { col, cols: laneCols, ga, gb } = members[0]
-                    const boxH = Math.max((gb - ga) * PX - 2, 20)
-                    // 줄마다 시간까지 적을 자리가 있을 때만 시간 표시
-                    const showTimes = members.length * 26 + 8 <= boxH
+                    const baseH = Math.max((gb - ga) * PX - 2, 20)
                     const hasAb = members.some((x) => x.s.status === '결강')
                     const tn = toneOf ? toneOf(members[0].s.staff_name) : styleOf(members[0].s)
                     const order = (x) => (x.s.status === '보강' ? 0 : x.s.status === '결강' || x.s.status === '취소' ? 2 : 1)
                     const rows = [...members].sort((p, q) => order(p) - order(q) || toMin(p.s.start_time) - toMin(q.s.start_time))
                     const tc = colorOf(members[0].s.staff_name)
                     const hasMk = rows.some((x) => x.s.status === '보강')
+                    // 모두 같은 시간이면 시간은 맨 아래 한 번만, 다르면 이름마다 시간
+                    const tKey = (x) => (x.s._orig || x.s).start_time + (x.s._orig || x.s).end_time
+                    const sameTime = rows.every((x) => tKey(x) === tKey(rows[0]))
+                    // '보강' 딱지(맨 위 한 번) · 이름 줄 · 시간(두 줄)을 다 적을 높이 — 모자라면 바로 아래가 비어 있는 만큼 칸을 늘립니다
+                    const needTag = (hasMk ? 13 : 0) + rows.length * 14 + 6
+                    const needAll = needTag + (sameTime ? 20 : rows.length * 20)
+                    const nextA = Math.min(
+                      DAY_END,
+                      ...laid.filter((o) => o.col === col && o.g !== g && toMin(o.s.start_time) >= gb).map((o) => toMin(o.s.start_time)),
+                      ...(col === ownerLane ? outGroups.filter((o) => o.a >= gb).map((o) => o.a) : [])
+                    )
+                    const roomH = (nextA - ga) * PX - 3
+                    const boxH = Math.max(baseH, Math.min(needAll, roomH))
+                    // 줄이 좁아 딱지 옆에 이름이 잘리므로, 자리가 있으면 '보강' 딱지를 맨 위에 한 번만 적고
+                    //   보강인 아이 이름은 주황 글씨로 (결강은 빨간 취소선)
+                    const headTag = hasMk && needTag <= boxH
+                    const showT = (headTag || !hasMk ? needTag : needTag - 13) + (sameTime ? 20 : rows.length * 20) <= boxH + 2
                     return (
                       <div
                         key={'grp' + g}
@@ -1960,13 +1964,18 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                           display: 'flex',
                           flexDirection: 'column',
                           gap: 2,
+                          zIndex: boxH > baseH ? 1 : undefined,
                         }}
                       >
+                        {headTag && (
+                          <div style={{ lineHeight: 1 }}>
+                            <span style={{ display: 'inline-block', fontSize: 8.5, fontWeight: 800, color: '#fff', background: MAKEUP, borderRadius: 99, padding: '0 4px', lineHeight: 1.35 }}>보강</span>
+                          </div>
+                        )}
                         {rows.map(({ s }) => {
                           const mk = s.status === '보강'
                           const ab = s.status === '결강'
                           const cx = s.status === '취소'
-                          const whole = toMin(s.start_time) === ga && toMin(s.end_time) === gb
                           return (
                             <button
                               key={s.id}
@@ -1978,25 +1987,50 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                                 whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', // 좁아도 한 줄로
                               }}
                             >
-                              {mk && (
-                                <span style={{ display: 'inline-block', fontSize: 8.5, fontWeight: 800, color: '#fff', background: MAKEUP, borderRadius: 99, padding: '0 4px', marginRight: 2 }}>
-                                  보강
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 2, minWidth: 0 }}>
+                                {/* '보강' 딱지는 늘 보이고, 칸이 좁으면 이름이 줄어듭니다 */}
+                                {mk && !headTag && (
+                                  <span style={{ display: 'inline-block', fontSize: 8.5, fontWeight: 800, color: '#fff', background: MAKEUP, borderRadius: 99, padding: '0 3px', flexShrink: 0, lineHeight: 1.35 }}>
+                                    보강
+                                  </span>
+                                )}
+                                <span
+                                  style={{
+                                    fontSize: 10.5, fontWeight: 800, whiteSpace: 'nowrap', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis',
+                                    color: ab ? '#B04A60' : mk ? '#7A4100' : cx ? C.mut : C.ink,
+                                    textDecoration: ab || cx ? 'line-through' : 'none',
+                                  }}
+                                >
+                                  {s.student_name}
                                 </span>
+                                {cx && <span style={{ fontSize: 9, fontWeight: 700, color: C.mut, flexShrink: 0 }}>취소</span>}
+                                {s._plus &&
+                                  s._plus.map((m) => (
+                                    <span
+                                      key={m.id}
+                                      role="button"
+                                      onClick={(e) => { e.stopPropagation(); onPick(m._orig || m) }}
+                                      style={{ display: 'inline-block', fontSize: 8.5, fontWeight: 800, color: '#fff', background: MAKEUP, borderRadius: 99, padding: '0 3px', flexShrink: 0, lineHeight: 1.35 }}
+                                    >
+                                      +{toMin((m._orig || m).end_time) - toMin((m._orig || m).start_time)}분
+                                    </span>
+                                  ))}
+                              </div>
+                              {!sameTime && showT && (
+                                <div style={{ fontSize: 8.5, letterSpacing: '-0.3px', color: C.sub, textDecoration: ab || cx ? 'line-through' : 'none', whiteSpace: 'normal', lineHeight: 1.1 }}>
+                                  {clock((s._orig || s).start_time)}~<wbr />
+                                  {clock((s._orig || s).end_time)}
+                                </div>
                               )}
-                              <span
-                                style={{
-                                  fontSize: 10.5, fontWeight: 800, whiteSpace: 'nowrap',
-                                  color: ab ? '#B04A60' : mk ? '#7A4100' : cx ? C.mut : C.ink,
-                                  textDecoration: ab || cx ? 'line-through' : 'none',
-                                }}
-                              >
-                                {s.student_name}
-                              </span>
-                              {(ab || cx) && <span style={{ fontSize: 9, fontWeight: 700, color: ab ? C.danger : C.mut, marginLeft: 2 }}>{ab ? '결강' : '취소'}</span>}
-                              {!whole && showTimes && <div style={{ fontSize: 9, color: C.sub }}>{clock(s.start_time)}~{clock(s.end_time)}</div>}
                             </button>
                           )
                         })}
+                        {sameTime && showT && (
+                          <div style={{ fontSize: 8.5, letterSpacing: '-0.3px', color: C.sub, whiteSpace: 'normal', lineHeight: 1.1 }}>
+                            {clock((rows[0].s._orig || rows[0].s).start_time)}~<wbr />
+                            {clock((rows[0].s._orig || rows[0].s).end_time)}
+                          </div>
+                        )}
                       </div>
                     )
                   })}
@@ -2006,18 +2040,9 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                 if (combined.has(g)) return null
                 // 위치 · 폭(%): 보통은 선생님 줄(겹치면 그 안을 나눈 칸), 넓힌 보강은 넓힌 줄 전체,
                 //   넓힌 묶음은 넓힌 줄 전체를 묶음 칸 수로 나눔
-                const sp = spanOf['s' + s.id]
-                const gsp = subs > 1 ? spanOf['g' + g] : null
-                const leftPct = sp
-                  ? (sp[0] * 100) / laneCols
-                  : gsp
-                    ? (sp0 => (sp0 * 100) / laneCols + (sub * (gsp[1] - gsp[0] + 1) * 100) / (laneCols * subs))(gsp[0])
-                    : ((col * subs + sub) * 100) / (laneCols * subs)
-                const widthPct = sp
-                  ? ((sp[1] - sp[0] + 1) * 100) / laneCols
-                  : gsp
-                    ? ((gsp[1] - gsp[0] + 1) * 100) / (laneCols * subs)
-                    : 100 / (laneCols * subs)
+                // 위치 · 폭(%): 선생님 줄 안 (겹치면 그 안을 나눈 칸) — 옆 선생님 줄로 넓히지 않습니다
+                const leftPct = ((col * subs + sub) * 100) / (laneCols * subs)
+                const widthPct = 100 / (laneCols * subs)
                 // 칸 폭에 맞춰 글씨 크기 등을 정합니다 (줄 1개 폭 = 1, 나눈 칸 = 2 …)
                 const cols = 100 / widthPct / WIDE
                 // 배경은 선생님 색, 결강·취소는 빗금과 취소선으로 구분합니다
@@ -2030,17 +2055,95 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                 const narrow = cols > 1.01
                 // 30분 남짓한 짧은 수업(나눠 보강 등)은 칸이 낮아서 두 줄이 안 들어갑니다 → 딱지 · 이름 · 시간을 한 줄로
                 const short = h < 36
+                // 주 보기의 좁은 줄: 모든 칸에 (보강 딱지) / 이름 / 시작~끝(두 줄)을 다 적어야 하는데, 수업 시간이 짧아
+                //   칸이 낮으면 안 들어갑니다 → 바로 아래가 비어 있는 만큼 칸을 늘려 그립니다 (시작 위치는 그대로)
+                let dispH = Math.max(h - 2, short ? 20 : 18)
+                let full = !short
+                if (nDays > 1 && narrow) {
+                  const need = (isMakeup ? 11 : 0) + 12 + 20 + (s._plus ? 12 : 0) + (isMakeup ? 6 : 6)
+                  if (dispH < need) {
+                    const end = toMin(s.end_time)
+                    const nextA = Math.min(
+                      DAY_END,
+                      ...laid.filter((o) => o.col === col && o.s !== s && toMin(o.s.start_time) >= end).map((o) => toMin(o.s.start_time)),
+                      ...(col === ownerLane ? outGroups.filter((o) => o.a >= end).map((o) => o.a) : [])
+                    )
+                    dispH = Math.max(dispH, Math.min(need, (nextA - toMin(s.start_time)) * PX - 3))
+                  }
+                  full = dispH >= 28
+                }
+                const grown = dispH > Math.max(h - 2, 18)
+                const dayView = nDays === 1
+                const orig = s._orig || s
+                const timeTxt = `${clock(orig.start_time)}~${clock(orig.end_time)}`
+                // 좁은 줄에서는 '~' 뒤에서 줄을 바꿔 끝 시각까지 보이게 (말줄임 대신)
+                const timeWrap = (
+                  <>
+                    {clock(orig.start_time)}~<wbr />
+                    {clock(orig.end_time)}
+                  </>
+                )
+                // '보강' 딱지 — 칸이 좁아도 늘 보이고, 이름이 대신 줄어듭니다
+                const tag = isMakeup && (
+                  <span
+                    style={{
+                      display: 'inline-block', fontSize: narrow ? 8.5 : 9.5, fontWeight: 700, color: '#fff',
+                      background: MAKEUP, borderRadius: 99, padding: narrow ? '0 3px' : '0 6px',
+                      flexShrink: 0, lineHeight: narrow && !dayView ? 1.2 : 1.35, whiteSpace: 'nowrap',
+                    }}
+                  >
+                    보강
+                  </span>
+                )
+                const nameEl = (
+                  <div
+                    style={{
+                      fontSize: cols >= 3 ? 9.5 : narrow ? 10.5 : 12,
+                      fontWeight: isMakeup || isAbsent ? 800 : 600,
+                      color: isAbsent ? '#B04A60' : isMakeup ? '#7A4100' : tone.fg,
+                      textDecoration: off ? 'line-through' : 'none',
+                      lineHeight: dayView ? 1.2 : 1.15,
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      minWidth: 0,
+                    }}
+                  >
+                    {s.student_name}
+                  </div>
+                )
+                // 같은 아이 수업 앞뒤에 붙은 짧은 보강 — 눌러서 그 보강을 열 수 있게
+                const plusEls = (s._plus || []).map((m) => (
+                  <span
+                    key={m.id}
+                    role="button"
+                    title={`[보강] ${m.student_name} · ${clock((m._orig || m).start_time)}-${clock((m._orig || m).end_time)}`}
+                    onClick={(e) => { e.stopPropagation(); onPick(m._orig || m) }}
+                    style={{
+                      display: 'inline-block', fontSize: narrow ? 8.5 : 9.5, fontWeight: 800, color: '#fff',
+                      background: MAKEUP, borderRadius: 99, padding: narrow ? '0 3px' : '0 6px',
+                      lineHeight: 1.35, whiteSpace: 'nowrap', flexShrink: 0, marginTop: short ? 0 : 1, marginRight: 2,
+                    }}
+                  >
+                    {narrow ? '+' : '+보강 '}{toMin((m._orig || m).end_time) - toMin((m._orig || m).start_time)}분
+                  </span>
+                ))
+                const timeStyle = {
+                  fontSize: narrow ? 9 : 10, color: isAbsent ? '#B04A60' : tone.fg, opacity: 0.8, whiteSpace: 'nowrap',
+                  overflow: 'hidden', textOverflow: 'ellipsis', lineHeight: 1.2,
+                  textDecoration: off ? 'line-through' : 'none',
+                }
                 return (
                   <button
                     key={s.id}
-                    onClick={() => onPick(s._orig || s)}
-                    title={`${isMakeup ? '[보강] ' : ''}${s.student_name} · ${s.staff_name} · ${clock((s._orig || s).start_time)}-${clock((s._orig || s).end_time)}`}
+                    onClick={() => onPick(orig)}
+                    title={`${isMakeup ? '[보강] ' : ''}${s.student_name} · ${s.staff_name} · ${clock(orig.start_time)}-${clock(orig.end_time)}${s._plus ? ` · +보강 ${plusMinOf(s)}분` : ''}`}
                     style={{
                       position: 'absolute',
                       top: (toMin(s.start_time) - DAY_START) * PX,
                       left: `calc(${leftPct}% + ${subs > 1 && sub > 0 ? 1 : 2}px)`,
                       width: `calc(${widthPct}% - ${subs > 1 ? 3 : 4}px)`,
-                      height: Math.max(h - 2, short ? 20 : 18),
+                      height: dispH,
                       // 정상 수업은 연하게, 결강 · 보강만 눈에 띄게
                       background: isAbsent
                         ? '#FFFFFF'
@@ -2053,69 +2156,54 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                       borderLeft: `3px solid ${tc}`, // 어느 선생님 수업인지 왼쪽 색 띠는 늘 그대로
                       opacity: off && !isAbsent ? 0.75 : 1,
                       borderRadius: 5,
-                      padding: short ? (narrow ? '0 3px' : '0 5px') : cols >= 3 ? '2px 1px' : narrow ? '2px 3px' : '3px 5px',
+                      // (주 보기 좁은 보강 칸은 테두리가 두꺼워서 위아래 여백을 1px로 — 딱지 · 이름 · 시간 두 줄이 다 들어가게)
+                      padding: !full ? (narrow ? '0 3px' : '0 5px') : cols >= 3 ? '2px 1px' : narrow ? (isMakeup && !dayView ? '1px 3px' : '2px 3px') : '3px 5px',
                       textAlign: 'left',
                       cursor: 'pointer',
                       overflow: 'hidden',
-                      display: short ? 'flex' : 'block',
+                      display: !full ? 'flex' : 'block',
                       alignItems: 'center',
-                      gap: 4,
-                      zIndex: short ? 1 : undefined,
+                      gap: narrow ? 2 : 4,
+                      zIndex: short || grown ? 1 : undefined,
                     }}
                   >
-                    {isMakeup && !(short && narrow) && (
-                      <span
-                        style={{
-                          display: 'inline-block', fontSize: narrow ? 8.5 : 9.5, fontWeight: 700, color: '#fff',
-                          background: MAKEUP, borderRadius: 99, padding: narrow ? '0 4px' : '0 6px', marginBottom: short ? 0 : 1,
-                          flexShrink: 0, lineHeight: 1.35,
-                        }}
-                      >
-                        보강
-                      </span>
+                    {!full ? (
+                      // 낮은 칸: 한 줄에 딱지 · 이름 (· 시간 — 자리 있을 때) · +보강
+                      <>
+                        {tag}
+                        {nameEl}
+                        {!narrow && <span style={{ ...timeStyle, flexShrink: 0, overflow: 'visible' }}>{timeTxt}</span>}
+                        {plusEls}
+                      </>
+                    ) : dayView && !short ? (
+                      // 하루 보기: 지금 모양 그대로, 시간만 시작~끝으로
+                      <>
+                        {isMakeup && h > 56 && <div style={{ marginBottom: 1 }}>{tag}</div>}
+                        {isMakeup && h <= 56 ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 }}>{tag}{nameEl}</div>
+                        ) : (
+                          nameEl
+                        )}
+                        <div style={timeStyle}>{timeTxt}</div>
+                        {plusEls.length > 0 && <div>{plusEls}</div>}
+                        {isAbsent && h > 52 && (
+                          <div style={{ fontSize: 9.5, fontWeight: 700, color: C.danger }}>
+                            {subs > 1 ? '결강' : s.needs_makeup ? '결강 · 미보강' : '결강 · 보강완료'}
+                          </div>
+                        )}
+                        {isAbsent && h <= 52 && !narrow && <div style={{ fontSize: 9.5, fontWeight: 700, color: C.danger }}>결강</div>}
+                        {s.status === '취소' && h > 40 && <div style={{ fontSize: 9.5, fontWeight: 700, color: C.mut }}>취소</div>}
+                      </>
+                    ) : (
+                      // 주 보기: 모든 칸을 같은 모양으로 — 1줄 (보강 딱지) 이름 / 2줄 시작~끝 / (+보강 ○분)
+                      <>
+                        {/* 좁은 줄에서 딱지와 이름을 한 줄에 쓰면 이름이 잘리므로, 딱지는 이름 위에 따로 */}
+                        {tag && <div style={{ lineHeight: 1 }}>{tag}</div>}
+                        {nameEl}
+                        <div style={{ ...timeStyle, whiteSpace: 'normal', overflowWrap: 'normal', lineHeight: 1.1 }}>{timeWrap}</div>
+                        {plusEls.length > 0 && <div style={{ whiteSpace: 'nowrap', overflow: 'hidden' }}>{plusEls}</div>}
+                      </>
                     )}
-                    <div
-                      style={{
-                        fontSize: cols >= 3 ? 9.5 : narrow ? 10.5 : 12,
-                        fontWeight: isMakeup || isAbsent ? 800 : 600,
-                        color: isAbsent ? '#B04A60' : isMakeup ? '#7A4100' : tone.fg,
-                        textDecoration: off ? 'line-through' : 'none',
-                        lineHeight: 1.2,
-                        whiteSpace: 'nowrap',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        minWidth: 0,
-                      }}
-                    >
-                      {s.student_name}
-                    </div>
-                    {short && !narrow && (
-                      <span style={{ fontSize: 10, color: tone.fg, opacity: 0.75, whiteSpace: 'nowrap', flexShrink: 0 }}>
-                        {clock((s._orig || s).start_time)}~{clock((s._orig || s).end_time)}
-                      </span>
-                    )}
-                    {h > 44 && !narrow && (
-                      <div style={{ fontSize: 10, color: tone.fg, opacity: 0.75 }}>
-                        {clock((s._orig || s).start_time)}
-                      </div>
-                    )}
-                    {h > 40 && narrow && cols <= 2 && (
-                      <div style={{ fontSize: 9, color: tone.fg, opacity: 0.7, whiteSpace: 'nowrap' }}>
-                        {(s.staff_name || '').slice(-2)}
-                      </div>
-                    )}
-                    {s.status === '결강' && h > 52 && (
-                      <div style={{ fontSize: 9.5, fontWeight: 700, color: C.danger }}>
-                        {subs > 1 ? '결강' : s.needs_makeup ? '결강 · 미보강' : '결강 · 보강완료'}
-                      </div>
-                    )}
-                    {s.status === '결강' && h <= 52 && !narrow && (
-                      <div style={{ fontSize: 9.5, fontWeight: 700, color: C.danger }}>결강</div>
-                    )}
-                    {s.status === '취소' && h > 40 && (
-                      <div style={{ fontSize: 9.5, fontWeight: 700, color: C.mut }}>취소</div>
-                    )}
-
                   </button>
                 )
               })}
@@ -6182,7 +6270,7 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
       return need > inner - 0.5
     }
     const overAny = () =>
-      [...el.querySelectorAll('.tt-gblk:not(.tt-gout):not(.tt-glane):not(.tt-gmk)')].some((blk) => {
+      [...el.querySelectorAll('.tt-gblk:not(.tt-gout):not(.tt-glane):not(.tt-gmk):not(.tt-gplus)')].some((blk) => {
         const bb = blk.querySelector('b')
         return blk.scrollWidth > blk.clientWidth + 1 || blk.scrollHeight > blk.clientHeight + 1 ||
           (bb && bb.scrollWidth > bb.clientWidth + 1) || tooWide(blk)
@@ -6193,7 +6281,7 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
       el.classList.add(lv)
     }
     // 외부 일정(검은 칸) · 시간이 겹쳐 반쪽이 된 칸 · '보강' 딱지가 붙은 칸은 안 들어갈 때만 그 칸을 따로 줄입니다
-    el.querySelectorAll('.tt-gblk.tt-gout, .tt-gblk.tt-glane, .tt-gblk.tt-gmk').forEach((blk) => {
+    el.querySelectorAll('.tt-gblk.tt-gout, .tt-gblk.tt-glane, .tt-gblk.tt-gmk, .tt-gblk.tt-gplus').forEach((blk) => {
       const ALL = ['tt-gsm', 'tt-gxs', 'tt-g2t', 'tt-g2n']
       blk.classList.remove(...ALL)
       const over = () => {
@@ -6238,8 +6326,8 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
   const blocksOf = (dIso, holOnly = false) => {
     let items = [
       ...outside.filter((e) => e.d === dIso).map((x) => ({ x, out: true })),
-      ...sessions
-        .filter((x) => x.d === dIso && (!holOnly || x.status === '보강' || x.status === '진행'))
+      // 같은 아이 수업 바로 앞뒤에 붙은 30분 미만 보강은 그 수업 칸에 '+보강 ○분'으로 붙입니다
+      ...attachShortMakeups(sessions.filter((x) => x.d === dIso && (!holOnly || x.status === '보강' || x.status === '진행')))
         .map((x) => ({ x, out: false })),
     ]
       .map((k) => {
@@ -6476,7 +6564,7 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
                       return (
                         <div
                           key={s2.id}
-                          className={`tt-gblk tt-gcell${mk ? ' tt-gmk' : ''}${ab ? ' tt-gab' : ''}${one ? ' tt-g1' : ''}${k.lanes > 1 ? ' tt-glane' : ''}`}
+                          className={`tt-gblk tt-gcell${mk ? ' tt-gmk' : ''}${ab ? ' tt-gab' : ''}${one ? ' tt-g1' : ''}${k.lanes > 1 ? ' tt-glane' : ''}${s2._plus ? ' tt-gplus' : ''}`}
                           style={ab ? pos : { ...pos, background: mk ? '#fff' : c[0], color: mk ? '#8A4B00' : c[1] }}
                         >
                           <b>
@@ -6484,7 +6572,8 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
                             {s2.student_name}
                           </b>
                           <small>
-                            {ab ? '결강' : `${clock(s2.start_time)}~${clock(s2.end_time)}`}
+                            {ab ? '결강' : `${clock((s2._orig || s2).start_time)}~${clock((s2._orig || s2).end_time)}`}
+                            {s2._plus && <span className="tt-gpl"> +보강 {plusMinOf(s2)}분</span>}
                             {k.notes && <span className="tt-gnote"> · {k.notes.join('·')} 결강</span>}
                           </small>
                         </div>
@@ -6925,6 +7014,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
         .tt-gblk.tt-g1 small { flex: none; }
         .tt-gblk .tt-gtag { font-size: 10.5px !important; padding: 0 3px; margin-right: 3px; }
         .tt-gblk .tt-gnote { color: #B3261E; font-weight: 800; }
+        .tt-gblk .tt-gpl { color: #C25E00; font-weight: 800; }
         .tt-gblk.tt-gout b { font-size: 14.5px !important; } .tt-gblk.tt-gout small { font-size: 12.5px !important; }
         .tt-gblk.tt-gsm b { font-size: 14.5px !important; } .tt-gblk.tt-gsm small { font-size: 12px !important; }
         .tt-gblk.tt-gxs b { font-size: 12.5px !important; } .tt-gblk.tt-gxs small { font-size: 10.5px !important; }
@@ -6932,9 +7022,9 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
         .tt-gblk.tt-g2n b, .tt-gblk.tt-g2n small { display: block !important; }
         .tt-gblk.tt-g2t { display: block !important; padding-top: 0 !important; line-height: 1 !important; }
         .tt-gblk.tt-g2t b { font-size: 9.5px !important; } .tt-gblk.tt-g2t small { font-size: 8.5px !important; }
-        .tt-gcap.tt-fsm .tt-gblk:not(.tt-gout):not(.tt-gmk):not(.tt-glane) b { font-size: 15px !important; } .tt-gcap.tt-fsm .tt-gblk:not(.tt-gout):not(.tt-gmk):not(.tt-glane) small { font-size: 12.5px !important; }
-        .tt-gcap.tt-fxs .tt-gblk:not(.tt-gout):not(.tt-gmk):not(.tt-glane) b { font-size: 13.5px !important; } .tt-gcap.tt-fxs .tt-gblk:not(.tt-gout):not(.tt-gmk):not(.tt-glane) small { font-size: 11.5px !important; }
-        .tt-gcap.tt-fxxs .tt-gblk:not(.tt-gout):not(.tt-gmk):not(.tt-glane) b { font-size: 12px !important; } .tt-gcap.tt-fxxs .tt-gblk:not(.tt-gout):not(.tt-gmk):not(.tt-glane) small { font-size: 10.5px !important; }
+        .tt-gcap.tt-fsm .tt-gblk:not(.tt-gout):not(.tt-gmk):not(.tt-glane):not(.tt-gplus) b { font-size: 15px !important; } .tt-gcap.tt-fsm .tt-gblk:not(.tt-gout):not(.tt-gmk):not(.tt-glane):not(.tt-gplus) small { font-size: 12.5px !important; }
+        .tt-gcap.tt-fxs .tt-gblk:not(.tt-gout):not(.tt-gmk):not(.tt-glane):not(.tt-gplus) b { font-size: 13.5px !important; } .tt-gcap.tt-fxs .tt-gblk:not(.tt-gout):not(.tt-gmk):not(.tt-glane):not(.tt-gplus) small { font-size: 11.5px !important; }
+        .tt-gcap.tt-fxxs .tt-gblk:not(.tt-gout):not(.tt-gmk):not(.tt-glane):not(.tt-gplus) b { font-size: 12px !important; } .tt-gcap.tt-fxxs .tt-gblk:not(.tt-gout):not(.tt-gmk):not(.tt-glane):not(.tt-gplus) small { font-size: 10.5px !important; }
         .tt-gblk.tt-gsm .tt-gtag, .tt-gblk.tt-gxs .tt-gtag, .tt-gblk.tt-g2t .tt-gtag { font-size: 9px !important; padding: 0 2px; margin-right: 2px; }
         .tt-gw-axis > div { font-size: 13px !important; font-weight: 700; }
         .tt-gw-head .tt-gdw { font-size: 13px; } .tt-gw-head .tt-gdt { font-size: 15px; }
