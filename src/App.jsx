@@ -1612,6 +1612,17 @@ function TeacherMonth({ ym, me, staff, sessions, unmade, loadHolidays, toneOf, c
   )
 }
 
+// 주 · 하루 보기 화면 시간 밖의 수업을 화면 안쪽 끝으로 옮긴 복사본 (원래 수업은 _orig, 이름 앞에 ⚠)
+function clampToView(s) {
+  const a = toMin(s.start_time)
+  const b = toMin(s.end_time)
+  if (a >= DAY_START && b <= DAY_END) return s
+  const na = Math.min(Math.max(a, DAY_START), DAY_END - 20)
+  const nb = Math.min(Math.max(b, na + 20), DAY_END)
+  const hm = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}:00`
+  return { ...s, start_time: hm(na), end_time: hm(nb), _orig: s, student_name: '⚠' + s.student_name }
+}
+
 function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colorOf, toneOf, staffOrder = [], onPick, today, dayOnly = null }) {
   const dayKey = dayOnly ? isoOf(dayOnly) : ''
   const days = useMemo(
@@ -1747,7 +1758,9 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
           const ds = isoOf(d)
           const hol = holidayMap[ds]
           const isHoliday = !!hol
-          const items = sessions.filter((s) => s.d === ds)
+          // 화면 시간(오전 9시~저녁 8시) 밖으로 잘못 들어간 수업(예: 오후 12:10을 새벽 0:10으로)도
+          //   맨 위나 맨 아래에 붙여 보여 줍니다 — 눌러서 고치거나 지울 수 있게 (이름 앞에 ⚠)
+          const items = sessions.filter((s) => s.d === ds).map(clampToView)
           const laid = layout(items, weekNames)
           // 외부 일정 · 보강은 글자가 길거나 칸이 낮아서 좁은 줄에서는 잘립니다.
           //   그 시간에 비어 있는 옆 선생님 줄이 있으면 거기까지 넓혀 그립니다 (다른 수업 칸과는 겹치지 않게).
@@ -1958,8 +1971,8 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                           return (
                             <button
                               key={s.id}
-                              onClick={() => onPick(s)}
-                              title={`${mk ? '[보강] ' : ab ? '[결강] ' : ''}${s.student_name} · ${s.staff_name} · ${clock(s.start_time)}-${clock(s.end_time)}`}
+                              onClick={() => onPick(s._orig || s)}
+                              title={`${mk ? '[보강] ' : ab ? '[결강] ' : ''}${s.student_name} · ${s.staff_name} · ${clock((s._orig || s).start_time)}-${clock((s._orig || s).end_time)}`}
                               style={{
                                 border: 'none', background: 'transparent', padding: 0, cursor: 'pointer', textAlign: 'left',
                                 display: 'block', width: '100%', minWidth: 0, lineHeight: 1.2,
@@ -2021,8 +2034,8 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                 return (
                   <button
                     key={s.id}
-                    onClick={() => onPick(s)}
-                    title={`${isMakeup ? '[보강] ' : ''}${s.student_name} · ${s.staff_name} · ${clock(s.start_time)}-${clock(s.end_time)}`}
+                    onClick={() => onPick(s._orig || s)}
+                    title={`${isMakeup ? '[보강] ' : ''}${s.student_name} · ${s.staff_name} · ${clock((s._orig || s).start_time)}-${clock((s._orig || s).end_time)}`}
                     style={{
                       position: 'absolute',
                       top: (toMin(s.start_time) - DAY_START) * PX,
@@ -2079,12 +2092,12 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                     </div>
                     {short && !narrow && (
                       <span style={{ fontSize: 10, color: tone.fg, opacity: 0.75, whiteSpace: 'nowrap', flexShrink: 0 }}>
-                        {clock(s.start_time)}~{clock(s.end_time)}
+                        {clock((s._orig || s).start_time)}~{clock((s._orig || s).end_time)}
                       </span>
                     )}
                     {h > 44 && !narrow && (
                       <div style={{ fontSize: 10, color: tone.fg, opacity: 0.75 }}>
-                        {clock(s.start_time)}
+                        {clock((s._orig || s).start_time)}
                       </div>
                     )}
                     {h > 40 && narrow && cols <= 2 && (
@@ -7495,9 +7508,15 @@ function AddSessionModal({ students, staff, programs, absent, preset = null, pai
 
         <AddField label={`시작 시각 (${mins}분${linked ? ' 보강' : ' 수업'})`}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-            <input type="time" step={300} value={start} onChange={(e) => setStart(e.target.value)} style={{ ...addInp, width: 'auto' }} />
+            <input type="time" step={300} value={start} onChange={(e) => setStart(e.target.value)} style={{ ...addInp, width: 'auto', borderColor: start && start < '07:00' ? C.danger : undefined }} />
             <span style={{ fontSize: 13, color: C.sub }}>~ {clock(end)}</span>
           </div>
+          {/* 오후 12시대를 '오전 12시'(새벽 0시)로 넣는 실수 막기 — 새벽 시간은 저장되지 않게 */}
+          {start && start < '07:00' && (
+            <div style={{ fontSize: 12.5, color: C.danger, marginTop: 6, lineHeight: 1.5 }}>
+              새벽 시간({start})으로 들어가 있습니다. 낮 12시대라면 <b>오후</b>로 바꿔 주세요. (오후 12:10 = 12:10 PM)
+            </div>
+          )}
         </AddField>
 
         {!linked && (
@@ -7533,7 +7552,7 @@ function AddSessionModal({ students, staff, programs, absent, preset = null, pai
         <div style={{ display: 'flex', gap: 7, marginTop: 4 }}>
           <Btn
             variant="primary"
-            disabled={busy || !date || !start || (!linked && !studentId)}
+            disabled={busy || !date || !start || start < '07:00' || (!linked && !studentId)}
             onClick={() =>
               onSave({
                 student_id: linked ? absent.student_id : studentId,
