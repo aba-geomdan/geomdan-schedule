@@ -2090,7 +2090,7 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                 const tagged = (x) => x.status === '결강' || x.status === '보강'
                 // 줄 높이(px 고정, 글꼴이 달라도 겹치지 않게 넉넉히): 딱지 12 · 이름 13 · 시간 한 줄 11 · 결강 띠 테두리 5 · 사이 2
                 //   tm: 0 시간 없음 · 1 한 줄 · 2 두 줄 (결강 띠는 시간 두 줄일 때만 시간을 적음)
-                const rowH = (x, tm) => (tagged(x) ? 12 : 0) + 13 + (x.status === '결강' ? (tm === 2 ? 22 : 0) : tm * 11) + (x.status === '결강' ? 5 : 0) + 2
+                const rowH = (x, tm) => (tagged(x) ? 12 : 0) + 13 + (x.status === '결강' ? (tm === 2 ? 22 : 0) : tm * 11) + (x.status === '결강' ? 5 : 0) + (x._plus ? 11 : 0) + 2
                 const need = (tm) => rows.reduce((t, x) => t + rowH(x, tm), 0) + 6
                 const needT = need(2)
                 const need1 = need(1)
@@ -3690,13 +3690,17 @@ function CopayView({ loadCopay, say }) {
             </tbody>
             <tfoot>
               <tr style={{ background: C.pkl, fontWeight: 700 }}>
-                <td style={{ padding: '9px 10px', position: 'sticky', left: 0, background: C.pkl }}>합계 {kids.length}명</td>
+                <td style={{ padding: '9px 10px', position: 'sticky', left: 0, background: C.pkl }}>
+                  {shown.length === kids.length ? `합계 ${kids.length}명` : `찾은 ${shown.length}명 합계`}
+                </td>
                 {usedMonths.map((m) => (
                   <td key={m} style={{ padding: '9px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>
-                    {won(kids.reduce((a, k) => a + (k.months[m]?.copay || 0), 0))}
+                    {won(shown.reduce((a, k) => a + (k.months[m]?.copay || 0), 0))}
                   </td>
                 ))}
-                <td style={{ padding: '9px 10px', textAlign: 'right', color: C.pkd, whiteSpace: 'nowrap' }}>{won(grand)}</td>
+                <td style={{ padding: '9px 10px', textAlign: 'right', color: C.pkd, whiteSpace: 'nowrap' }}>
+                  {won(shown.reduce((a, k) => a + k.total, 0))}
+                </td>
                 <td />
               </tr>
             </tfoot>
@@ -5291,7 +5295,7 @@ function StudentModal({ student, staff, defaultMain, onClose, onSave, onRemove, 
             ))}
           </select>
         </Field>
-        {status !== '재원' && student && (
+        {status !== '재원' && student && status !== student.status && (
           <Field label={`${status} 시작일 — 이 날부터 수업이 없어집니다`}>
             <input
               type="date"
@@ -5371,6 +5375,8 @@ const PLAN_DOW = ['일', '월', '화', '수', '목', '금', '토']
 
 // 그 달에만 있는 일 — 휴무일과 외부 일정
 function MonthOnlyCard({ ym, leaves, outside, staff, busy, onAddLeave, onRemoveLeave, onAddOutside, onRemoveOutside, onEditOutside }) {
+  // 날짜는 이 달 안에서만 고릅니다 (다른 달로 넣으면 이 목록에 안 보여서)
+  const ymEnd = `${ym}-${String(new Date(Number(ym.slice(0, 4)), Number(ym.slice(5, 7)), 0).getDate()).padStart(2, '0')}`
   const [open, setOpen] = useState(null) // 'leave' | 'out' | null
   const [editId, setEditId] = useState(null) // 고치는 중인 외부 일정 (없으면 새로 등록)
   const [d, setD] = useState('')
@@ -5390,6 +5396,8 @@ function MonthOnlyCard({ ym, leaves, outside, staff, busy, onAddLeave, onRemoveL
     setD('')
     setLabel('')
     setMemo('')
+    setStaffId('')
+    setMode('취소')
     setEditId(null)
     setOpen(null)
   }
@@ -5428,7 +5436,7 @@ function MonthOnlyCard({ ym, leaves, outside, staff, busy, onAddLeave, onRemoveL
           <div style={{ marginTop: 11, display: 'flex', gap: 7, flexWrap: 'wrap', alignItems: 'flex-end' }}>
             <label style={{ fontSize: 12, color: C.sub }}>
               날짜
-              <input type="date" value={d} min={ym + '-01'} onChange={(e) => setD(e.target.value)} style={{ ...planSel, width: 150, marginTop: 4 }} />
+              <input type="date" value={d} min={ym + '-01'} max={ymEnd} onChange={(e) => setD(e.target.value)} style={{ ...planSel, width: 150, marginTop: 4 }} />
             </label>
             <label style={{ fontSize: 12, color: C.sub, flex: 1, minWidth: 140 }}>
               이름
@@ -5453,7 +5461,7 @@ function MonthOnlyCard({ ym, leaves, outside, staff, busy, onAddLeave, onRemoveL
             </label>
             <Btn
               variant="primary"
-              disabled={busy || !d || !label.trim()}
+              disabled={busy || !d || d.slice(0, 7) !== ym || !label.trim()}
               onClick={() => {
                 onAddLeave({ d, label: label.trim(), staffId: staffId || null, mode })
                 reset()
@@ -5472,7 +5480,7 @@ function MonthOnlyCard({ ym, leaves, outside, staff, busy, onAddLeave, onRemoveL
             )}
             <label style={{ fontSize: 12, color: C.sub }}>
               날짜
-              <input type="date" value={d} min={ym + '-01'} onChange={(e) => setD(e.target.value)} style={{ ...planSel, width: 150, marginTop: 4 }} />
+              <input type="date" value={d} min={ym + '-01'} max={ymEnd} onChange={(e) => setD(e.target.value)} style={{ ...planSel, width: 150, marginTop: 4 }} />
             </label>
             <label style={{ fontSize: 12, color: C.sub }}>
               시작
@@ -5492,7 +5500,7 @@ function MonthOnlyCard({ ym, leaves, outside, staff, busy, onAddLeave, onRemoveL
             </label>
             <Btn
               variant="primary"
-              disabled={busy || !d || !label.trim()}
+              disabled={busy || !d || d.slice(0, 7) !== ym || !label.trim()}
               onClick={() => {
                 const v = { d, start_time: st, end_time: en, label: label.trim(), memo: memo.trim() }
                 if (editId) onEditOutside(editId, v)
@@ -7319,7 +7327,10 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
     }
   }, [snapKey])
   const useImgs = mode === 'grid' && imgs && imgs.length > 0
-  const printNow = () => printAs(`${ym.replace('-', '년 ')}월 ${onlyTeacher ? onlyTeacher + ' 선생님 ' : ''}시간표`)
+  const printNow = () => {
+    const one = mode === 'grid' && shown.length === 1 ? shown[0].name : null
+    printAs(`${ym.replace('-', '년 ')}월 ${one ? one + ' 선생님 ' : mode === 'all' ? '전체 ' : ''}시간표`)
+  }
 
   // 카톡으로 보내실 수 있게 이미지(PNG)로 저장 — 여러 장이면 압축파일(zip)
   //   선생님별: 인쇄용으로 미리 만들어 둔 그림을 그대로 저장 (인쇄와 똑같은 모양)
@@ -8080,8 +8091,13 @@ function AddSessionModal({ students, staff, programs, absent, preset = null, pai
     return pairs.find((x) => x.staff_id === staffId && x.student_id === studentId && x.weekday === wd) || null
   }, [linked, studentId, staffId, date, pairs])
 
+  // 1분마다 시간표를 다시 불러와도 원장님이 고친 시간·프로그램을 덮지 않게, 날짜·아이·선생님이 바뀔 때만 채웁니다
+  const filledFor = useRef('')
   useEffect(() => {
     if (!regular) return
+    const fk = `${staffId}|${studentId}|${date}`
+    if (filledFor.current === fk) return
+    filledFor.current = fk
     if (regular.program_code) setPcode(regular.program_code)
     if (regular.start_time) setStart(hhmm(regular.start_time))
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -8231,7 +8247,7 @@ function AddSessionModal({ students, staff, programs, absent, preset = null, pai
         <div style={{ display: 'flex', gap: 7, marginTop: 4 }}>
           <Btn
             variant="primary"
-            disabled={busy || !date || !start || !end || start < '07:00' || (!linked && !studentId)}
+            disabled={busy || !date || !start || !end || start < '07:00' || (!linked && !studentId) || (linked && typed !== '' && Number(typed) > leftMin)}
             onClick={() =>
               onSave({
                 student_id: linked ? absent.student_id : studentId,
@@ -10329,10 +10345,11 @@ function App() {
     }
     setBusy(false)
   }
-  const doUndoCarry = async (id) => {
+  const doUndoCarry = async (p) => {
     setBusy(true)
     try {
-      const msg = await undoCancelCarry(id)
+      const msg = await undoCancelCarry(p.id)
+      await tellTeacher(p, 'uncancel')
       say(msg || '되돌렸습니다')
       await reloadAfterAction()
       setPick(null)
@@ -10437,7 +10454,13 @@ function App() {
   /* ---- 로그인 화면 ---- */
   if (!hasKey) return <SetupNeeded />
   if (session === undefined) return <Loading />
-  if (!session) return <Login onDone={() => {}} say={say} />
+  if (!session)
+    return (
+      <>
+        <Login onDone={() => {}} say={say} />
+        <Toast msg={toast?.msg} tone={toast?.tone} />
+      </>
+    )
 
   // 선생님 계정인데 직원 명단과 연결이 안 됐거나 계정 정보를 못 불러온 경우 — 빈 화면 대신 안내
   if (!isAdmin && !me && meState !== 'loading') {
@@ -10617,6 +10640,7 @@ function App() {
                 <button
                   key={it.k}
                   onClick={() => {
+                    if (!okToDropPlan()) return
                     it.go()
                     if (phoneW) setPhoneNav(false)
                   }}
@@ -10744,7 +10768,7 @@ function App() {
             {subTabs.map((t) => (
               <button
                 key={t.k}
-                onClick={t.go}
+                onClick={() => (t.k === 'plan' || okToDropPlan()) && t.go()}
                 style={{
                   border: 'none', cursor: 'pointer', padding: '7px 15px', borderRadius: 99, fontSize: 13.5,
                   fontWeight: t.on ? 800 : 600, background: t.on ? C.ink : '#F0F1F3', color: t.on ? '#fff' : C.sub,
@@ -10764,7 +10788,7 @@ function App() {
         {!loading && isAdmin && tab !== 'home' && adminTodo > 0 && (
           <button
             className="no-print"
-            onClick={() => setTab('home')}
+            onClick={() => okToDropPlan() && setTab('home')}
             style={{
               width: '100%', display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', textAlign: 'left',
               border: '1px solid #F0D29A', background: '#FFF8EC', borderRadius: 10, padding: '8px 13px',
@@ -11290,7 +11314,8 @@ function App() {
               const cnt = (st) => list.filter((x) => x.status === st).length
               // '수업'은 정규 수업만 (보강은 옆 '보강'에 따로 셈)
               const lessons = list.filter((x) => x.status !== '취소' && x.status !== '결강' && x.status !== '보강').length
-              const um = filter ? unmadeUp.filter((u) => u.staff_name === filter).length : unmadeUp.length
+              // 미보강도 이번 주(그날) 결강 가운데 아직 보강이 안 잡힌 것만
+              const um = list.filter((x) => x.status === '결강' && x.needs_makeup).length
               const pill = (bg, fg, t, onClick) => (
                 <span
                   onClick={onClick}
@@ -11392,6 +11417,7 @@ function App() {
 
         {!loading && tab === 'billing' && billGroup !== 'staff' && isAdmin && (
           <>
+            {billGroup !== 'copay' && (
             <div className="no-print" style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 12, flexWrap: 'wrap' }}>
               <Btn onClick={() => setYm(shiftYm(ym, -1))} style={{ padding: '6px 11px' }}>
                 ←
@@ -11407,15 +11433,8 @@ function App() {
                   이번 달
                 </Btn>
               )}
-              <Btn disabled={busy} onClick={doGenerate} style={{ marginLeft: 6 }}>
-                회차 다시 만들기
-              </Btn>
-              {billing.length === 0 && !busy && (
-                <span style={{ fontSize: 12.5, color: C.danger, fontWeight: 600 }}>
-                  이 달 수업이 없습니다
-                </span>
-              )}
             </div>
+            )}
             <BillingView
               ym={ym}
               unmadeAll={unmadeUp}
@@ -11705,11 +11724,11 @@ function App() {
         {!loading && tab === 'plan' && isAdmin && (
           <>
             <div className="no-print" style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 12 }}>
-              <Btn onClick={() => setYm(shiftYm(ym, -1))} style={{ padding: '6px 11px' }}>←</Btn>
+              <Btn onClick={() => okToDropPlan() && setYm(shiftYm(ym, -1))} style={{ padding: '6px 11px' }}>←</Btn>
               <div style={{ fontSize: 15, fontWeight: 700, minWidth: 96, textAlign: 'center' }}>
                 {shiftYm(ym, 1).replace('-', '년 ')}월
               </div>
-              <Btn onClick={() => setYm(shiftYm(ym, 1))} style={{ padding: '6px 11px' }}>→</Btn>
+              <Btn onClick={() => okToDropPlan() && setYm(shiftYm(ym, 1))} style={{ padding: '6px 11px' }}>→</Btn>
             </div>
             <PlanView
               key={shiftYm(ym, 1) + ':' + planReload}
@@ -11987,7 +12006,7 @@ function App() {
                     <div style={{ fontSize: 12.5, color: C.sub, lineHeight: 1.6, marginBottom: 8 }}>
                       영수증 발행 뒤 취소한 수업입니다. 수강료는 다음 영수증에서 차감돼요.
                     </div>
-                    <Btn disabled={busy} onClick={() => doUndoCarry(pick.id)} style={{ width: '100%', padding: '11px 0', fontSize: 14 }}>
+                    <Btn disabled={busy} onClick={() => doUndoCarry(pick)} style={{ width: '100%', padding: '11px 0', fontSize: 14 }}>
                       취소 되돌리기
                     </Btn>
                   </div>
