@@ -8311,7 +8311,7 @@ function PayPrint({ ym, rows, teachersOf, rank, loadMonthDeposits, onClose }) {
     )
     // 이 달에 받은 돈보다 충당된 돈이 많으면, 그 차이는 다른 달에 받은 돈(선입금 또는 늦게 낸 돈)에서 채워진 것
     const thisMonth = list.filter((d) => d.amount > 0).reduce((a, d) => a + d.amount, 0)
-    if (r.allocated > thisMonth) parts.push(`다른 달 입금에서 ${won(r.allocated - thisMonth)} 충당`)
+    if (r.allocated > thisMonth) parts.push(`선입금 사용 ${won(r.allocated - thisMonth)}`)
     return parts.join(' · ')
   }
 
@@ -8371,7 +8371,7 @@ function PayPrint({ ym, rows, teachersOf, rank, loadMonthDeposits, onClose }) {
         <div className="pp-sub">검단ABA언어행동연구소 · {today} 인쇄 · 모든 아동 (빨간 줄 = 미수)</div>
         <div className="pp-sum">
           <div>이 달 청구<b>{won(tot.b)}원</b></div>
-          <div>받은 돈(충당)<b>{won(tot.a)}원</b></div>
+          <div>받은 돈(선입금 포함)<b>{won(tot.a)}원</b></div>
           <div>미수 {unpaidN}명<b className="red">{won(tot.u)}원</b></div>
           <div>아동 수<b>{rows.length}명</b></div>
         </div>
