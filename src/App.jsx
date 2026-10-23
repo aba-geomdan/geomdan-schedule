@@ -3190,7 +3190,7 @@ function YearPrint({ year, rows, onClose }) {
       <div className="yp-bar" style={{ position: 'sticky', top: 0, background: '#fff', borderBottom: `1px solid ${C.line}`, padding: '12px 16px', display: 'flex', gap: 8, alignItems: 'center' }}>
         <div style={{ fontSize: 15, fontWeight: 700 }}>{year}년 급여 합계 인쇄</div>
         <Btn onClick={onClose} style={{ marginLeft: 'auto' }}>닫기</Btn>
-        <Btn variant="primary" onClick={() => window.print()}>인쇄</Btn>
+        <Btn variant="primary" onClick={() => printAs(`${year}년 급여 합계`)}>인쇄</Btn>
       </div>
       <div className="yp-sheet">
         <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>검단ABA언어행동연구소 {year}년 급여 합계</div>
@@ -3854,12 +3854,12 @@ function CertificatePrint({ name, kidKey, year, rows: yearRows, loadCopay, say, 
 
   const doPrint = () => {
     document.activeElement && document.activeElement.blur && document.activeElement.blur()
-    setTimeout(() => window.print(), 50)
+    setTimeout(() => printAs(`${name} 교육비 납입 증명서`), 50)
   }
   const savePdf = () => {
     say && say("인쇄 창에서 프린터(대상)를 'PDF로 저장'으로 고르세요")
     document.activeElement && document.activeElement.blur && document.activeElement.blur()
-    setTimeout(() => window.print(), 400)
+    setTimeout(() => printAs(`${name} 교육비 납입 증명서`), 400)
   }
 
   const chip = (k, label) => (
@@ -4075,7 +4075,7 @@ function CopayYearPrint({ year, kids, months, rows, onClose }) {
       <div className="cyp-bar" style={{ position: 'sticky', top: 0, background: '#fff', borderBottom: `1px solid ${C.line}`, padding: '10px 14px', display: 'flex', gap: 8, alignItems: 'center' }}>
         <div style={{ fontSize: 15, fontWeight: 700 }}>{year}년 본인부담금 기록 인쇄</div>
         <Btn onClick={onClose} style={{ marginLeft: 'auto' }}>닫기</Btn>
-        <Btn variant="primary" onClick={() => window.print()}>인쇄</Btn>
+        <Btn variant="primary" onClick={() => printAs(`${year}년 본인부담금 기록`)}>인쇄</Btn>
       </div>
       <div className="cyp-sheet">
         <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>({year}년) 본인 부담금 확인 기록지</div>
@@ -4767,14 +4767,19 @@ function ReceiptModal({ ym, student, receipt, extra, extrasErr = false, onClose,
     <div className="rcpt-root">
       <style>{`
         @media print {
-          @page { size: A4 portrait; margin: 12mm; }
+          @page { size: A4 portrait; margin: 0; }
           html, body { height: auto !important; overflow: visible !important; background: #fff !important; }
           body > *:not(.rcpt-root) { display: none !important; }
-          .rcpt-root > div { position: static !important; background: #fff !important; padding: 0 !important; display: block !important; overflow: visible !important; }
-          .rcpt-root > div > div { max-width: 150mm !important; margin: 0 auto !important; border-radius: 0 !important; }
-          .rcpt-root .no-print { display: none !important; }
+          /* 화면의 영수증 창 대신, 한꺼번에 인쇄와 같은 모양(로고 · 도장)으로 찍습니다 */
+          .rcpt-root > *:not(.rcpt-print) { display: none !important; }
+          .rcpt-print { display: block !important; }
+          .rcpt-print .receipt-page { width: 100%; height: 289mm; overflow: hidden; margin: 0; border: none; box-sizing: border-box; background: #fff; }
         }
+        .rcpt-print { display: none; }
       `}</style>
+      <div className="rcpt-print">
+        <Sheet ym={ym} s={student} stamp adjustment={Number(amount) || 0} reason={reason} x={extra} />
+      </div>
     <Modal onClose={onClose} max={430}>
       <div style={{ padding: '24px 26px 18px', textAlign: 'center', borderBottom: `2px solid ${C.pk}` }}>
         <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: '0.06em', color: C.pkd }}>
@@ -4972,7 +4977,7 @@ function ReceiptModal({ ym, student, receipt, extra, extrasErr = false, onClose,
                 if (!onSaveAdjust || !(await onSaveAdjust(student.id, Number(amount) || 0, reason))) return
                 await new Promise((r) => setTimeout(r, 0)) // 다시 불러온 값이 화면에 반영된 뒤 인쇄
               }
-              window.print()
+              printAs(`${ym.replace('-', '년 ')}월 ${student.label || student.name} 영수증`)
             }}
             style={{ flex: 1 }}
           >
@@ -7314,7 +7319,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
     }
   }, [snapKey])
   const useImgs = mode === 'grid' && imgs && imgs.length > 0
-  const printNow = () => window.print()
+  const printNow = () => printAs(`${ym.replace('-', '년 ')}월 ${onlyTeacher ? onlyTeacher + ' 선생님 ' : ''}시간표`)
 
   // 카톡으로 보내실 수 있게 이미지(PNG)로 저장 — 여러 장이면 압축파일(zip)
   //   선생님별: 인쇄용으로 미리 만들어 둔 그림을 그대로 저장 (인쇄와 똑같은 모양)
@@ -8361,7 +8366,7 @@ function PayPrint({ ym, rows, teachersOf, rank, loadMonthDeposits, onClose }) {
         <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6 }}>
           <Btn onClick={onClose}>닫기</Btn>
           {deps === 'err' && <span style={{ fontSize: 12.5, color: C.danger }}>입금 내역을 불러오지 못했습니다. 닫고 다시 열어 주세요</span>}
-          <Btn variant="primary" disabled={!Array.isArray(deps)} onClick={() => window.print()}>
+          <Btn variant="primary" disabled={!Array.isArray(deps)} onClick={() => printAs(`${ym.replace('-', '년 ')}월 입금 내역`)}>
             {deps === null ? '불러오는 중…' : '인쇄'}
           </Btn>
         </span>
@@ -9284,6 +9289,23 @@ function HistoryModal({ row, onClose, onRemove, loadHistory, busy }) {
 const STAMP_URL = import.meta.env.BASE_URL + 'stamp.png'
 const LOGO_URL = import.meta.env.BASE_URL + 'logo.png'
 
+// 인쇄 · PDF 저장할 때 파일 이름이 되는 제목을 잠깐 바꿨다가 인쇄 창을 닫으면 되돌립니다
+// (그대로 두면 PDF가 모두 같은 이름으로 저장됨)
+let baseTitle = null
+function printAs(title) {
+  // 앞 인쇄에서 되돌리지 못했어도(인쇄 창 닫힘 신호가 안 오는 기기) 원래 제목으로 돌아가게 처음 제목을 기억
+  if (baseTitle === null) baseTitle = document.title
+  const old = baseTitle
+  const name = String(title || '').replace(/[\\/:*?"<>|]/g, ' ').replace(/\s+/g, ' ').trim()
+  if (name) document.title = name
+  const back = () => {
+    document.title = old
+    window.removeEventListener('afterprint', back)
+  }
+  window.addEventListener('afterprint', back)
+  window.print()
+}
+
 function Stamp({ size = 40 }) {
   // stamp.png 를 못 불러오면 깨진 그림 대신 그려 둔 도장을 씁니다
   const [broken, setBroken] = useState(false)
@@ -9627,7 +9649,17 @@ function PrintAll({ ym, students, receipts, extras = [], extrasErr = false, onCl
                     : `${students.length}장 압축 저장`}
               </Btn>
             ) : (
-              <Btn variant="primary" disabled={extrasErr} onClick={() => window.print()}>
+              <Btn
+                variant="primary"
+                disabled={extrasErr}
+                onClick={() =>
+                  printAs(
+                    students.length === 1
+                      ? `${ym.replace('-', '년 ')}월 ${students[0].label || students[0].name} 영수증`
+                      : `${ym.replace('-', '년 ')}월 영수증 ${students.length}명${mode === 'three' ? ' (3등분)' : ''}`
+                  )
+                }
+              >
                 인쇄 / PDF 저장
               </Btn>
             )}
