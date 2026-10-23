@@ -7505,12 +7505,13 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
 const ADD_DOW = ['일', '월', '화', '수', '목', '금', '토']
 
 /* ================= 보강 (선생님별 → 달별) ================= */
-function MakeupLog({ rows, staffOrder = [], ownerName, toneOf, busy, isAdmin, unmade = [], onMakeup, onAdd, onFix }) {
+let makeupTabMemo = 'todo' // 보강 화면에서 마지막으로 본 탭 (이 창에서만 기억)
+
+function MakeupLog({ rows, staffOrder = [], activeNames = [], ownerName, toneOf, busy, isAdmin, unmade = [], onMakeup, onAdd, onFix }) {
   const rank = (n) => (n === ownerName ? -1 : staffOrder.indexOf(n) < 0 ? 99 : staffOrder.indexOf(n))
   const md = (d) => (d ? d.slice(5).replace('-', '/') : '')
   const hm2 = (t) => clock(t)
   const canBook = useMemo(() => new Set(unmade.map((x) => x.id)), [unmade])
-  const [open, setOpen] = useState({})   // 보강 끝난 것은 접어 둡니다
   // 1분마다 다시 그려서, 보강 시작 시각이 지나면 '예정'에서 '끝'으로 넘어가게
   const [, setTick] = useState(0)
   useEffect(() => {
@@ -7522,165 +7523,149 @@ function MakeupLog({ rows, staffOrder = [], ownerName, toneOf, busy, isAdmin, un
   const nowHm = `${String(new Date().getHours()).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')}`
   const isPlanned = (r) => !!r.makeup_d && (r.makeup_d > nowIso || (r.makeup_d === nowIso && hhmm(r.makeup_start) > nowHm))
 
-  const row = (r, isTodo) => (
-    <div
-      key={r.absent_id}
-      style={{
-        display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
-        padding: '9px 14px', borderBottom: `1px solid ${C.line2}`, fontSize: 13,
-        background: isTodo ? '#fff' : '#FCFCFD',
-      }}
-    >
-      <div style={{ fontWeight: 700, minWidth: 64 }}>{r.student_name}</div>
-      <div style={{ color: C.sub, minWidth: 108, fontSize: 12 }}>{r.program_label}</div>
-      <div style={{ color: isTodo ? C.danger : C.sub, whiteSpace: 'nowrap' }}>
-        {r.absent_d.slice(2).replace(/-/g, '/')} {hm2(r.absent_start)} 결강
-      </div>
-      <div style={{ color: C.mut }}>→</div>
-      {r.makeup_d ? (
-        <div style={{ fontWeight: 700, color: isPlanned(r) ? '#254B8C' : '#1F5B3A', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: 6 }}>
-          {r.makeup_d.slice(2).replace(/-/g, '/')} {hm2(r.makeup_start)} 보강
-          {isPlanned(r) && <Pill tone="blue">예정</Pill>}
-        </div>
-      ) : (
-        <Pill tone="pink">아직</Pill>
-      )}
-      {r.by_other && (
-        <span style={{ fontSize: 11.5, color: C.sub, background: '#F2F3F5', borderRadius: 99, padding: '2px 8px' }}>
-          {r.makeup_staff} 선생님이 함
-        </span>
-      )}
-      {!r.makeup_d && r.made_min > 0 && (
-        <span style={{ fontSize: 12, color: '#8A5A00', background: '#FEF6E7', borderRadius: 99, padding: '2px 9px', whiteSpace: 'nowrap' }}>
-          나눠 보강 중 · {r.parts} · 남은 {Math.max((r.absent_min || 0) - r.made_min, 0)}분
-        </span>
-      )}
+  // 탭: 'todo' 잡아야 함 · 'plan' 예정 · 'done' 끝 — 보강을 잡거나 고친 뒤 화면을 다시 불러와도 보던 탭 그대로
+  const [stTab, setStTabRaw] = useState(() => makeupTabMemo)
+  const setStTab = (k) => {
+    makeupTabMemo = k
+    setStTabRaw(k)
+  }
+  const narrowMk = useNarrow(760)               // 휴대폰처럼 좁으면 선생님 칸을 위아래로
+  const W7 = ['일', '월', '화', '수', '목', '금', '토']
+  const dlabel = (iso) => `${Number(iso.slice(5, 7))}/${Number(iso.slice(8))}(${W7[new Date(iso + 'T00:00:00').getDay()]})`
+  const tone = (n) => (toneOf ? toneOf(n) : { bg: '#F2F3F5', fg: C.sub })
+
+  const allTodo = rows.filter((r) => !r.makeup_d).length
+  const allPlan = rows.filter((r) => isPlanned(r)).length
+  const allDone = rows.filter((r) => r.makeup_d).length - allPlan
+
+  const buttons = (r) => (
+    <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
       {!r.makeup_d && isAdmin && canBook.has(r.absent_id) && (
-        <Btn
-          variant="primary"
-          disabled={busy}
-          onClick={() => onMakeup(r)}
-          style={{ marginLeft: 'auto', padding: '5px 12px', fontSize: 12 }}
-        >
+        <Btn variant="primary" disabled={busy} onClick={() => onMakeup(r)} style={{ padding: '5px 12px', fontSize: 12, whiteSpace: 'nowrap' }}>
           보강 잡기
         </Btn>
       )}
-      {/* 잡아 둔 보강 고치기 (다른 날로 옮기기 · 지우기) — 출결·달력으로 가지 않고 여기서 */}
+      {/* 잡아 둔 보강 고치기 (다른 날로 옮기기 · 지우기) */}
       {isAdmin && onFix && (r.makeup_d || r.made_min > 0) && (
-        <Btn
-          disabled={busy}
-          onClick={() => onFix(r)}
-          style={{ marginLeft: !r.makeup_d && canBook.has(r.absent_id) ? 0 : 'auto', padding: '5px 12px', fontSize: 12 }}
-        >
+        <Btn disabled={busy} onClick={() => onFix(r)} style={{ padding: '5px 12px', fontSize: 12, whiteSpace: 'nowrap' }}>
           고치기
         </Btn>
       )}
-    </div>
+    </span>
   )
+  const partBadge = (r) =>
+    !r.makeup_d && r.made_min > 0 && (
+      <span style={{ fontSize: 11.5, color: '#8A5A00', background: '#FEF6E7', borderRadius: 99, padding: '2px 8px', whiteSpace: 'nowrap' }}>
+        나눠 보강 중 · 남은 {Math.max((r.absent_min || 0) - r.made_min, 0)}분
+      </span>
+    )
 
-  const staffs = useMemo(() => {
-    const m = {}
-    rows.forEach((r) => {
-      if (!m[r.staff_name]) m[r.staff_name] = []
-      m[r.staff_name].push(r)
-    })
-    return Object.entries(m)
-      .sort((a, b) => rank(a[0]) - rank(b[0]))
-      .map(([name, items]) => ({
-        name,
-        total: items.length,
-        // 아직 안 한 것은 오래된 결강부터, 보강 끝난 것은 최근 보강부터
-        todos: items.filter((r) => !r.makeup_d).sort((a, b) => a.absent_d.localeCompare(b.absent_d)),
-        // 보강 예정: 가까운 날짜부터 · 보강 끝: 최근 보강부터
-        plans: items.filter((r) => isPlanned(r)).sort((a, b) => (a.makeup_d + hhmm(a.makeup_start)).localeCompare(b.makeup_d + hhmm(b.makeup_start))),
-        dones: items.filter((r) => r.makeup_d && !isPlanned(r)).sort((a, b) => b.makeup_d.localeCompare(a.makeup_d)),
-      }))
-  }, [rows, staffOrder, ownerName, nowIso, nowHm])
-
-  const planned = rows.filter((r) => isPlanned(r)).length
-  const done = rows.filter((r) => r.makeup_d).length - planned
-  const todo = rows.filter((r) => !r.makeup_d).length
-
-  return (
-    <div>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
-        <div style={{ fontSize: 15, fontWeight: 700 }}>보강</div>
-        <span style={{ fontSize: 12.5, color: C.sub }}>
-          결강한 수업과 보강 날짜입니다. 보강은 결강 줄의 <b>보강 잡기</b>로 넣으세요.
-        </span>
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 14, alignItems: 'center', whiteSpace: 'nowrap' }}>
-          <span style={{ fontSize: 13, color: C.sub }}>
-            결강 <b style={{ fontSize: 15, color: C.ink }}>{rows.length}</b>건
-          </span>
-          <span style={{ fontSize: 13, color: C.sub }}>
-            보강 예정 <b style={{ fontSize: 15, color: planned ? '#254B8C' : C.mut }}>{planned}</b>건
-          </span>
-          <span style={{ fontSize: 13, color: C.sub }}>
-            보강 끝 <b style={{ fontSize: 15, color: '#1F5B3A' }}>{done}</b>건
-          </span>
-          <span style={{ fontSize: 13, color: C.sub }}>
-            아직 <b style={{ fontSize: 15, color: todo ? C.danger : C.mut }}>{todo}</b>건
-          </span>
-        </div>
-      </div>
-
-      {rows.length === 0 ? (
+  if (rows.length === 0)
+    return (
+      <div>
+        <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 12 }}>보강</div>
         <Empty>결강 기록이 없습니다.</Empty>
-      ) : (
-        staffs.map((g) => (
-          <Card key={g.name} style={{ marginBottom: 12, overflow: 'hidden' }}>
-            <div
-              style={{
-                padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10,
-                background: toneOf ? toneOf(g.name).bg : '#F7F8F9',
-                color: toneOf ? toneOf(g.name).fg : C.ink,
-                borderBottom: `1px solid ${C.line2}`,
-              }}
-            >
-              <div style={{ fontSize: 14, fontWeight: 700 }}>{g.name} 선생님</div>
-              <span style={{ fontSize: 12, opacity: 0.85 }}>결강 {g.total}건</span>
-              {g.todos.length > 0 ? (
-                <Pill tone="pink">아직 {g.todos.length}건</Pill>
-              ) : g.plans.length === 0 ? (
-                <Pill tone="green">모두 보강함</Pill>
-              ) : null}
-              {g.plans.length > 0 && <Pill tone="blue">예정 {g.plans.length}건</Pill>}
-            </div>
+      </div>
+    )
 
-            {g.todos.map((r) => row(r, true))}
-            {g.todos.length === 0 && g.plans.length === 0 && (
-              <div style={{ padding: '10px 14px', fontSize: 12.5, color: C.sub }}>보강할 수업이 없습니다.</div>
-            )}
-            {g.plans.length > 0 && (
-              <>
-                <div style={{ padding: '7px 14px', fontSize: 12, fontWeight: 700, color: '#254B8C', background: '#F5F8FE', borderTop: `1px solid ${C.line2}`, borderBottom: `1px solid ${C.line2}` }}>
-                  보강 예정 {g.plans.length}건 <span style={{ fontWeight: 400, color: C.sub, marginLeft: 4 }}>날짜가 지나면 '보강 끝'으로 넘어갑니다</span>
+  // ── 모양 C: 상태는 탭, 탭 안에서는 선생님이 모두 나란히 ──
+  {
+    const pick = stTab === 'todo' ? rows.filter((r) => !r.makeup_d) : stTab === 'plan' ? rows.filter((r) => isPlanned(r)) : rows.filter((r) => r.makeup_d && !isPlanned(r))
+    const sorter =
+      stTab === 'todo'
+        ? (a, b) => (a.absent_d + a.absent_start).localeCompare(b.absent_d + b.absent_start)
+        : stTab === 'plan'
+          ? (a, b) => (a.makeup_d + hhmm(a.makeup_start)).localeCompare(b.makeup_d + hhmm(b.makeup_start))
+          : (a, b) => b.makeup_d.localeCompare(a.makeup_d)
+    // 지금 일하는 선생님은 할 일이 없어도 모두 칸을 보여줌 (+ 그만둔 선생님 기록이 있으면 그 칸도)
+    const names = [...new Set([...activeNames, ...pick.map((r) => r.staff_name)])].sort((a, b) => rank(a) - rank(b))
+    const tabsDef = [
+      ['todo', '보강 잡아야 함', allTodo, '#FDECEF', C.danger],
+      ['plan', '보강 예정', allPlan, '#EEF3FD', '#254B8C'],
+      ['done', '보강 끝', allDone, '#EDF7F1', '#1F5B3A'],
+    ]
+    const cur = tabsDef.find((t) => t[0] === stTab)
+    const mini = (r) => (
+      <div key={r.absent_id} style={{ background: '#fff', border: `1px solid ${C.line}`, borderRadius: 10, padding: '9px 10px', marginBottom: 7 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+          <span style={{ fontSize: 14, fontWeight: 800 }}>{r.student_name}</span>
+          {stTab === 'todo' && (
+            <span style={{ marginLeft: 'auto', fontSize: 11.5, fontWeight: 700, color: daysSince(r.absent_d) >= 14 ? C.danger : C.mut, whiteSpace: 'nowrap' }}>
+              {daysSince(r.absent_d)}일 지남
+            </span>
+          )}
+        </div>
+        <div style={{ fontSize: 12, color: stTab === 'todo' ? C.danger : C.sub, marginTop: 2 }}>
+          {dlabel(r.absent_d)} {clock(r.absent_start)} 결강
+        </div>
+        {r.makeup_d && (
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: stTab === 'plan' ? '#254B8C' : '#1F5B3A', marginTop: 2 }}>
+            → {dlabel(r.makeup_d)} {clock(r.makeup_start)} 보강
+          </div>
+        )}
+        {(partBadge(r) || r.by_other) && (
+          <div style={{ marginTop: 4, display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+            {partBadge(r)}
+            {r.by_other && <span style={{ fontSize: 11.5, color: C.sub }}>{r.makeup_staff} 선생님이 함</span>}
+          </div>
+        )}
+        {isAdmin && (canBook.has(r.absent_id) || r.makeup_d || r.made_min > 0) && (
+          <div style={{ display: 'flex', marginTop: 7 }}>{buttons(r)}</div>
+        )}
+      </div>
+    )
+    return (
+      <div>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 15, fontWeight: 700 }}>보강</div>
+          <span style={{ fontSize: 12.5, color: C.sub }}>보강은 결강 칸의 <b>보강 잡기</b>로 넣고, 잡은 보강은 <b>고치기</b>로 옮기거나 지웁니다.</span>
+        </div>
+        {/* 탭: 숫자가 큰 단추 세 개 */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10, marginBottom: 14 }}>
+          {tabsDef.map(([k, label, n, bg, fg]) => {
+            const on = stTab === k
+            return (
+              <button
+                key={k}
+                onClick={() => setStTab(k)}
+                style={{
+                  background: on ? bg : '#fff', border: `2px solid ${on ? fg : C.line}`, borderRadius: 12, padding: '11px 16px',
+                  display: 'flex', alignItems: 'baseline', gap: 8, cursor: 'pointer', textAlign: 'left',
+                }}
+              >
+                <span style={{ fontSize: 13.5, fontWeight: 800, color: on ? fg : C.sub }}>{label}</span>
+                <span style={{ marginLeft: 'auto', fontSize: 26, fontWeight: 800, color: n ? fg : C.mut }}>{n}</span>
+                <span style={{ fontSize: 13, color: on ? fg : C.sub }}>건</span>
+              </button>
+            )
+          })}
+        </div>
+        {/* 선생님 칸: 모두 나란히 */}
+        <div style={{ display: 'grid', gridTemplateColumns: narrowMk ? '1fr' : `repeat(${Math.max(names.length, 1)}, minmax(0, 1fr))`, gap: 10, alignItems: 'start' }}>
+          {names.map((n) => {
+            const items = pick.filter((r) => r.staff_name === n).sort(sorter)
+            return (
+              <div key={n} style={{ background: tone(n).bg, borderRadius: 12, padding: 9, minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, padding: '2px 3px 8px', color: tone(n).fg }}>
+                  <span style={{ fontSize: 14, fontWeight: 800 }}>{n}</span>
+                  <span style={{ marginLeft: 'auto', fontSize: 13, fontWeight: 800 }}>{items.length}건</span>
                 </div>
-                {g.plans.map((r) => row(r, true))}
-              </>
-            )}
+                {items.length ? (
+                  items.map(mini)
+                ) : (
+                  <div style={{ fontSize: 12.5, color: C.mut, background: '#fff', borderRadius: 10, padding: '10px', textAlign: 'center' }}>
+                    {stTab === 'todo' ? '잡을 보강 없음' : '없음'}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+        {pick.length === 0 && names.length === 0 && <Empty>{cur[1]} 없습니다.</Empty>}
+      </div>
+    )
+  }
 
-            {g.dones.length > 0 && (
-              <>
-                <button
-                  onClick={() => setOpen((o) => ({ ...o, [g.name]: !o[g.name] }))}
-                  style={{
-                    width: '100%', textAlign: 'left', border: 'none', cursor: 'pointer',
-                    background: '#FBFBFC', padding: '9px 14px', fontSize: 12.5, color: C.sub,
-                    borderTop: `1px solid ${C.line2}`,
-                  }}
-                >
-                  <span style={{ color: '#1F5B3A', fontWeight: 700 }}>보강 끝난 것 {g.dones.length}건</span>
-                  <span style={{ marginLeft: 6 }}>{open[g.name] ? '접기 ▴' : '보기 ▾'}</span>
-                </button>
-                {open[g.name] && g.dones.map((r) => row(r, false))}
-              </>
-            )}
-          </Card>
-        ))
-      )}
-    </div>
-  )
 }
 
 // 보강 고치기 창: 한 결강에 잡힌 보강(나눠 보강이면 여러 개)을 보여 주고 다른 날로 옮기거나 지웁니다
@@ -10965,6 +10950,7 @@ function App() {
           <MakeupLog
             rows={makeupLog}
             staffOrder={staff.map((x) => x.name)}
+            activeNames={staff.filter((x) => x.active).map((x) => x.name)}
             ownerName={staff.find((x) => x.role === 'admin')?.name}
             toneOf={toneOf}
             busy={busy}
