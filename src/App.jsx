@@ -9304,7 +9304,8 @@ function Stamp({ size = 40 }) {
 // '민다혜3, 최성현4' → '민다혜T · 최성현T' (회차 수는 횟수 칸에 있으니 이름만)
 function teacherLabel(summary) {
   return (summary || '')
-    .split(',')
+    // 서버가 '김은혜9·전승원4'처럼 쉼표 대신 가운뎃점으로 이어 보내는 경우도 나눕니다
+    .split(/[,·・.\/]/)
     .map((x) => x.trim().replace(/\s*\d+$/, ''))
     .filter(Boolean)
     .map((n) => n + ' 선생님')
