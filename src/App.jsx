@@ -127,6 +127,11 @@ const koError = (raw) => {
   if (/too many requests|rate limit/i.test(m)) return '요청이 너무 많습니다. 잠시 뒤 다시 해 주세요'
   if (/permission denied|row-level security|not allowed|forbidden/i.test(m)) return '이 작업을 할 권한이 없습니다'
   if (/^internal server error|status of 5\d\d/i.test(m)) return '서버에 문제가 생겼습니다. 잠시 뒤 다시 해 주세요'
+  // 일부 수업 기능은 partial_lesson.sql 을 Supabase에서 먼저 실행해야 합니다
+  if (/(mark_partial|report_partial)/i.test(m) && /could not find|does not exist|schema cache/i.test(m))
+    return '일부 수업 기능이 DB에 아직 없습니다. Supabase SQL Editor에서 partial_lesson.sql 을 먼저 실행해 주세요'
+  if (/refund_with_cancel/i.test(m) && /could not find|does not exist|schema cache/i.test(m))
+    return '환불 + 수업 취소 기능이 DB에 아직 없습니다. Supabase SQL Editor에서 refund_cancel.sql 을 먼저 실행해 주세요'
   return m
 }
 
@@ -378,6 +383,21 @@ async function addRefund(studentId, { amount, date, method, memo }) {
   return ok(
     await supabase.rpc('add_refund', {
       p_student: studentId, p_amount: amount,
+      p_date: date, p_method: method ?? null, p_memo: memo ?? null,
+    })
+  )
+}
+
+// 환불할 때 빠지는 수업 같이 취소 — refund_cancel.sql 을 실행해야 동작합니다
+//   SQL 실행 전이면 null (환불 창은 예전처럼 돈만 환불)
+async function loadRefundLessons(studentId, ym) {
+  const { data, error } = await supabase.rpc('refund_lessons', { p_student: studentId, p_ym: ym })
+  return error ? null : data || []
+}
+async function refundWithCancel(studentId, ym, sessionIds, { amount, date, method, memo }) {
+  return ok(
+    await supabase.rpc('refund_with_cancel', {
+      p_student: studentId, p_ym: ym, p_sessions: sessionIds, p_amount: amount,
       p_date: date, p_method: method ?? null, p_memo: memo ?? null,
     })
   )
@@ -693,6 +713,13 @@ async function notifyStaff(to, kind, message, sessionRef, payload) {
     p_session: sessionRef == null ? null : String(sessionRef), p_payload: payload ?? null,
   }))
 }
+// 일부 수업 (100분 중 80분만 한 날 등) — partial_lesson.sql 을 실행해야 동작합니다
+async function markPartial(sessionId, doneMin, noticeId) {
+  return ok(await supabase.rpc('mark_partial', { p_session: sessionId, p_done: doneMin, p_notice: noticeId ?? null }))
+}
+async function reportPartial(sessionRef, doneMin, message, payload) {
+  return ok(await supabase.rpc('report_partial', { p_session: String(sessionRef), p_done: doneMin, p_message: message, p_payload: payload ?? null }))
+}
 async function reportMakeup(sessionRef, message, payload) {
   return ok(await supabase.rpc('report_makeup', { p_session: String(sessionRef), p_message: message, p_payload: payload ?? null }))
 }
@@ -990,6 +1017,22 @@ const HOLIDAY = {
 const MAKEUP = '#E07B00'
 // 결강 딱지 · 테두리 색 (보강 주황과 짝이 되게 빨강)
 const ABSENT = '#D6455F'
+// 일부 수업 (아이가 아파서 100분 중 80분만 한 날 등) — 상태는 '결강' 그대로 + 실제로 한 분(done_min)
+//   칸을 둘로 나눠 그림: 수업한 앞부분은 '수업함' 초록, 못 한 뒷부분은 결강 빨간 빗금
+const isPartial = (s) => !!s && s.status === '결강' && Number(s.done_min) > 0
+const partialPct = (s) => {
+  const o = (s && s._orig) || s
+  const tot = toMin(o.end_time) - toMin(o.start_time)
+  return tot > 0 ? Math.min(100, Math.max(0, Math.round((Number(s.done_min) / tot) * 100))) : 0
+}
+const PARTIAL_DONE = '#EDF7F1'
+const ABSENT_HATCH = 'repeating-linear-gradient(135deg, #FDE3E0 0, #FDE3E0 5px, #fff 5px, #fff 10px)'
+// dir: 'down' = 시간이 위→아래로 흐르는 칸, 'right' = 왼쪽→오른쪽
+const partialBg = (s, dir = 'down', done = PARTIAL_DONE) =>
+  `linear-gradient(${dir === 'right' ? '90deg' : '180deg'}, ${done} 0, ${done} ${partialPct(s)}%, ${ABSENT} ${partialPct(s)}%, ${ABSENT} calc(${partialPct(s)}% + 1px), transparent calc(${partialPct(s)}% + 1px)), ${ABSENT_HATCH}`
+// '일부' 딱지 — 흰 바탕 · 빨간 테두리 (결강 딱지는 빨간 바탕)
+const PARTIAL_TAG = { background: '#fff', color: ABSENT, boxShadow: `inset 0 0 0 1px ${ABSENT}` }
+const partialText = (s) => `일부 ${Number(s.done_min)}분`
 // 원장 외부 일정 — 수업(연한 색)과 확실히 다르게 진한 회색
 // 외부 일정: 눈에 덜 띄게 연한 회색 (수업 · 결강 · 보강이 먼저 보이도록)
 const OUTSIDE = { bg: '#F1F2F4', bd: '#D9DCE1', fg: '#4B5563', tag: '#8A919C' }
@@ -1114,7 +1157,8 @@ function WeekAgenda({ days, sessions, holidayMap, outByDay, showTeacher, colorOf
                 )
               }
               const s = r.s
-              const off = s.status === '결강' || s.status === '취소'
+              const pt = isPartial(s)
+              const off = (s.status === '결강' && !pt) || s.status === '취소'
               return (
                 <button
                   key={s.id}
@@ -1141,7 +1185,12 @@ function WeekAgenda({ days, sessions, holidayMap, outByDay, showTeacher, colorOf
                     </span>
                   </span>
                   {s.status === '보강' && chip(MAKEUP, '#fff', '보강')}
-                  {s.status === '결강' && chip('#FDECEF', '#AE2340', s.needs_makeup ? '결강 · 미보강' : '결강 · 보강완료')}
+                  {s.status === '결강' && !pt && chip('#FDECEF', '#AE2340', s.needs_makeup ? '결강 · 미보강' : '결강 · 보강완료')}
+                  {pt && (
+                    <span style={{ fontSize: 11, fontWeight: 700, borderRadius: 99, padding: '2px 8px', whiteSpace: 'nowrap', ...PARTIAL_TAG }}>
+                      {partialText(s)}{s.needs_makeup ? ' · 미보강' : ' · 보강완료'}
+                    </span>
+                  )}
                   {s.status === '취소' && chip('#F2F3F5', C.mut, '취소')}
                 </button>
               )
@@ -1164,6 +1213,8 @@ const NOTICE_KIND = {
   uncancel: { label: '되돌림', bg: '#F2F3F5', fg: '#4B5057' },
   cancel: { label: '취소', bg: '#F2F3F5', fg: '#4B5057' },
   report: { label: '보강 체크', bg: MAKEUP, fg: '#fff' },
+  partial: { label: '일부 수업', bg: '#fff', fg: ABSENT, bd: ABSENT }, // 선생님 체크 → 원장님
+  partial_set: { label: '일부 수업', bg: '#fff', fg: ABSENT, bd: ABSENT }, // 원장님이 기록 → 선생님
   close_req: { label: '마감 확인', bg: '#E6F1FB', fg: '#0C447C' },
   close_ans: { label: '마감 답', bg: '#E6F1FB', fg: '#0C447C' },
   closing_ok: { label: '마감 승인', bg: '#EDF7F1', fg: '#1F5B3A' },
@@ -1172,7 +1223,7 @@ const NOTICE_KIND = {
 function NoticeChip({ kind }) {
   const k = NOTICE_KIND[kind] || { label: '알림', bg: '#F2F3F5', fg: '#4B5057' }
   return (
-    <span style={{ fontSize: 11.5, fontWeight: 700, color: k.fg, background: k.bg, borderRadius: 99, padding: '2px 8px', whiteSpace: 'nowrap', flexShrink: 0 }}>
+    <span style={{ fontSize: 11.5, fontWeight: 700, color: k.fg, background: k.bg, borderRadius: 99, padding: '2px 8px', whiteSpace: 'nowrap', flexShrink: 0, boxShadow: k.bd ? `inset 0 0 0 1px ${k.bd}` : undefined }}>
       {k.label}
     </span>
   )
@@ -1285,7 +1336,7 @@ function TeacherCloseList({ ym, rows, snap }) {
                 if (r.status === '결강')
                   return chip(
                     '#FDECEF', '#AE2340',
-                    `${md(r.d)} 결강${Number(r.left_min) > 0 ? ` · 남은 보강 ${r.left_min}분` : ' · 보강함'}`,
+                    `${md(r.d)} ${Number(r.done_min) > 0 ? `일부 ${r.done_min}분` : '결강'}${Number(r.left_min) > 0 ? ` · 남은 보강 ${r.left_min}분` : ' · 보강함'}`,
                     ck
                   )
                 if (r.status === '보강')
@@ -1435,9 +1486,9 @@ function TeacherNotices({ items, onConfirm, busy, title = '원장님이 일정�
 }
 
 // 원장님 화면 맨 위: 선생님이 체크한 보강 + 선생님이 아직 확인 안 한 문구
-function AdminNotices({ reports, closings = [], waiting, nameOf, onBook, onOpenClosing, onConfirm, onDrop, busy }) {
+function AdminNotices({ reports, partials = [], closings = [], waiting, nameOf, onBook, onPartialOk, onOpenClosing, onConfirm, onDrop, busy }) {
   const [openWait, setOpenWait] = useState(false)
-  if (!reports.length && !closings.length && !waiting.length) return null
+  if (!reports.length && !partials.length && !closings.length && !waiting.length) return null
   return (
     <div className="no-print" style={{ marginBottom: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
       {closings.length > 0 && (
@@ -1459,6 +1510,30 @@ function AdminNotices({ reports, closings = [], waiting, nameOf, onBook, onOpenC
                 </Btn>
                 <Btn disabled={busy} onClick={() => onConfirm(n.id)} style={{ padding: '6px 12px', fontSize: 13 }}>
                   확인만
+                </Btn>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+      {partials.length > 0 && (
+        <Card style={{ padding: '12px 14px', border: `1.5px solid ${ABSENT}`, background: '#FFF7F8' }}>
+          <div style={{ fontSize: 14.5, fontWeight: 800, color: '#AE2340', marginBottom: 8 }}>
+            선생님이 일부 수업을 체크했습니다 · 확인해 주세요 ({partials.length}건)
+          </div>
+          <div style={{ fontSize: 12, color: C.sub, margin: '-4px 0 8px' }}>확인을 누르기 전에는 보강 목록 · 급여에 들어가지 않습니다.</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {partials.map((n) => (
+              <div key={n.id} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', background: '#fff', borderRadius: 8, padding: '8px 10px', border: `1px solid ${C.line}` }}>
+                <NoticeChip kind="partial" />
+                <span style={{ fontSize: 13, fontWeight: 700, color: C.ink, whiteSpace: 'nowrap' }}>{nameOf(n.from_staff)} 선생님</span>
+                <span style={{ flex: '1 1 220px', minWidth: 0, fontSize: 13.5, color: C.ink, lineHeight: 1.45 }}>{n.message}</span>
+                <span style={{ fontSize: 11.5, color: C.mut }}>{ago(n.created_at)}</span>
+                <Btn variant="primary" disabled={busy} onClick={() => onPartialOk(n)} style={{ padding: '6px 12px', fontSize: 13 }}>
+                  맞아요, 반영
+                </Btn>
+                <Btn variant="ghost" disabled={busy} onClick={() => onDrop(n)} style={{ padding: '6px 8px', fontSize: 12.5 }} title="잘못 체크한 것 — 지웁니다">
+                  지우기
                 </Btn>
               </div>
             ))}
@@ -1517,6 +1592,62 @@ function AdminNotices({ reports, closings = [], waiting, nameOf, onBook, onOpenC
   )
 }
 
+// 원장님 수업 창의 '일부 수업' — 몇 분 했는지 고르면 남은 보강 · 그날 급여 타임을 미리 보여 줌
+function PartialBox({ s, busy, onSave }) {
+  const tot = minutesBetween(hhmm(s.start_time), hhmm(s.end_time))
+  const now = isPartial(s) ? Number(s.done_min) : null
+  const [open, setOpen] = useState(false)
+  const [min, setMin] = useState(now || Math.max(5, tot - 20))
+  const units = Math.max(1, Math.round(tot / 50))
+  const dayUnits = Math.min(units, Math.floor((min * units) / tot + 0.000001))
+  const opts = []
+  for (let m = 5; m < tot; m += 5) opts.push(m)
+  if (tot < 10) return null
+  return (
+    <div style={{ marginTop: 8 }}>
+      {!open ? (
+        <Btn
+          disabled={busy}
+          onClick={() => setOpen(true)}
+          style={{ width: '100%', padding: '10px 0', fontSize: 13.5, color: ABSENT, borderColor: ABSENT }}
+        >
+          {now ? `일부 수업 시간 바꾸기 (지금 ${now}분)` : '일부 수업 (아파서 일찍 가는 등)'}
+        </Btn>
+      ) : (
+        <div style={{ border: `1px solid ${ABSENT}`, borderRadius: 9, padding: 11, background: '#FFF7F8' }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#AE2340', marginBottom: 7 }}>몇 분 수업했나요?</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <select
+              value={min}
+              onChange={(e) => setMin(Number(e.target.value))}
+              style={{ padding: '6px 8px', border: `1px solid ${C.line}`, borderRadius: 7, fontSize: 14 }}
+            >
+              {opts.map((m) => (
+                <option key={m} value={m}>{m}분</option>
+              ))}
+            </select>
+            <span style={{ fontSize: 13, color: C.ink }}>
+              {tot}분 중 → 보강 <b>{tot - min}분</b> 남음
+            </span>
+          </div>
+          <div style={{ fontSize: 12, color: C.sub, marginTop: 6, lineHeight: 1.6 }}>
+            수강료는 그대로 · 선생님 급여는 이날 {dayUnits}타임
+            {dayUnits < units ? `, 남은 ${tot - min}분을 보강으로 채우면 나머지 ${units - dayUnits}타임` : ''}
+          </div>
+          <div style={{ display: 'flex', gap: 6, marginTop: 9 }}>
+            <Btn variant="primary" disabled={busy || min === now} onClick={() => onSave(min)} style={{ flex: 1, padding: '9px 0' }}>
+              저장
+            </Btn>
+            <Btn disabled={busy} onClick={() => setOpen(false)} style={{ padding: '9px 14px' }}>
+              닫기
+            </Btn>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // 선생님: 10분씩 나눠 한 보강 체크 → 원장님 화면에 문구
 function TeacherMakeupCheck({ unmade, reports, onReport, onWithdraw, busy }) {
   const [openId, setOpenId] = useState(null)
@@ -1543,7 +1674,7 @@ function TeacherMakeupCheck({ unmade, reports, onReport, onWithdraw, busy }) {
             <div key={u.id} style={{ border: `1px solid ${C.line}`, borderRadius: 9, padding: '9px 11px', background: open ? '#FFFBF2' : '#fff' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 <span style={{ fontSize: 14.5, fontWeight: 700, color: C.ink }}>{u.student_name}</span>
-                <span style={{ fontSize: 12.5, color: C.sub }}>{mdw(u.d)} 결강 · 남은 보강 {left}분</span>
+                <span style={{ fontSize: 12.5, color: C.sub }}>{mdw(u.d)} {Number(u.done_min) > 0 ? `일부 수업(${u.done_min}분)` : '결강'} · 남은 보강 {left}분</span>
                 <span style={{ flex: 1 }} />
                 {!open && (
                   <Btn
@@ -1611,6 +1742,87 @@ function TeacherMakeupCheck({ unmade, reports, onReport, onWithdraw, busy }) {
           )
         })}
       </div>
+    </Card>
+  )
+}
+
+// 선생님: 아이가 아파서 일찍 가는 등 수업을 일부만 한 날 체크 → 원장님이 확인하면 반영
+function TeacherPartialCheck({ ym, lessons, reports, onReport, onWithdraw, busy }) {
+  const today = isoOf(new Date())
+  // 이 달의 내 수업 중 오늘까지 한 수업 · 결강(일부 수업이 아닌 것), 최근 날짜부터
+  const rows = lessons
+    .filter((x) => x.d <= today && (x.status === '진행' || (x.status === '결강' && !isPartial(x))))
+    .sort((a, b) => b.d.localeCompare(a.d) || b.start_time.localeCompare(a.start_time))
+  const pend = reports.filter((n) => !n.confirmed_at)
+  const [sid, setSid] = useState('')
+  const [min, setMin] = useState(0)
+  const pick = rows.find((x) => String(x.id) === String(sid)) || null
+  const tot = pick ? minutesBetween(hhmm(pick.start_time), hhmm(pick.end_time)) : 0
+  const opts = []
+  for (let m = 5; m < tot; m += 5) opts.push(m)
+  const waiting = (x) => pend.some((n) => String(n.session_ref) === String(x.id))
+  return (
+    <Card style={{ padding: '12px 14px', marginBottom: 14 }}>
+      <div style={{ fontSize: 14.5, fontWeight: 800, color: C.ink }}>일부만 수업했어요 체크</div>
+      <div style={{ fontSize: 12.5, color: C.sub, margin: '3px 0 9px', lineHeight: 1.5 }}>
+        아이가 아파서 일찍 가는 등 수업을 다 못 한 날이 있으면 여기서 체크해 주세요. 원장님이 확인하면 남은 시간이 보강으로 잡힙니다.
+      </div>
+      {pend.map((n) => (
+        <div key={n.id} style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 6, fontSize: 12.5, color: '#AE2340' }}>
+          <span>{n.message} · 원장님 확인 기다리는 중</span>
+          <Btn variant="ghost" disabled={busy} onClick={() => onWithdraw(n.id)} style={{ padding: '2px 6px', fontSize: 12, whiteSpace: 'nowrap', flexShrink: 0 }}>
+            취소
+          </Btn>
+        </div>
+      ))}
+      {!rows.length ? (
+        <div style={{ fontSize: 13, color: C.mut, padding: '4px 0' }}>{Number(ym.slice(5))}월에 체크할 수업이 없습니다.</div>
+      ) : (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
+          <select
+            value={sid}
+            onChange={(e) => {
+              setSid(e.target.value)
+              const x = rows.find((r) => String(r.id) === e.target.value)
+              const t = x ? minutesBetween(hhmm(x.start_time), hhmm(x.end_time)) : 0
+              setMin(t >= 10 ? Math.max(5, t - 20) : 0)
+            }}
+            style={{ padding: '6px 8px', border: `1px solid ${C.line}`, borderRadius: 7, fontSize: 13.5, maxWidth: '100%' }}
+          >
+            <option value="">수업 고르기</option>
+            {rows.map((x) => (
+              <option key={x.id} value={x.id} disabled={waiting(x)}>
+                {mdw(x.d)} {x.student_name} {clock(x.start_time)}~{clock(x.end_time)}{waiting(x) ? ' (확인 대기 중)' : ''}
+              </option>
+            ))}
+          </select>
+          {pick && tot >= 10 && (
+            <>
+              <select value={min} onChange={(e) => setMin(Number(e.target.value))}
+                style={{ padding: '6px 8px', border: `1px solid ${C.line}`, borderRadius: 7, fontSize: 13.5 }}>
+                {opts.map((m) => (
+                  <option key={m} value={m}>{m}분 했음</option>
+                ))}
+              </select>
+              <span style={{ fontSize: 12.5, color: C.sub }}>{tot}분 중 · 보강 {tot - min}분 남음</span>
+              <Btn
+                variant="primary"
+                disabled={busy || !(min > 0 && min < tot)}
+                onClick={async () => {
+                  const msg = `${mdw(pick.d)} ${pick.student_name} ${tot}분 수업 중 ${min}분 함`
+                  const ok2 = await onReport(pick, min, msg, {
+                    d: pick.d, start: pick.start_time, end: pick.end_time, student_name: pick.student_name,
+                  })
+                  if (ok2) setSid('')
+                }}
+                style={{ padding: '6px 12px', fontSize: 13 }}
+              >
+                원장님께 보내기
+              </Btn>
+            </>
+          )}
+        </div>
+      )}
     </Card>
   )
 }
@@ -2116,9 +2328,9 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                 const compact = noAbTag && boxH < need1 - rows.filter((x) => x.status === '결강').length * 12
                 // 시간 두 줄이 안 들어가도, 결강이 아닌 칸(보강 · 수업)은 시간을 작은 글씨 한 줄로 꼭 적음
                 //   (낮은 칸이면 줄 사이를 붙이고 줄 높이를 줄여서: 결강 띠 12 · 딱지 10 · 이름 11 · 시간 10)
-                const pill = (txt, bg) => (
+                const pill = (txt, bg, extra) => (
                   <div style={{ height: compact ? 10 : 12, lineHeight: '10px' }}>
-                    <span style={{ display: 'inline-block', fontSize: 8.5, fontWeight: 800, color: '#fff', background: bg, borderRadius: 99, padding: '0 3px', lineHeight: '10px', whiteSpace: 'nowrap' }}>{txt}</span>
+                    <span style={{ display: 'inline-block', fontSize: 8.5, fontWeight: 800, color: '#fff', background: bg, borderRadius: 99, padding: '0 3px', lineHeight: '10px', whiteSpace: 'nowrap', ...extra }}>{txt}</span>
                   </div>
                 )
                 return (
@@ -2137,6 +2349,7 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                   >
                     {rows.map((x) => {
                       const ab = x.status === '결강'
+                      const pt = isPartial(x) // 일부 수업: 띠를 왼쪽(수업함)·오른쪽(못 한 시간)으로 나눔
                       const mk = x.status === '보강'
                       const cx = x.status === '취소'
                       const o = x._orig || x
@@ -2144,28 +2357,28 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                         <button
                           key={x.id}
                           onClick={() => onPick(o)}
-                          title={`${mk ? '[보강] ' : ab ? '[결강] ' : ''}${x.student_name} · ${x.staff_name} · ${clock(o.start_time)}-${clock(o.end_time)}`}
+                          title={`${mk ? '[보강] ' : pt ? `[일부 수업 ${x.done_min}분] ` : ab ? '[결강] ' : ''}${x.student_name} · ${x.staff_name} · ${clock(o.start_time)}-${clock(o.end_time)}`}
                           style={{
                             cursor: 'pointer', textAlign: 'left', display: 'block', width: '100%', minWidth: 0, flexShrink: 0,
                             borderRadius: 3, padding: ab ? (compact ? '0 1px' : '1px 1px') : 0,
                             border: ab ? `1px dashed ${ABSENT}` : 'none',
-                            background: ab ? 'repeating-linear-gradient(135deg, #FDE3E0 0, #FDE3E0 5px, #fff 5px, #fff 10px)' : 'transparent',
+                            background: pt ? partialBg(x, 'right') : ab ? 'repeating-linear-gradient(135deg, #FDE3E0 0, #FDE3E0 5px, #fff 5px, #fff 10px)' : 'transparent',
                           }}
                         >
-                          {ab && !noAbTag && pill('결강', ABSENT)}
+                          {ab && !noAbTag && (pt ? pill('일부', ABSENT, PARTIAL_TAG) : pill('결강', ABSENT))}
                           {mk && pill('보강', MAKEUP)}
                           <div
                             style={{
                               fontSize: compact && ab ? 9.5 : 10.5, fontWeight: 800, lineHeight: compact ? (ab ? '10px' : '11px') : '13px',
                               whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                               color: ab ? '#B04A60' : mk ? '#5C3200' : cx ? C.mut : tn.fg,
-                              textDecoration: ab || cx ? 'line-through' : 'none',
+                              textDecoration: (ab && !pt) || cx ? 'line-through' : 'none',
                             }}
                           >
                             {x.student_name}
                           </div>
                           {withT ? (
-                            <div style={{ fontSize: 9, lineHeight: '11px', color: ab ? '#B04A60' : C.sub, textDecoration: ab || cx ? 'line-through' : 'none' }}>
+                            <div style={{ fontSize: 9, lineHeight: '11px', color: ab ? '#B04A60' : C.sub, textDecoration: (ab && !pt) || cx ? 'line-through' : 'none' }}>
                               {clock(o.start_time)}
                               <wbr />~{clock(o.end_time)}
                             </div>
@@ -2213,6 +2426,7 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                 const off = s.status === '결강' || s.status === '취소'
                 const isMakeup = s.status === '보강'
                 const isAbsent = s.status === '결강'
+                const part = isPartial(s) // 일부 수업: 칸을 위(수업함)·아래(못 한 시간)로 나눠 그림
                 const h = (toMin(s.end_time) - toMin(s.start_time)) * PX
                 const narrow = cols > 1.01
                 // 30분 남짓한 짧은 수업(나눠 보강 등)은 칸이 낮아서 두 줄이 안 들어갑니다 → 딱지 · 이름 · 시간을 한 줄로
@@ -2254,9 +2468,10 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                       display: 'inline-block', fontSize: narrow ? 8.5 : 9.5, fontWeight: 700, color: '#fff',
                       background: isAbsent ? ABSENT : MAKEUP, borderRadius: 99, padding: narrow ? '0 3px' : '0 6px',
                       flexShrink: 0, lineHeight: fixLH ? '10px' : 1.35, whiteSpace: 'nowrap',
+                      ...(part ? PARTIAL_TAG : null),
                     }}
                   >
-                    {isAbsent ? '결강' : '보강'}
+                    {part ? (narrow ? '일부' : partialText(s)) : isAbsent ? '결강' : '보강'}
                   </span>
                 )
                 const nameEl = (
@@ -2265,7 +2480,7 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                       fontSize: cols >= 3 ? 9.5 : narrow ? 10.5 : 12,
                       fontWeight: isMakeup || isAbsent ? 800 : 600,
                       color: isAbsent ? '#B04A60' : isMakeup ? '#5C3200' : tone.fg,
-                      textDecoration: off ? 'line-through' : 'none',
+                      textDecoration: off && !part ? 'line-through' : 'none',
                       lineHeight: fixLH ? '12px' : dayView ? 1.2 : 1.15,
                       whiteSpace: 'nowrap',
                       overflow: 'hidden',
@@ -2295,13 +2510,13 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                 const timeStyle = {
                   fontSize: narrow ? 9 : 10, color: isAbsent ? '#B04A60' : tone.fg, opacity: 0.8, whiteSpace: 'nowrap',
                   overflow: 'hidden', textOverflow: 'ellipsis', lineHeight: 1.2,
-                  textDecoration: off ? 'line-through' : 'none',
+                  textDecoration: off && !part ? 'line-through' : 'none',
                 }
                 return (
                   <button
                     key={s.id}
                     onClick={() => onPick(orig)}
-                    title={`${isMakeup ? '[보강] ' : ''}${s.student_name} · ${s.staff_name} · ${clock(orig.start_time)}-${clock(orig.end_time)}${s._plus ? ` · +보강 ${plusMinOf(s)}분` : ''}`}
+                    title={`${isMakeup ? '[보강] ' : part ? `[일부 수업 ${s.done_min}분] ` : ''}${s.student_name} · ${s.staff_name} · ${clock(orig.start_time)}-${clock(orig.end_time)}${s._plus ? ` · +보강 ${plusMinOf(s)}분` : ''}`}
                     style={{
                       position: 'absolute',
                       top: (toMin(s.start_time) - DAY_START) * PX,
@@ -2310,7 +2525,9 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                       height: dispH,
                       // 정상 수업은 연하게, 결강 · 보강만 눈에 띄게
                       background: isAbsent
-                        ? '#FFF0F3'
+                        ? part
+                          ? partialBg(s)
+                          : '#FFF0F3'
                         : off
                           ? `repeating-linear-gradient(135deg, ${tone.bg}, ${tone.bg} 5px, #FFFFFF 5px, #FFFFFF 10px)`
                           : isMakeup
@@ -2466,8 +2683,11 @@ function MonthView({
           lessons: list.filter((x) => x.status === '진행').length,
           absents: list.filter((x) => x.status === '결강').length,
           // 오른쪽 칸은 회기(50분 = 1회기)로: 100분 = 2, 150분 = 3 · 나눠 보강은 길이만큼 (10분 = 0.2)
-          lessonU: list.filter((x) => x.status === '진행').reduce((a, x) => a + Math.max(1, Math.round(minutesBetween(x.start_time, x.end_time) / 50)), 0),
-          absentU: list.filter((x) => x.status === '결강').reduce((a, x) => a + Math.max(1, Math.round(minutesBetween(x.start_time, x.end_time) / 50)), 0),
+          //   일부 수업(100분 중 80분)은 한 만큼 수업 1.6회기, 못 한 만큼 결강 0.4회기
+          lessonU: Math.round((list.filter((x) => x.status === '진행').reduce((a, x) => a + Math.max(1, Math.round(minutesBetween(x.start_time, x.end_time) / 50)), 0)
+            + list.filter(isPartial).reduce((a, x) => a + Number(x.done_min) / 50, 0)) * 10) / 10,
+          absentU: Math.round((list.filter((x) => x.status === '결강').reduce((a, x) => a + Math.max(1, Math.round(minutesBetween(x.start_time, x.end_time) / 50)), 0)
+            - list.filter(isPartial).reduce((a, x) => a + Number(x.done_min) / 50, 0)) * 10) / 10,
           makeupU: Math.round(list.filter((x) => x.status === '보강').reduce((a, x) => a + minutesBetween(x.start_time, x.end_time) / 50, 0) * 10) / 10,
           makeups: list.filter((x) => x.status === '보강').length,
           // 어느 결강의 보강인지 연결이 안 된 보강 (급여에 한 회로 들어가서 확인이 필요)
@@ -2482,8 +2702,9 @@ function MonthView({
       done: rows.reduce((a, b) => a + b.done, 0),
       absent: rows.reduce((a, b) => a + b.absent, 0),
       // 위쪽 합계도 오른쪽 칸과 같은 회기로 (50분 = 1회기)
-      lessonU: rows.reduce((a, b) => a + b.lessonU, 0),
-      absentU: rows.reduce((a, b) => a + b.absentU, 0),
+      // 일부 수업이 있으면 소수(0.4회기 등)가 생겨서 합계도 0.1 단위로 맞춤
+      lessonU: Math.round(rows.reduce((a, b) => a + b.lessonU, 0) * 10) / 10,
+      absentU: Math.round(rows.reduce((a, b) => a + b.absentU, 0) * 10) / 10,
       makeupU: Math.round(rows.reduce((a, b) => a + b.makeupU, 0) * 10) / 10,
       minutes: rows.reduce((a, b) => a + b.minutes, 0),
     }),
@@ -2658,12 +2879,14 @@ function MonthView({
                       {g.list.map((s) => {
                         const c = toneOf(s)
                         // 진행·결강 칸만 눌러서 바꿀 수 있음 (보강·취소 칸은 눌러도 결강으로 바뀌지 않게)
-                        const canMark = !!onMark && (s.status === '진행' || s.status === '결강')
+                        //   일부 수업은 한 번 눌러 '진행'으로 되돌아가지 않게 막음 (시간표에서 칸을 눌러 바꿈)
+                        const pt = isPartial(s)
+                        const canMark = !!onMark && (s.status === '진행' || s.status === '결강') && !pt
                         return (
                           <button
                             key={s.id}
                             disabled={busy || !canMark}
-                            title={`${s.d.slice(5)} (${s.weekday}) ${clock(s.start_time)}~${clock(s.end_time)} · ${s.status}${
+                            title={`${s.d.slice(5)} (${s.weekday}) ${clock(s.start_time)}~${clock(s.end_time)} · ${pt ? `일부 수업 ${s.done_min}분 (바꾸려면 시간표에서 칸을 누르세요)` : s.status}${
                               s.status === '보강'
                                 ? s.makeup_for
                                   ? (() => {
@@ -2677,7 +2900,7 @@ function MonthView({
                             onClick={() => canMark && onMark(s.id, s.status === '결강' ? '진행' : '결강')}
                             style={{
                               width: 34, height: 34, borderRadius: 8,
-                              border: `1px solid ${c.bd}`, background: c.bg, color: c.fg,
+                              border: `1px solid ${pt ? ABSENT : c.bd}`, background: pt ? partialBg(s, 'right', DOT.진행.bg) : c.bg, color: c.fg,
                               fontSize: 12.5, fontWeight: 700, padding: 0,
                               cursor: busy || !canMark ? 'default' : 'pointer', position: 'relative',
                             }}
@@ -2711,6 +2934,10 @@ function MonthView({
             </span>
           )
         )}
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+          <span style={{ width: 12, height: 12, borderRadius: 4, border: `1px solid ${ABSENT}`, background: `linear-gradient(90deg, ${DOT.진행.bg} 0 60%, transparent 60%), ${ABSENT_HATCH}` }} />
+          일부 수업
+        </span>
       </div>
     </div>
   )
@@ -2763,14 +2990,19 @@ function TodayView({ today, weekMinutes, onMark, busy }) {
                         background: st.bg,
                         color: st.fg,
                         border: `1px solid ${st.bd}`,
+                        ...(isPartial(s) ? PARTIAL_TAG : null),
                       }}
                     >
-                      {s.status}
+                      {isPartial(s) ? partialText(s) : s.status}
                     </span>
                   )}
                 </div>
                 <div style={{ marginTop: 10 }}>
-                  {s.status === '진행' || s.status === '결강' ? (
+                  {isPartial(s) ? (
+                    <div style={{ fontSize: 12, color: C.sub, textAlign: 'center' }}>
+                      일부 수업({s.done_min}분)으로 기록된 수업입니다. 바꾸려면 원장님께 말씀해주세요.
+                    </div>
+                  ) : s.status === '진행' || s.status === '결강' ? (
                     <Btn
                       disabled={busy}
                       variant={s.status === '결강' ? 'default' : 'danger'}
@@ -6572,6 +6804,7 @@ function MarkView({ onLoad, onMark, busy, say }) {
           </div>
           {list.map((r) => {
             const off = r.status === '결강'
+            const pt = isPartial(r)
             return (
               <div
                 key={r.id}
@@ -6587,11 +6820,14 @@ function MarkView({ onLoad, onMark, busy, say }) {
                 </div>
                 {off && (
                   <div style={{ fontSize: 12, fontWeight: 700, color: C.danger }}>
-                    결강{r.needs_makeup ? ' · 미보강' : ' · 보강완료'}
+                    {pt ? partialText(r) : '결강'}{r.needs_makeup ? ' · 미보강' : ' · 보강완료'}
                   </div>
                 )}
                 <div style={{ marginLeft: 'auto' }}>
-                  {r.status === '취소' ? (
+                  {pt ? (
+                    // 일부 수업은 여기서 한 번에 되돌리지 않음 (시간표에서 칸을 눌러 바꿈)
+                    <span style={{ fontSize: 12, color: C.sub }}>일부 수업</span>
+                  ) : r.status === '취소' ? (
                     <span style={{ fontSize: 12, color: C.mut }}>취소됨</span>
                   ) : r.status === '보강' ? (
                     // 보강 수업은 결강으로 바꾸지 않습니다 (월 화면과 같은 규칙)
@@ -7032,6 +7268,7 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
                       const c = kidColor[s2.student_name] || ['#EEE', '#333']
                       const mk = s2.status === '보강'
                       const ab = s2.status === '결강'
+                      const pt = isPartial(s2) // 일부 수업: 칸 위(수업함)·아래(못 한 시간)로 나눔
                       // 붙은 짧은 보강 '+10분' 딱지: 칸 글자와 같은 줄에 넣으면 표 전체 글자가 작아지므로,
                       //   칸 오른쪽 모서리(보강이 뒤면 아래, 앞이면 위) 테두리에 걸쳐 따로 붙임 — 글자 크기 맞추기 계산에 안 들어감
                       const plusAfter = s2._plus && s2._plus.some((m) => ttMin((m._orig || m).start_time) >= ttMin((s2._orig || s2).end_time))
@@ -7051,15 +7288,15 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
                         <React.Fragment key={s2.id}>
                         {plusBadge}
                         <div
-                          className={`tt-gblk tt-gcell${mk ? ' tt-gmk' : ''}${ab ? ' tt-gab' : ''}${one ? ' tt-g1' : ''}${k.lanes > 1 ? ' tt-glane' : ''}`}
-                          style={ab ? pos : { ...pos, background: mk ? '#fff' : c[0], color: mk ? '#5C3200' : c[1] }}
+                          className={`tt-gblk tt-gcell${mk ? ' tt-gmk' : ''}${ab ? ' tt-gab' : ''}${pt ? ' tt-gpart' : ''}${one ? ' tt-g1' : ''}${k.lanes > 1 ? ' tt-glane' : ''}`}
+                          style={pt ? { ...pos, '--tt-part': partialBg(s2) } : ab ? pos : { ...pos, background: mk ? '#fff' : c[0], color: mk ? '#5C3200' : c[1] }}
                         >
                           <b>
                             {mk && <span className="tt-gtag">보강</span>}
                             {s2.student_name}
                           </b>
                           <small>
-                            {ab ? '결강' : `${clock((s2._orig || s2).start_time)}~${clock((s2._orig || s2).end_time)}`}
+                            {pt ? partialText(s2) : ab ? '결강' : `${clock((s2._orig || s2).start_time)}~${clock((s2._orig || s2).end_time)}`}
                             {k.notes && <span className="tt-gnote"> · {k.notes.join('·')} 결강</span>}
                           </small>
                         </div>
@@ -7226,10 +7463,13 @@ function WeekSheet({ ym, days, weekNo, teachers, sessions, outside, holidays, le
                         ))}
                         {all.map((s) => {
                           const mk = s.status === '보강'
-                          const ab = s.status === '결강'
+                          const pt = !s.out && isPartial(s) // 일부 수업: 왼쪽(수업함)·오른쪽(못 한 시간)으로 나눔
+                          const ab = s.status === '결강' && !pt
                           const style = s.out
                             ? { background: OUT_TONE.bg, borderColor: OUT_TONE.bd, borderLeftColor: OUT_TONE.bd, color: OUT_TONE.fg }
-                            : { background: mk ? '#fff' : tone.bg, borderColor: tone.bd, borderLeftColor: line, color: tone.fg, '--ln': line }
+                            : pt
+                              ? { background: partialBg(s, 'right'), borderColor: ABSENT, borderLeftColor: line, color: '#B04A60', '--ln': line }
+                              : { background: mk ? '#fff' : tone.bg, borderColor: tone.bd, borderLeftColor: line, color: tone.fg, '--ln': line }
                           return (
                             <div
                               key={(s.out ? 'o' : 's') + s.id}
@@ -7242,6 +7482,7 @@ function WeekSheet({ ym, days, weekNo, teachers, sessions, outside, holidays, le
                               </b>
                               <small>
                                 {s.out && <span className="tt-outtag">외부</span>}
+                                {pt && `${partialText(s)} · `}
                                 {clock(s.start_time)}
                                 <span className="tt-end">~{clock(s.end_time)}</span>
                               </small>
@@ -7560,6 +7801,8 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
         .tt-gblk.tt-gab { text-decoration: none; opacity: 1; border: 2px solid #D93025 !important; color: #B3261E !important;
           background: repeating-linear-gradient(135deg, #FDE3E0 0, #FDE3E0 6px, #fff 6px, #fff 12px) !important; }
         .tt-gblk.tt-gab small { font-weight: 800; opacity: 1 !important; }
+        /* 일부 수업: 결강 칸과 같은 빨간 테두리, 수업한 위쪽은 초록 · 못 한 아래쪽은 빗금 */
+        .tt-gblk.tt-gab.tt-gpart { background: var(--tt-part) !important; }
         .tt-gout { background: #F1F2F4; color: #4B5563; border: 1px solid #D9DCE1; border-radius: 2px; padding: 2px 3px; margin-bottom: 1px; line-height: 1.15; }
         .tt-gout b { display: block; font-size: 8.5px; } .tt-gout small { font-size: 7.5px; opacity: .9; }
         .tt-page { width: 297mm; height: 210mm; margin: 0 auto 10mm; background: #fff; padding: 6mm 8mm;
@@ -7825,18 +8068,26 @@ function MakeupLog({ rows, staffOrder = [], activeNames = [], ownerName, toneOf,
         </Btn>
       )}
       {/* 잡아 둔 보강 고치기 (다른 날로 옮기기 · 지우기) */}
-      {isAdmin && onFix && (r.makeup_d || r.made_min > 0) && (
+      {isAdmin && onFix && (r.makeup_d || r.made_min > (Number(r.done_min) || 0)) && (
         <Btn disabled={busy} onClick={() => onFix(r)} style={{ padding: '5px 12px', fontSize: 12, whiteSpace: 'nowrap' }}>
           고치기
         </Btn>
       )}
     </span>
   )
+  // 일부 수업(그날 한 시간이 있음)은 '일부 ○분' 딱지 + 남은 분 / 나눠 보강 중이면 남은 분
   const partBadge = (r) =>
     !r.makeup_d && r.made_min > 0 && (
-      <span style={{ fontSize: 11.5, color: '#8A5A00', background: '#FEF6E7', borderRadius: 99, padding: '2px 8px', whiteSpace: 'nowrap' }}>
-        나눠 보강 중 · 남은 {Math.max((r.absent_min || 0) - r.made_min, 0)}분
-      </span>
+      <>
+        {Number(r.done_min) > 0 && (
+          <span style={{ fontSize: 11.5, fontWeight: 700, borderRadius: 99, padding: '2px 8px', whiteSpace: 'nowrap', ...PARTIAL_TAG }}>
+            일부 수업 · {r.absent_min}분 중 {r.done_min}분 함
+          </span>
+        )}
+        <span style={{ fontSize: 11.5, color: '#8A5A00', background: '#FEF6E7', borderRadius: 99, padding: '2px 8px', whiteSpace: 'nowrap' }}>
+          {r.made_min > (Number(r.done_min) || 0) ? '나눠 보강 중 · ' : ''}남은 {Math.max((r.absent_min || 0) - r.made_min, 0)}분
+        </span>
+      </>
     )
 
   if (rows.length === 0)
@@ -7875,7 +8126,7 @@ function MakeupLog({ rows, staffOrder = [], activeNames = [], ownerName, toneOf,
           )}
         </div>
         <div style={{ fontSize: 12, color: stTab === 'todo' ? C.danger : C.sub, marginTop: 2 }}>
-          {dlabel(r.absent_d)} {clock(r.absent_start)} 결강
+          {dlabel(r.absent_d)} {clock(r.absent_start)} {Number(r.done_min) > 0 ? '일부 수업' : '결강'}
         </div>
         {r.makeup_d && (
           <div style={{ fontSize: 12.5, fontWeight: 700, color: stTab === 'plan' ? '#254B8C' : '#1F5B3A', marginTop: 2 }}>
@@ -8178,8 +8429,10 @@ function AddSessionModal({ students, staff, programs, absent, preset = null, pai
         {linked && (
           <AddField label="보강 시간">
             <div style={{ fontSize: 12.5, marginBottom: 7, padding: '7px 10px', borderRadius: 8, background: '#FEF6E7', color: '#8A5A00', lineHeight: 1.6 }}>
-              결강 {absentMin}분 중 <b>남은 보강 {leftMin}분</b>
-              {madeMin > 0 && ` · 지금까지 ${madeMin}분 함`}
+              {/* 일부 수업이면 그날 한 시간과 보강한 시간을 나눠서 적음 */}
+              {Number(absent?.done_min) > 0 ? '일부 수업' : '결강'} {absentMin}분 중 <b>남은 보강 {leftMin}분</b>
+              {Number(absent?.done_min) > 0 && ` · 그날 수업 ${absent.done_min}분`}
+              {madeMin - (Number(absent?.done_min) || 0) > 0 && ` · 보강 ${madeMin - (Number(absent?.done_min) || 0)}분 함`}
             </div>
             <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
               {[10, 20, 30].filter((m) => m < leftMin).map((m) => (
@@ -8989,6 +9242,7 @@ function PaymentView({
       {refundFor && (
         <RefundModal
           row={refundFor}
+          ym={ym}
           busy={busy}
           onClose={() => setRefundFor(null)}
           onSave={async (v) => {
@@ -9132,11 +9386,30 @@ function DepositModal({ row, ym, onClose, onSave, busy }) {
   )
 }
 
-function RefundModal({ row, onClose, onSave, busy }) {
+function RefundModal({ row, ym, onClose, onSave, busy }) {
   const [amount, setAmount] = useState(row.credit_left > 0 ? row.credit_left : 0)
   const [date, setDate] = useState(isoOf(new Date()))
   const [method, setMethod] = useState('계좌이체')
   const [memo, setMemo] = useState('')
+  // 이 달 수업 중 환불하면서 같이 취소할 수업 (체크하면 환불액이 그 수업 금액 합으로 채워짐)
+  const [lessons, setLessons] = useState(undefined) // undefined: 불러오는 중 · null: SQL 실행 전
+  const [picked, setPicked] = useState([])
+  const [typed, setTyped] = useState(false) // 환불액을 직접 고쳤으면 체크해도 덮어쓰지 않음
+  useEffect(() => {
+    let on = true
+    if (!ym) { setLessons(null); return }
+    loadRefundLessons(row.student_id, ym).then((l) => on && setLessons(l)).catch(() => on && setLessons(null))
+    return () => { on = false }
+  }, [row.student_id, ym])
+  const today = isoOf(new Date())
+  const pickedRows = (lessons || []).filter((l) => picked.includes(l.id))
+  const pickedSum = pickedRows.reduce((a, l) => a + (Number(l.price) || 0), 0)
+  const remaining = (lessons || []).filter((l) => l.can && l.d >= today)
+  const setPick = (ids) => {
+    setPicked(ids)
+    if (!typed) setAmount((lessons || []).filter((l) => ids.includes(l.id)).reduce((a, l) => a + (Number(l.price) || 0), 0))
+  }
+  const locked = (lessons || []).some((l) => l.receipt_locked)
 
   const after = (row.credit_left || 0) - amount
 
@@ -9150,21 +9423,79 @@ function RefundModal({ row, onClose, onSave, busy }) {
         </div>
       </div>
       <div style={{ padding: 18 }}>
+        {lessons === undefined && <div style={{ fontSize: 12, color: C.mut, marginBottom: 10 }}>{Number(ym.slice(5))}월 수업 불러오는 중…</div>}
+        {lessons && lessons.length > 0 && (
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginBottom: 6 }}>
+              <span style={{ fontSize: 12, color: C.sub }}>{Number(ym.slice(5))}월 빠지는 수업 (체크하면 같이 취소)</span>
+              {remaining.length > 0 && (
+                <Btn
+                  onClick={() => setPick(remaining.map((l) => l.id))}
+                  style={{ marginLeft: 'auto', padding: '3px 9px', fontSize: 11.5 }}
+                >
+                  남은 수업 모두
+                </Btn>
+              )}
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 200, overflowY: 'auto' }}>
+              {lessons.map((l) => {
+                const on = picked.includes(l.id)
+                return (
+                  <label
+                    key={l.id}
+                    title={l.why || ''}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 8, padding: '6px 9px', borderRadius: 7,
+                      border: `1px solid ${on ? ABSENT : C.line}`, background: on ? '#FFF7F8' : l.can ? '#fff' : '#F6F7F8',
+                      fontSize: 13, color: l.can ? C.ink : C.mut, cursor: l.can ? 'pointer' : 'default',
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={on}
+                      disabled={!l.can}
+                      onChange={() => setPick(on ? picked.filter((x) => x !== l.id) : [...picked, l.id])}
+                    />
+                    <span style={{ fontWeight: 700, minWidth: 64 }}>{mdw(l.d)}</span>
+                    <span>{clock(l.start_time)} · {l.staff_name}{l.status === '결강' ? ' · 결강' : ''}</span>
+                    <span style={{ marginLeft: 'auto', whiteSpace: 'nowrap' }}>{l.can ? `${won(l.price)}원` : l.why}</span>
+                  </label>
+                )
+              })}
+            </div>
+            {picked.length > 0 && (
+              <div style={{ marginTop: 7, padding: '8px 11px', borderRadius: 8, fontSize: 12, lineHeight: 1.6, background: '#FFF7F8', color: '#AE2340' }}>
+                체크한 {picked.length}회({won(pickedSum)}원)는 <b>취소</b>됩니다 — 수강료 · 선생님 급여에서 빠지고 보강 목록에도 안 뜹니다.
+                {locked && ' 이 달 영수증이 이미 발행돼 있어서, 줄어든 금액으로 다시 발행됩니다.'}
+              </div>
+            )}
+          </div>
+        )}
         <div style={{ fontSize: 12, color: C.sub, marginBottom: 6 }}>환불액</div>
         <input
           type="number"
           value={amount}
-          onChange={(e) => setAmount(Number(e.target.value) || 0)}
+          onChange={(e) => {
+            setTyped(true)
+            setAmount(Number(e.target.value) || 0)
+          }}
           style={{ width: '100%', fontSize: 16, padding: '11px 12px', border: '1px solid #DEE0E3', borderRadius: 8, fontWeight: 700 }}
         />
+        {picked.length > 0 && amount !== pickedSum && (
+          <div style={{ fontSize: 12, color: '#8A5A00', marginTop: 5 }}>
+            체크한 수업 금액({won(pickedSum)}원)과 다릅니다. 이대로 저장해도 됩니다.
+            <Btn onClick={() => { setTyped(false); setAmount(pickedSum) }} style={{ marginLeft: 6, padding: '2px 8px', fontSize: 11.5 }}>맞추기</Btn>
+          </div>
+        )}
         {row.credit_left > 0 && (
           <div style={{ display: 'flex', gap: 5, marginTop: 7, flexWrap: 'wrap' }}>
-            <Btn onClick={() => setAmount(row.credit_left)} style={{ padding: '5px 10px', fontSize: 12 }}>
+            <Btn onClick={() => { setTyped(true); setAmount(row.credit_left) }} style={{ padding: '5px 10px', fontSize: 12 }}>
               남은 선입금 전액
             </Btn>
           </div>
         )}
-        {amount > 0 && (
+        {/* 수업을 같이 취소하면 그만큼 청구가 줄어서 이 안내(선입금 기준)는 맞지 않으므로 숨김 */}
+        {amount > 0 && picked.length === 0 && (
           <div
             style={{
               marginTop: 10, padding: '9px 12px', borderRadius: 8, fontSize: 12, lineHeight: 1.6,
@@ -9214,10 +9545,10 @@ function RefundModal({ row, onClose, onSave, busy }) {
           <Btn
             variant="danger"
             disabled={busy || !(amount > 0) || !Number.isInteger(amount) || !date}
-            onClick={() => onSave({ amount, date, method, memo: memo.trim() || '환불' })}
+            onClick={() => onSave({ amount, date, method, memo: memo.trim() || '환불', lessons: pickedRows })}
             style={{ flex: 1, padding: '11px 0' }}
           >
-            환불 기록
+            {picked.length > 0 ? `환불 기록 + ${picked.length}회 취소` : '환불 기록'}
           </Btn>
           <Btn onClick={onClose} style={{ flex: 1, padding: '11px 0' }}>
             취소
@@ -10271,6 +10602,7 @@ function App() {
       makeup: `${s.student_name} 보강을 잡았습니다 — ${when}${extra}`,
       unmakeup: `${when} ${s.student_name} 보강을 지웠습니다`,
       uncancel: `${when} ${s.student_name} 수업 취소를 되돌렸습니다 (정상 수업)`,
+      partial_set: `${when} ${s.student_name} 수업을 일부 수업으로 기록했습니다${extra}`,
     }[kind]
     if (!msg) return
     try {
@@ -10315,6 +10647,24 @@ function App() {
       await markAttendance(id, status)
       await tellMark(before, status)
       await reloadAfterAction()
+      setPick(null)
+    } catch (e) {
+      fail(e)
+    }
+    setBusy(false)
+  }
+
+  // 일부 수업: 원장님이 바로 기록 (선생님 체크를 확인할 때는 noticeId를 같이 넘김)
+  const doPartial = async (p, doneMin, noticeId) => {
+    setBusy(true)
+    try {
+      const msg = await markPartial(p.id, doneMin, noticeId)
+      const tot = minutesBetween(hhmm(p.start_time), hhmm(p.end_time))
+      // 선생님이 체크한 걸 확인한 경우는 선생님이 이미 알고 있으므로 따로 문구를 보내지 않음
+      if (!noticeId) await tellTeacher(p, 'partial_set', ` (${tot}분 중 ${doneMin}분 · 보강 ${tot - doneMin}분 남음)`)
+      say(msg || '일부 수업으로 기록했습니다')
+      await reloadAfterAction()
+      if (noticeId) await loadNotices().then(setNotices).catch(() => {})
       setPick(null)
     } catch (e) {
       fail(e)
@@ -10521,7 +10871,7 @@ function App() {
     ? notices.filter(
         (n) =>
           !n.confirmed_at &&
-          (n.kind === 'report' || n.kind === 'close_ans' || (me && String(n.to_staff) === String(me.id) && n.kind !== 'close_req'))
+          (n.kind === 'report' || (n.kind === 'partial' && !n.to_staff) || n.kind === 'close_ans' || (me && String(n.to_staff) === String(me.id) && n.kind !== 'close_req'))
       ).length
     : 0
   // 원장님 화면: 왼쪽 메뉴 5개 — 비슷한 화면은 안쪽 버튼으로 묶었습니다
@@ -10836,6 +11186,13 @@ function App() {
         {!loading && isAdmin && tab === 'home' && (
           <AdminNotices
             reports={notices.filter((n) => n.kind === 'report' && !n.confirmed_at)}
+            partials={notices.filter((n) => n.kind === 'partial' && !n.to_staff && !n.confirmed_at)}
+            onPartialOk={(n) => {
+              const s = { id: n.session_ref, d: n.payload?.d, start_time: n.payload?.start, end_time: n.payload?.end, student_name: n.payload?.student_name }
+              const done = Number(n.payload?.done)
+              if (!(done > 0)) return say('체크한 시간이 없습니다. 지우고 다시 체크해 달라고 해 주세요.', 'err')
+              doPartial(s, done, n.id)
+            }}
             // 마감 '다름'을 먼저
             closings={notices
               .filter((n) => n.kind === 'close_ans' && !n.confirmed_at)
@@ -10870,7 +11227,7 @@ function App() {
               setBusy(false)
             }}
             onDrop={async (n) => {
-              if (!confirm('이 보강 체크를 지울까요? 선생님 화면에서도 사라집니다.')) return
+              if (!confirm(n.kind === 'partial' ? '이 일부 수업 체크를 지울까요? 선생님 화면에서도 사라집니다.' : '이 보강 체크를 지울까요? 선생님 화면에서도 사라집니다.')) return
               setBusy(true)
               try {
                 await withdrawNotice(n.id)
@@ -10951,6 +11308,36 @@ function App() {
                 setBusy(true)
                 try {
                   await reportMakeup(u.id, msg, payload)
+                  say('원장님께 보냈습니다')
+                  await loadNotices().then(setNotices).catch(() => {})
+                  setBusy(false)
+                  return true
+                } catch (e) {
+                  fail(e)
+                  setBusy(false)
+                  return false
+                }
+              }}
+              onWithdraw={async (id) => {
+                setBusy(true)
+                try {
+                  await withdrawNotice(id)
+                  await loadNotices().then(setNotices).catch(() => {})
+                } catch (e) {
+                  fail(e)
+                }
+                setBusy(false)
+              }}
+            />
+            <TeacherPartialCheck
+              ym={ym}
+              lessons={monthSessions.filter((s) => (String(s.staff_id) === String(me.id) || s.staff_name === me.name))}
+              reports={notices.filter((n) => n.kind === 'partial' && String(n.from_staff) === String(me.id))}
+              busy={busy}
+              onReport={async (s, doneMin, msg, payload) => {
+                setBusy(true)
+                try {
+                  await reportPartial(s.id, doneMin, msg, payload)
                   say('원장님께 보냈습니다')
                   await loadNotices().then(setNotices).catch(() => {})
                   setBusy(false)
@@ -11674,15 +12061,23 @@ function App() {
               }}
               onRefund={async (sid, v) => {
                 setBusy(true)
+                const lessons = v.lessons || []
+                let msg = '환불을 기록했습니다'
                 try {
-                  await addRefund(sid, v)
+                  // 빠지는 수업을 체크했으면 환불 + 취소(+ 영수증 다시 발행)를 한 번에, 아니면 예전처럼 돈만
+                  if (lessons.length) msg = await refundWithCancel(sid, ym, lessons.map((l) => l.id), v)
+                  else await addRefund(sid, v)
                 } catch (e) {
                   fail(e)
                   setBusy(false)
                   return false
                 }
-                say('환불을 기록했습니다')
+                say(msg || '환불을 기록했습니다')
+                // 취소한 수업은 그 선생님 화면에도 알림 (결강 · 취소 때와 같은 문구)
+                const kid = payments.find((r) => String(r.student_id) === String(sid))
+                for (const l of lessons) await tellTeacher({ ...l, student_name: kid?.student_name || kid?.label || '' }, 'cancel')
                 await reloadMonth().catch(() => say('환불은 기록됐습니다. 화면이 안 바뀌었으면 새로고침해 주세요', 'err'))
+                if (lessons.length) await reloadAfterAction()
                 setBusy(false)
                 return true
               }}
@@ -11874,7 +12269,8 @@ function App() {
             setMoveFrom(part)
             setMakeupPreset({ d: part.d, start: part.start_time, minutes: mins, moving: true })
             // 선생님·프로그램은 원래 그 보강의 것 그대로 (다른 선생님이 한 보강이면 그 선생님 급여로 남게)
-            setMakeupFor({ ...absent, staff_id: part.staff_id, staff_name: part.staff_name, program_code: part.program_code ?? absent.program_code, made_min: others })
+            //   일부 수업이면 그날 한 시간도 '이미 함'에 넣음
+            setMakeupFor({ ...absent, staff_id: part.staff_id, staff_name: part.staff_name, program_code: part.program_code ?? absent.program_code, made_min: others + (Number(absent.done_min) || 0) })
           }}
           onRemove={async (part) => {
             // 확인 창에서 취소하면 고치기 창은 그대로 둡니다
@@ -11970,7 +12366,7 @@ function App() {
           </div>
           <div style={{ padding: 18 }}>
             <div style={{ fontSize: 12, color: C.sub, marginBottom: 8 }}>
-              출결 · 지금 <b style={{ color: C.ink }}>{pick.status === '진행' ? '수업함' : pick.status}</b>
+              출결 · 지금 <b style={{ color: C.ink }}>{isPartial(pick) ? `일부 수업 (${pick.done_min}분 함)` : pick.status === '진행' ? '수업함' : pick.status}</b>
             </div>
             {(() => {
               const cur = pick.status
@@ -12014,8 +12410,14 @@ function App() {
                   <div style={{ fontSize: 12.5, color: C.sub, lineHeight: 1.6 }}>원장님이 취소한 수업이라 바꿀 수 없어요.</div>
                 )
               const btns = []
-              if (cur !== '진행') btns.push(['진행', '되돌리기'])
-              if (cur !== '결강') btns.push(['결강', '결강'])
+              const pt = isPartial(pick)
+              if (cur !== '진행') btns.push(['진행', pt ? '되돌리기 (다 수업함)' : '되돌리기'])
+              // 보강이 잡힌 일부 수업은 '전부 결강'으로 못 바꿈 (서버도 막음)
+              const ptBooked = pt && (Number(pick.made_min) || 0) > (Number(pick.done_min) || 0)
+              if (cur !== '결강' || (pt && !ptBooked)) btns.push(['결강', pt ? '결강 (전부 못 함)' : '결강'])
+              // 일부 수업: 원장님만, 보강이 아직 안 잡힌 수업만 (보강이 있으면 서버도 막음)
+              const canPartial =
+                isAdmin && (cur === '진행' || cur === '결강') && !((Number(pick.made_min) || 0) > (Number(pick.done_min) || 0))
               if (isAdmin && cur !== '취소') btns.push(locked ? ['carry', '취소 (다음 달 차감)'] : ['취소', '취소'])
               return (
                 <div>
@@ -12032,6 +12434,7 @@ function App() {
                     </Btn>
                   ))}
                 </div>
+                {canPartial && <PartialBox key={pick.id + (pick.done_min || '')} s={pick} busy={busy} onSave={(m) => doPartial(pick, m)} />}
                 {/* 영수증이 이미 발행된 달이면 청구 넣기/빼기 · 지우기를 막습니다 (발행한 금액이 바뀌지 않게) */}
                 {isAdmin && pick.from_template === false && locked && (
                   <div style={{ fontSize: 12, color: C.sub, marginTop: 10, lineHeight: 1.6 }}>
