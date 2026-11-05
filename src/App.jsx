@@ -725,12 +725,12 @@ async function notifyStaff(to, kind, message, sessionRef, payload) {
   }))
 }
 // 일부 수업 (100분 중 80분만 한 날 등) — partial_lesson.sql 을 실행해야 동작합니다
-async function markPartial(sessionId, doneMin, noticeId) {
-  return ok(await supabase.rpc('mark_partial', { p_session: sessionId, p_done: doneMin, p_notice: noticeId ?? null }))
+async function markPartial(sessionId, doneMin, noticeId, note) {
+  return ok(await supabase.rpc('mark_partial', { p_session: sessionId, p_done: doneMin, p_notice: noticeId ?? null, p_note: note || null }))
 }
 // 이 날만 시간 바꾸기: 원래 수업은 결강, 같은 날 새 시간은 보강 (서버에서 한 번에)
-async function moveLessonOneDay(sessionId, start, minutes) {
-  return ok(await supabase.rpc('move_lesson_oneday', { p_session: sessionId, p_start: start, p_minutes: minutes }))
+async function moveLessonOneDay(sessionId, start, minutes, note) {
+  return ok(await supabase.rpc('move_lesson_oneday', { p_session: sessionId, p_start: start, p_minutes: minutes, p_note: note || null }))
 }
 async function reportPartial(sessionRef, doneMin, message, payload) {
   return ok(await supabase.rpc('report_partial', { p_session: String(sessionRef), p_done: doneMin, p_message: message, p_payload: payload ?? null }))
@@ -1048,9 +1048,34 @@ const partialBg = (s, dir = 'down', done = PARTIAL_DONE) =>
 // '일부' 딱지 — 흰 바탕 · 빨간 테두리 (결강 딱지는 빨간 바탕)
 const PARTIAL_TAG = { background: '#fff', color: ABSENT, boxShadow: `inset 0 0 0 1px ${ABSENT}` }
 const partialText = (s) => `일부 ${Number(s.done_min)}분`
+// '이 날만 시간 바꾸기'로 옮긴 수업: 서버가 새 보강에 이 글을 적어 둠 (진짜 결강 · 보강과 다르게 그리기 위해)
+const MOVE_NOTE = '이 날만 시간 변경'
+const MOVED_BLUE = '#185FA5'
+const isMoveMakeup = (m) => !!m && m.status === '보강' && !!m.makeup_for && String(m.note || '').startsWith(MOVE_NOTE)
+// 옮긴 수업 묶기: 원래 칸(결강)에는 _movedTo(새 칸), 새 칸(보강)에는 _movedFrom(원래 칸)
+//   원래 시간에 같은 선생님의 다른 수업(다른 아이 보강 등)이 들어오면 원래 칸(회색)은 그리지 않음
+function markMoves(list) {
+  const byId = new Map(list.map((x) => [String(x.id), x]))
+  const to = new Map()
+  list.forEach((m) => {
+    if (!isMoveMakeup(m)) return
+    const o = byId.get(String(m.makeup_for))
+    if (o && o.d === m.d && o.status === '결강' && !isPartial(o)) to.set(String(o.id), m)
+  })
+  if (!to.size) return list
+  const from = new Map([...to].map(([oid, m]) => [String(m.id), byId.get(oid)]))
+  return list
+    .filter((x) => {
+      if (!to.has(String(x.id))) return true
+      const a = toMin(x.start_time), b = toMin(x.end_time)
+      return !list.some((y) => y !== x && y.staff_name === x.staff_name && y.d === x.d &&
+        y.status !== '취소' && y.status !== '결강' && toMin(y.start_time) < b && toMin(y.end_time) > a)
+    })
+    .map((x) => (to.has(String(x.id)) ? { ...x, _movedTo: to.get(String(x.id)) } : from.has(String(x.id)) ? { ...x, _movedFrom: from.get(String(x.id)) } : x))
+}
 // 원장 외부 일정 — 수업(연한 색)과 확실히 다르게 진한 회색
 // 외부 일정: 눈에 덜 띄게 연한 회색 (수업 · 결강 · 보강이 먼저 보이도록)
-const OUTSIDE = { bg: '#F1F2F4', bd: '#D9DCE1', fg: '#4B5563', tag: '#8A919C' }
+const OUTSIDE = { bg: '#F3F4F6', bd: '#D1D5DB', fg: '#111827', tag: '#4B5563', bar: '#374151' } // 연한 칸 + 왼쪽 진한 띠 · 진한 글씨
 const DAY_END = 1200 // 20:00
 const PX = 1.02
 
@@ -1608,12 +1633,46 @@ function AdminNotices({ reports, partials = [], closings = [], waiting, nameOf, 
   )
 }
 
+// 이유 칸: 자주 쓰는 이유는 눌러서 고르고, 직접 써도 됨 (안 써도 저장됨)
+const PARTIAL_REASONS = ['아파서', '일찍 데리러 옴', '늦게 옴', '센터 사정']
+function ReasonPicker({ value, onChange, chips, color = ABSENT, placeholder }) {
+  return (
+    <div style={{ marginTop: 9 }}>
+      <div style={{ fontSize: 12.5, fontWeight: 700, color, marginBottom: 5 }}>이유 (안 써도 됨)</div>
+      <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 6 }}>
+        {chips.map((c) => (
+          <button
+            key={c}
+            type="button"
+            onClick={() => onChange(value === c ? '' : c)}
+            style={{
+              border: `1px solid ${color}`, borderRadius: 99, padding: '3px 10px', fontSize: 12.5, cursor: 'pointer',
+              background: value === c ? color : '#fff', color: value === c ? '#fff' : color, fontWeight: value === c ? 700 : 500,
+            }}
+          >
+            {c}
+          </button>
+        ))}
+      </div>
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value.slice(0, 80))}
+        placeholder={placeholder}
+        style={{ width: '100%', boxSizing: 'border-box', padding: '7px 9px', border: `1px solid ${C.line}`, borderRadius: 7, fontSize: 13.5 }}
+      />
+    </div>
+  )
+}
+// 수업 메모에서 '이 날만 시간 변경' 표시를 뺀 이유만
+const reasonOf = (s) => String((s && s.note) || '').replace(/^이 날만 시간 변경( · )?/, '').trim()
+
 // 원장님 수업 창의 '일부 수업' — 몇 분 했는지 고르면 남은 보강 · 그날 급여 타임을 미리 보여 줌
 function PartialBox({ s, busy, onSave }) {
   const tot = minutesBetween(hhmm(s.start_time), hhmm(s.end_time))
   const now = isPartial(s) ? Number(s.done_min) : null
   const [open, setOpen] = useState(false)
   const [min, setMin] = useState(now || Math.max(5, tot - 20))
+  const [why, setWhy] = useState(now ? reasonOf(s) : '')
   const units = Math.max(1, Math.round(tot / 50))
   const dayUnits = Math.min(units, Math.floor((min * units) / tot + 0.000001))
   const opts = []
@@ -1650,8 +1709,9 @@ function PartialBox({ s, busy, onSave }) {
             수강료는 그대로 · 선생님 급여는 이날 {dayUnits}타임
             {dayUnits < units ? `, 남은 ${tot - min}분을 보강으로 채우면 나머지 ${units - dayUnits}타임` : ''}
           </div>
+          <ReasonPicker value={why} onChange={setWhy} chips={PARTIAL_REASONS} placeholder="예: 열이 나서 40분만 하고 귀가" />
           <div style={{ display: 'flex', gap: 6, marginTop: 9 }}>
-            <Btn variant="primary" disabled={busy || min === now} onClick={() => onSave(min)} style={{ flex: 1, padding: '9px 0' }}>
+            <Btn variant="primary" disabled={busy || (min === now && why === reasonOf(s))} onClick={() => onSave(min, why.trim())} style={{ flex: 1, padding: '9px 0' }}>
               저장
             </Btn>
             <Btn disabled={busy} onClick={() => setOpen(false)} style={{ padding: '9px 14px' }}>
@@ -1846,6 +1906,7 @@ function TeacherPartialCheck({ ym, lessons, reports, onReport, onWithdraw, busy 
   const pend = reports.filter((n) => !n.confirmed_at)
   const [sid, setSid] = useState('')
   const [min, setMin] = useState(0)
+  const [why, setWhy] = useState('')
   const pick = rows.find((x) => String(x.id) === String(sid)) || null
   const tot = pick ? minutesBetween(hhmm(pick.start_time), hhmm(pick.end_time)) : 0
   const opts = []
@@ -1895,15 +1956,19 @@ function TeacherPartialCheck({ ym, lessons, reports, onReport, onWithdraw, busy 
                 ))}
               </select>
               <span style={{ fontSize: 12.5, color: C.sub }}>{tot}분 중 · 보강 {tot - min}분 남음</span>
+              <div style={{ flexBasis: '100%' }}>
+                <ReasonPicker value={why} onChange={setWhy} chips={PARTIAL_REASONS} placeholder="예: 열이 나서 40분만 하고 귀가" />
+              </div>
               <Btn
                 variant="primary"
                 disabled={busy || !(min > 0 && min < tot)}
                 onClick={async () => {
-                  const msg = `${mdw(pick.d)} ${pick.student_name} ${tot}분 수업 중 ${min}분 함`
+                  const w = why.trim()
+                  const msg = `${mdw(pick.d)} ${pick.student_name} ${tot}분 수업 중 ${min}분 함${w ? ` · 이유: ${w}` : ''}`
                   const ok2 = await onReport(pick, min, msg, {
-                    d: pick.d, start: pick.start_time, end: pick.end_time, student_name: pick.student_name,
+                    d: pick.d, start: pick.start_time, end: pick.end_time, student_name: pick.student_name, reason: w,
                   })
-                  if (ok2) setSid('')
+                  if (ok2) { setSid(''); setWhy('') }
                 }}
                 style={{ padding: '6px 12px', fontSize: 13 }}
               >
@@ -2022,7 +2087,7 @@ function attachShortMakeups(list) {
   const plus = new Map()
   const gone = new Set()
   list.forEach((m) => {
-    if (m.status !== '보강') return
+    if (m.status !== '보강' || m._movedFrom) return
     const a = toMin(m.start_time)
     const b = toMin(m.end_time)
     if (!(b > a) || b - a > 40) return
@@ -2052,7 +2117,8 @@ function attachShortMakeups(list) {
 // 붙은 보강들의 분 합계
 const plusMinOf = (s) => (s._plus || []).reduce((t, m) => t + toMin((m._orig || m).end_time) - toMin((m._orig || m).start_time), 0)
 
-function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colorOf, toneOf, staffOrder = [], onPick, today, dayOnly = null }) {
+function WeekGrid({ weekStart, sessions: rawSessions, holidays, outside = [], ownerName, colorOf, toneOf, staffOrder = [], onPick, today, dayOnly = null }) {
+  const sessions = useMemo(() => markMoves(rawSessions), [rawSessions])
   const dayKey = dayOnly ? isoOf(dayOnly) : ''
   // 그 주 일요일에 수업 · 외부 일정이 잡혀 있을 때만 일요일 칸을 붙입니다 (평소 모양은 그대로 월~토)
   const sunIso = (() => {
@@ -2330,12 +2396,20 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                       borderRadius: 7,
                       background: OUTSIDE.bg,
                       border: `1px solid ${OUTSIDE.bd}`,
+                      borderLeft: `4px solid ${OUTSIDE.bar}`,
                       padding: n >= 3 ? '2px 3px' : '3px 6px',
                       overflow: 'hidden',
                       zIndex: 2,
                     }}
                   >
-                    {tight ? (
+                    {!wk && one && boxH < 30 ? (
+                      // 하루 보기의 짧은 일정(20분 등): '외부 · 이름 · 시간'을 한 줄로 (이름이 길면 끝을 …)
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 5, height: '100%', whiteSpace: 'nowrap', overflow: 'hidden', marginTop: -2 }}>
+                        <span style={{ fontSize: 9, fontWeight: 700, color: OUTSIDE.tag, flex: 'none' }}>외부</span>
+                        <span style={{ fontSize: 11.5, fontWeight: 700, color: OUTSIDE.fg, overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>{list[0].label}</span>
+                        <span style={{ fontSize: 9.5, color: OUTSIDE.tag, flex: 'none' }}>{clock(list[0].start_time)}~{clock(list[0].end_time)}</span>
+                      </div>
+                    ) : tight ? (
                       list.map((e) => {
                         // 한 건이면: 줄이 남을 때만 시간 한 줄 / 여러 건이면 이름만 한 줄씩
                         const showT = one && lines >= Math.ceil(String(e.label || '').length / 3) + 1
@@ -2513,9 +2587,12 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                 // 배경은 선생님 색, 결강·취소는 빗금과 취소선으로 구분합니다
                 const tone = toneOf ? toneOf(s.staff_name) : styleOf(s)
                 const tc = colorOf(s.staff_name)
-                const off = s.status === '결강' || s.status === '취소'
-                const isMakeup = s.status === '보강'
-                const isAbsent = s.status === '결강'
+                // 옮긴 수업: 원래 칸(mvTo)은 회색 점선 '→ 새 시간', 새 칸(mvFrom)은 평소 색 + 파란 '옮김'
+                const mvTo = s._movedTo
+                const mvFrom = s._movedFrom
+                const off = (s.status === '결강' && !mvTo) || s.status === '취소'
+                const isMakeup = s.status === '보강' && !mvFrom
+                const isAbsent = s.status === '결강' && !mvTo
                 const part = isPartial(s) // 일부 수업: 칸을 위(수업함)·아래(못 한 시간)로 나눠 그림
                 const h = (toMin(s.end_time) - toMin(s.start_time)) * PX
                 const narrow = cols > 1.01
@@ -2541,9 +2618,11 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                 const grown = dispH > Math.max(h - 2, 18)
                 const dayView = nDays === 1
                 const orig = s._orig || s
-                const timeTxt = `${clock(orig.start_time)}~${clock(orig.end_time)}`
+                const timeTxt = mvTo ? `→ ${clock(mvTo.start_time)}` : `${clock(orig.start_time)}~${clock(orig.end_time)}`
                 // 좁은 줄에서는 '시작' / '~끝' 두 줄로 (첫 줄이 짧아 말줄임 없이 다 보이게)
-                const timeWrap = (
+                const timeWrap = mvTo ? (
+                  <>→ {clock(mvTo.start_time)}</>
+                ) : (
                   <>
                     {clock(orig.start_time)}
                     <wbr />~{clock(orig.end_time)}
@@ -2552,16 +2631,15 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                 // 주 보기 좁은 줄은 글꼴과 상관없이 줄 높이를 px로 고정 (컴퓨터마다 글자가 겹치거나 잘리지 않게)
                 const fixLH = narrow && !dayView
                 // '보강'(주황) · '결강'(빨강) 딱지 — 칸이 좁아도 늘 보입니다
-                const tag = (isMakeup || isAbsent) && (
+                const tag = (isMakeup || isAbsent || mvFrom) && (
                   <span
                     style={{
                       display: 'inline-block', fontSize: narrow ? 8.5 : 9.5, fontWeight: 700, color: '#fff',
-                      background: isAbsent ? ABSENT : MAKEUP, borderRadius: 99, padding: narrow ? '0 3px' : '0 6px',
+                      background: mvFrom ? MOVED_BLUE : isAbsent ? ABSENT : MAKEUP, borderRadius: 99, padding: narrow ? '0 3px' : '0 6px',
                       flexShrink: 0, lineHeight: fixLH ? '10px' : 1.35, whiteSpace: 'nowrap',
-                      ...(part ? PARTIAL_TAG : null),
                     }}
                   >
-                    {part ? partialText(s) : isAbsent ? '결강' : '보강'}
+                    {mvFrom ? '옮김' : part ? partialText(s) : isAbsent ? '결강' : '보강'}
                   </span>
                 )
                 const nameEl = (
@@ -2569,7 +2647,7 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                     style={{
                       fontSize: cols >= 3 ? 9.5 : narrow ? 10.5 : 12,
                       fontWeight: isMakeup || isAbsent ? 800 : 600,
-                      color: isAbsent ? '#B04A60' : isMakeup ? '#5C3200' : tone.fg,
+                      color: mvTo ? '#6B7280' : part ? tone.fg : isAbsent ? '#B04A60' : isMakeup ? '#5C3200' : tone.fg,
                       textDecoration: off && !part ? 'line-through' : 'none',
                       lineHeight: fixLH ? '12px' : dayView ? 1.2 : 1.15,
                       whiteSpace: 'nowrap',
@@ -2598,7 +2676,7 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                   </span>
                 ))
                 const timeStyle = {
-                  fontSize: narrow ? 9 : 10, color: isAbsent ? '#B04A60' : tone.fg, opacity: 0.8, whiteSpace: 'nowrap',
+                  fontSize: narrow ? 9 : 10, color: mvTo ? '#6B7280' : isAbsent && !part ? '#B04A60' : tone.fg, opacity: 0.8, whiteSpace: 'nowrap',
                   overflow: 'hidden', textOverflow: 'ellipsis', lineHeight: 1.2,
                   textDecoration: off && !part ? 'line-through' : 'none',
                 }
@@ -2614,16 +2692,18 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                       width: `calc(${widthPct}% - ${subs > 1 ? 3 : 4}px)`,
                       height: dispH,
                       // 정상 수업은 연하게, 결강 · 보강만 눈에 띄게
-                      background: isAbsent
+                      background: mvTo
+                        ? '#F3F4F6'
+                        : isAbsent
                         ? part
-                          ? partialBg(s)
+                          ? partialBg(s, 'down', tone.bg) // 일부 수업: 한 만큼 아이(선생님) 색 · 못 한 만큼 빗금
                           : '#FFF0F3'
                         : off
                           ? `repeating-linear-gradient(135deg, ${tone.bg}, ${tone.bg} 5px, #FFFFFF 5px, #FFFFFF 10px)`
                           : isMakeup
                             ? '#FFF4E5'
                             : tone.bg,
-                      border: isAbsent ? `1.5px dashed ${ABSENT}` : isMakeup ? `2px solid ${MAKEUP}` : `1px solid ${tone.bd}`,
+                      border: mvTo ? '1px dashed #9CA3AF' : mvFrom ? `1.5px solid ${MOVED_BLUE}` : part ? `1px solid ${ABSENT}` : isAbsent ? `1.5px dashed ${ABSENT}` : isMakeup ? `2px solid ${MAKEUP}` : `1px solid ${tone.bd}`,
                       borderLeft: `3px solid ${tc}`, // 어느 선생님 수업인지 왼쪽 색 띠는 늘 그대로
                       opacity: off && !isAbsent ? 0.75 : 1,
                       borderRadius: 5,
@@ -6967,7 +7047,8 @@ const GRID_COLORS = [
   ['#BEE3DC', '#11423B'], ['#F2C9B8', '#5B2716'], ['#CBD5E1', '#1E293B'],
   ['#E7C9F0', '#4A1157'],
 ]
-function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unmade = [], endHour = 19, screen = false, onPick = null }) {
+function TeacherGrid({ ym, teacher, tone, sessions: rawSessions, holidays, outside = [], unmade = [], endHour = 19, screen = false, onPick = null }) {
+  const sessions = useMemo(() => markMoves(rawSessions), [rawSessions])
   // screen: 시간표 화면의 '한 달' 보기 — 종이 한 장에 맞추지 않고, 한 주씩 위아래로 크게 (인쇄는 그대로)
   const SCREEN_W = 820
   const [y, m] = ym.split('-').map(Number)
@@ -7356,9 +7437,11 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
                         )
                       const s2 = k.x
                       const c = kidColor[s2.student_name] || ['#EEE', '#333']
-                      const mk = s2.status === '보강'
-                      const ab = s2.status === '결강'
-                      const pt = isPartial(s2) // 일부 수업: 칸 위(수업함)·아래(못 한 시간)로 나눔
+                      const mvTo = s2._movedTo // 옮긴 수업의 원래 칸 → 회색 점선 '→ 새 시간'
+                      const mvFrom = s2._movedFrom // 옮긴 수업의 새 칸 → 평소 색 + 파란 '옮김'
+                      const mk = s2.status === '보강' && !mvFrom
+                      const pt = isPartial(s2) // 일부 수업: 한 만큼 아이 색 · 못 한 만큼 빗금 + 빨간 '일부 ○분'
+                      const ab = s2.status === '결강' && !mvTo && !pt
                       // 붙은 짧은 보강 '+10분' 딱지: 칸 글자와 같은 줄에 넣으면 표 전체 글자가 작아지므로,
                       //   칸 오른쪽 모서리(보강이 뒤면 아래, 앞이면 위) 테두리에 걸쳐 따로 붙임 — 글자 크기 맞추기 계산에 안 들어감
                       const plusAfter = s2._plus && s2._plus.some((m) => ttMin((m._orig || m).start_time) >= ttMin((s2._orig || s2).end_time))
@@ -7374,34 +7457,35 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
                           +{plusMinOf(s2)}분
                         </span>
                       )
-                      // 일부 수업 '일부 ○분' 딱지: 칸 왼쪽 아래 모서리에 따로 붙임 (칸 글자 크기 맞추기 계산에 안 들어감 · +보강 딱지는 오른쪽)
-                      const partBadge = pt && (
-                        <span
-                          key={s2.id + 'pt'}
-                          className="tt-gpt"
-                          style={{ top: pos.top + pos.height, left: `calc(${(k.lane / k.lanes) * 100}% + 3px)` }}
-                        >
-                          일부 {Number(s2.done_min)}분
-                        </span>
-                      )
+                      // 딱지가 붙는 칸(보강 · 옮김 · 일부)은 'tt-gmk'로 — 넘치면 그 칸만 글자를 줄임 (표 전체 글자 크기는 그대로)
+                      const tagged = mk || mvFrom || pt
                       return (
                         <React.Fragment key={s2.id}>
                         {plusBadge}
-                        {partBadge}
                         <div
-                          className={`tt-gblk tt-gcell${mk ? ' tt-gmk' : ''}${ab ? ' tt-gab' : ''}${pt ? ' tt-gpart' : ''}${one ? ' tt-g1' : ''}${k.lanes > 1 ? ' tt-glane' : ''}`}
+                          className={`tt-gblk tt-gcell${tagged ? ' tt-gmk' : ''}${ab ? ' tt-gab' : ''}${pt ? ' tt-gpart' : ''}${mvTo ? ' tt-gmv0' : ''}${one ? ' tt-g1' : ''}${k.lanes > 1 ? ' tt-glane' : ''}`}
                           style={{
-                            ...(pt ? { ...pos, '--tt-part': partialBg(s2) } : ab ? pos : { ...pos, background: mk ? '#fff' : c[0], color: mk ? '#5C3200' : c[1] }),
+                            ...(mvTo
+                              ? pos
+                              : pt
+                                ? { ...pos, background: partialBg(s2, 'right', c[0]), color: c[1], border: `1px solid ${ABSENT}` }
+                                : mvFrom
+                                  ? { ...pos, background: c[0], color: c[1], border: `1.5px solid ${MOVED_BLUE}` }
+                                  : ab
+                                    ? pos
+                                    : { ...pos, background: mk ? '#fff' : c[0], color: mk ? '#5C3200' : c[1] }),
                             ...(onPick ? { cursor: 'pointer' } : null),
                           }}
                           onClick={onPick ? () => onPick(s2._orig || s2) : undefined}
                         >
                           <b>
                             {mk && <span className="tt-gtag">보강</span>}
+                            {mvFrom && <span className="tt-gtag" style={{ background: MOVED_BLUE }}>옮김</span>}
+                            {pt && <span className="tt-gtag" style={{ background: ABSENT }}>일부 {Number(s2.done_min)}분</span>}
                             {s2.student_name}
                           </b>
                           <small>
-                            {ab && !pt ? '결강' : `${clock((s2._orig || s2).start_time)}~${clock((s2._orig || s2).end_time)}`}
+                            {ab ? '결강' : mvTo ? `→ ${clock(mvTo.start_time)}` : `${clock((s2._orig || s2).start_time)}~${clock((s2._orig || s2).end_time)}`}
 
                             {k.notes && <span className="tt-gnote"> · {k.notes.join('·')} 결강</span>}
                           </small>
@@ -7431,9 +7515,10 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
 }
 
 /* 전체 — 한 주에 한 장, 날짜마다 선생님 줄 */
-const OUT_TONE = { bg: '#3F4652', bd: '#2B3038', fg: '#FFFFFF' }
+const OUT_TONE = { bg: '#F3F4F6', bd: '#D1D5DB', fg: '#111827', bar: '#374151' } // 외부 일정: 연한 칸 + 왼쪽 진한 띠
 
-function WeekSheet({ ym, days, weekNo, teachers, sessions, outside, holidays, leaves, toneOf, colorOf, ownerName, st, en }) {
+function WeekSheet({ ym, days, weekNo, teachers, sessions: rawSessions, outside, holidays, leaves, toneOf, colorOf, ownerName, st, en }) {
+  const sessions = useMemo(() => markMoves(rawSessions), [rawSessions])
   const span = en - st
   const pct = (v) => `${(((v - st) / span) * 100).toFixed(3)}%`
   const ticks = []
@@ -7484,7 +7569,7 @@ function WeekSheet({ ym, days, weekNo, teachers, sessions, outside, holidays, le
             </span>
           ))}
           <span>
-            <i style={{ background: OUT_TONE.bg }} />
+            <i style={{ background: OUT_TONE.bg, border: `1px solid ${OUT_TONE.bd}`, borderLeft: `3px solid ${OUT_TONE.bar}` }} />
             외부 일정
           </span>
           <span>
@@ -7568,14 +7653,20 @@ function WeekSheet({ ym, days, weekNo, teachers, sessions, outside, holidays, le
                           <div key={g0} className="tt-gap" style={{ left: pct(g0), width: `${(((g1 - g0) / span) * 100).toFixed(3)}%` }} />
                         ))}
                         {all.map((s) => {
-                          const mk = s.status === '보강'
+                          const mvTo = !s.out && s._movedTo // 옮긴 수업의 원래 칸
+                          const mvFrom = !s.out && s._movedFrom // 옮긴 수업의 새 칸
+                          const mk = s.status === '보강' && !mvFrom
                           const pt = !s.out && isPartial(s) // 일부 수업: 왼쪽(수업함)·오른쪽(못 한 시간)으로 나눔
-                          const ab = s.status === '결강' && !pt
+                          const ab = s.status === '결강' && !pt && !mvTo
                           const style = s.out
-                            ? { background: OUT_TONE.bg, borderColor: OUT_TONE.bd, borderLeftColor: OUT_TONE.bd, color: OUT_TONE.fg }
-                            : pt
-                              ? { background: partialBg(s, 'right'), borderColor: ABSENT, borderLeftColor: line, color: '#B04A60', '--ln': line }
-                              : { background: mk ? '#fff' : tone.bg, borderColor: tone.bd, borderLeftColor: line, color: tone.fg, '--ln': line }
+                            ? { background: OUT_TONE.bg, borderColor: OUT_TONE.bd, borderWidth: 1, borderLeftWidth: 4, borderLeftColor: OUT_TONE.bar, color: OUT_TONE.fg }
+                            : mvTo
+                              ? { background: '#F3F4F6', borderColor: '#9CA3AF', borderWidth: 1, borderStyle: 'dashed', borderLeftWidth: 3, borderLeftStyle: 'solid', borderLeftColor: line, color: '#6B7280', '--ln': line }
+                              : pt
+                                ? { background: partialBg(s, 'right', tone.bg), borderColor: ABSENT, borderWidth: 1, borderLeftWidth: 3, borderLeftColor: line, color: tone.fg, '--ln': line }
+                                : mvFrom
+                                  ? { background: tone.bg, borderColor: MOVED_BLUE, borderWidth: 1.5, borderLeftWidth: 3, borderLeftColor: line, color: tone.fg, '--ln': line }
+                                  : { background: mk ? '#fff' : tone.bg, borderColor: tone.bd, borderLeftColor: line, color: tone.fg, '--ln': line }
                           return (
                             <div
                               key={(s.out ? 'o' : 's') + s.id}
@@ -7584,13 +7675,20 @@ function WeekSheet({ ym, days, weekNo, teachers, sessions, outside, holidays, le
                             >
                               <b>
                                 {mk && <span className="tt-tag">보강</span>}
+                                {mvFrom && <span className="tt-tag" style={{ background: MOVED_BLUE }}>옮김</span>}
+                                {pt && <span className="tt-tag" style={{ background: ABSENT }}>{partialText(s)}</span>}
                                 {s.out ? s.label : s.student_name}
                               </b>
                               <small>
                                 {s.out && <span className="tt-outtag">외부</span>}
-                                {pt && `${partialText(s)} · `}
-                                {clock(s.start_time)}
-                                <span className="tt-end">~{clock(s.end_time)}</span>
+                                {mvTo ? (
+                                  `→ ${clock(mvTo.start_time)}`
+                                ) : (
+                                  <>
+                                    {clock(s.start_time)}
+                                    <span className="tt-end">~{clock(s.end_time)}</span>
+                                  </>
+                                )}
                               </small>
                             </div>
                           )
@@ -7908,11 +8006,11 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
           background: repeating-linear-gradient(135deg, #FDE3E0 0, #FDE3E0 6px, #fff 6px, #fff 12px) !important; }
         .tt-gblk.tt-gab small { font-weight: 800; opacity: 1 !important; }
         /* 일부 수업: 결강 칸과 같은 빨간 테두리, 수업한 위쪽은 초록 · 못 한 아래쪽은 빗금 */
-        .tt-gblk.tt-gab.tt-gpart { background: var(--tt-part) !important; }
-        .tt-gpt { position: absolute; z-index: 3; transform: translate(0, -50%); padding: 0 3px; border-radius: 3px; background: #fff;
-          color: ${ABSENT}; border: 1px solid ${ABSENT}; font-weight: 800; font-size: 9.5px; line-height: 11px; white-space: nowrap; letter-spacing: -0.2px; }
-        .tt-gout { background: #F1F2F4; color: #4B5563; border: 1px solid #D9DCE1; border-radius: 2px; padding: 2px 3px; margin-bottom: 1px; line-height: 1.15; }
-        .tt-gout b { display: block; font-size: 8.5px; } .tt-gout small { font-size: 7.5px; opacity: .9; }
+        .tt-gblk.tt-gpart { text-decoration: none; opacity: 1; }
+        /* 옮긴 수업의 원래 칸: 회색 점선 · 흐린 글씨 '→ 새 시간' */
+        .tt-gblk.tt-gmv0 { background: #F3F4F6 !important; color: #6B7280 !important; border: 1px dashed #9CA3AF !important; }
+        .tt-gout { background: #F3F4F6; color: #111827; border: 1px solid #D1D5DB; border-left: 4px solid #374151; border-radius: 2px; padding: 2px 3px; margin-bottom: 1px; line-height: 1.15; }
+        .tt-gout b { display: block; font-size: 8.5px; font-weight: 800; } .tt-gout small { font-size: 7.5px; opacity: 1; color: #374151; }
         .tt-page { width: 297mm; height: 210mm; margin: 0 auto 10mm; background: #fff; padding: 6mm 8mm;
           box-shadow: 0 1px 4px rgba(0,0,0,.12); display: flex; flex-direction: column; box-sizing: border-box; color: ${C.ink}; }
         .tt-ph { display: flex; align-items: baseline; gap: 8px; margin-bottom: 2mm; flex-wrap: wrap; row-gap: 2px; }
@@ -7962,7 +8060,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
         .tt-sub { flex: 1; display: grid; grid-template-columns: 15mm 1fr; border-bottom: 1px solid transparent; min-height: 0; }
         .tt-sub:last-child { border-bottom: none; }
         .tt-tn { font-size: 10.5px; font-weight: 700; display: flex; align-items: center; padding-left: 4px; border-right: 1px solid #E3E5E8; }
-        .tt-outtag { font-size: 9px; font-weight: 700; color: #C9CED6; flex: none; }
+        .tt-outtag { font-size: 9px; font-weight: 700; color: #4B5563; flex: none; }
         .tt-day .tt-ev b { font-size: 10.5px; }
         .tt-row .tt-ev { top: 1px; bottom: 1px; }
         .tt-row .tt-ev b { font-size: 10.5px; line-height: 1.02; }
@@ -10986,18 +11084,18 @@ function App() {
   }
 
   // 이 날만 시간 바꾸기: 원래 수업 결강 + 같은 날 새 시간 보강 (서버에서 한 번에, 막히면 아무것도 안 바뀜)
-  const doMoveTime = async (p, start, minutes, end, sameStart) => {
+  const doMoveTime = async (p, start, minutes, end, sameStart, why) => {
     setBusy(true)
     try {
-      const msg = await moveLessonOneDay(p.id, start, minutes)
+      const msg = await moveLessonOneDay(p.id, start, minutes, why)
       const tot = minutesBetween(hhmm(p.start_time), hhmm(p.end_time))
       const left = tot - minutes > 0 ? ` · 남은 보강 ${tot - minutes}분` : ''
       await tellTeacher(
         p,
         'moved',
-        sameStart
+        (sameStart
           ? `${clock(start)}~${clock(end)} (${minutes}분, 일부 수업)${left}`
-          : `${clock(start)}~${clock(end)} (${minutes}분)${left} — 원래 시간은 결강, 새 시간은 보강`
+          : `${clock(start)}~${clock(end)} (${minutes}분)${left}`) + (why ? ` · 이유: ${why}` : '')
       )
       say(msg || '이 날만 시간을 바꿨습니다')
       await reloadAfterAction()
@@ -11009,13 +11107,13 @@ function App() {
   }
 
   // 일부 수업: 원장님이 바로 기록 (선생님 체크를 확인할 때는 noticeId를 같이 넘김)
-  const doPartial = async (p, doneMin, noticeId) => {
+  const doPartial = async (p, doneMin, noticeId, why) => {
     setBusy(true)
     try {
-      const msg = await markPartial(p.id, doneMin, noticeId)
+      const msg = await markPartial(p.id, doneMin, noticeId, why)
       const tot = minutesBetween(hhmm(p.start_time), hhmm(p.end_time))
       // 선생님이 체크한 걸 확인한 경우는 선생님이 이미 알고 있으므로 따로 문구를 보내지 않음
-      if (!noticeId) await tellTeacher(p, 'partial_set', ` (${tot}분 중 ${doneMin}분 · 보강 ${tot - doneMin}분 남음)`)
+      if (!noticeId) await tellTeacher(p, 'partial_set', ` (${tot}분 중 ${doneMin}분 · 보강 ${tot - doneMin}분 남음${why ? ` · 이유: ${why}` : ''})`)
       say(msg || '일부 수업으로 기록했습니다')
       await reloadAfterAction()
       if (noticeId) await loadNotices().then(setNotices).catch(() => {})
@@ -11545,7 +11643,7 @@ function App() {
               const s = { id: n.session_ref, d: n.payload?.d, start_time: n.payload?.start, end_time: n.payload?.end, student_name: n.payload?.student_name }
               const done = Number(n.payload?.done)
               if (!(done > 0)) return say('체크한 시간이 없습니다. 지우고 다시 체크해 달라고 해 주세요.', 'err')
-              doPartial(s, done, n.id)
+              doPartial(s, done, n.id, n.payload?.reason || '')
             }}
             // 마감 '다름'을 먼저
             closings={notices
@@ -12129,7 +12227,7 @@ function App() {
                 보강
               </span>
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-                <span style={{ width: 12, height: 12, borderRadius: 3, border: `1px solid ${OUTSIDE.bd}`, background: OUTSIDE.bg }} />
+                <span style={{ width: 12, height: 12, borderRadius: 3, border: `1px solid ${OUTSIDE.bd}`, borderLeft: `4px solid ${OUTSIDE.bar}`, background: OUTSIDE.bg, boxSizing: 'border-box' }} />
                 외부 일정
               </span>
             </div>
@@ -12725,6 +12823,11 @@ function App() {
             <div style={{ fontSize: 12, color: C.sub, marginBottom: 8 }}>
               출결 · 지금 <b style={{ color: C.ink }}>{isPartial(pick) ? `일부 수업 (${pick.done_min}분 함)` : pick.status === '진행' ? '수업함' : pick.status}</b>
             </div>
+            {(isPartial(pick) || isMoveMakeup(pick)) && reasonOf(pick) && (
+              <div style={{ fontSize: 12.5, color: C.sub, margin: '-4px 0 8px' }}>
+                이유: <b style={{ color: C.ink }}>{reasonOf(pick)}</b>
+              </div>
+            )}
             {(() => {
               const cur = pick.status
               // 선생님: 결강 / 되돌리기만. 원장님: 결강 · 취소 / 되돌리기
@@ -12732,7 +12835,10 @@ function App() {
                 return (
                   <div>
                     <div style={{ fontSize: 12.5, color: C.sub, lineHeight: 1.6 }}>
-                      보강 수업입니다.{!isAdmin && ' 바꾸려면 원장님께 말씀해주세요.'}
+                      {isMoveMakeup(pick)
+                        ? '이 날만 시간을 옮긴 수업입니다. 원래 시간으로 되돌리려면 이 수업을 지운 뒤, 원래 칸(회색)을 눌러 되돌리기를 누르세요.'
+                        : '보강 수업입니다.'}
+                      {!isAdmin && ' 바꾸려면 원장님께 말씀해주세요.'}
                     </div>
                     {isAdmin && (
                       <Btn
@@ -12791,10 +12897,10 @@ function App() {
                     </Btn>
                   ))}
                 </div>
-                {canPartial && <PartialBox key={pick.id + (pick.done_min || '')} s={pick} busy={busy} onSave={(m) => doPartial(pick, m)} />}
+                {canPartial && <PartialBox key={pick.id + (pick.done_min || '')} s={pick} busy={busy} onSave={(m, why) => doPartial(pick, m, null, why)} />}
                 {/* 이 날만 시간 바꾸기: 원장님만, 보강이 아직 안 잡힌 수업(진행 · 결강)만 — 일부 수업한 날은 제외 */}
                 {isAdmin && (cur === '진행' || cur === '결강') && !pt && !((Number(pick.made_min) || 0) > 0) && (
-                  <MoveTimeBox key={'mv' + pick.id} s={pick} busy={busy} onSave={(st, m, en, ss) => doMoveTime(pick, st, m, en, ss)} />
+                  <MoveTimeBox key={'mv' + pick.id} s={pick} busy={busy} onSave={(st, m, en, ss, why) => doMoveTime(pick, st, m, en, ss, why)} />
                 )}
                 {/* 영수증이 이미 발행된 달이면 청구 넣기/빼기 · 지우기를 막습니다 (발행한 금액이 바뀌지 않게) */}
                 {isAdmin && pick.from_template === false && locked && (
