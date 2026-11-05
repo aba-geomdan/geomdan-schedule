@@ -403,6 +403,15 @@ async function refundWithCancel(studentId, ym, sessionIds, { amount, date, metho
   )
 }
 
+// 방 배정표 (관리 화면) — room_board.sql 을 실행해야 동작합니다. 실행 전이면 null
+async function loadRoomBoard() {
+  const { data, error } = await supabase.rpc('room_board_list')
+  return error ? null : data || []
+}
+async function setRoomCell(room, weekday, half, staffId) {
+  return ok(await supabase.rpc('set_room_cell', { p_room: room, p_weekday: weekday, p_half: half, p_staff: staffId ?? null }))
+}
+
 async function removeDeposit(id) {
   return ok(await supabase.rpc('remove_deposit', { p_id: id }))
 }
@@ -8686,6 +8695,218 @@ function PayPrint({ ym, rows, teachersOf, rank, loadMonthDeposits, onClose }) {
   )
 }
 
+/* ================= 방 배정표 ================= */
+// 수업 · 보강 · 급여와는 연결되지 않는 정리용 표. 칸 = 방 × 요일, 종일이면 칸 가득 · 오전/오후면 반칸
+const ROOMS = ['흰방', '민트방', '노랑방', '보라방']
+const ROOM_DAYS = ['월', '화', '수', '목', '금']
+function RoomBoardGrid({ rows, toneOf, onCell, print = false }) {
+  const at = (room, wd) => rows.filter((r) => r.room === room && Number(r.weekday) === wd)
+  const pill = (r, half) => {
+    const t = toneOf ? toneOf(r.staff_name) : { bg: '#F2F3F5', fg: C.ink }
+    return (
+      <div className="rb-p" style={{ flex: 1, background: t.bg, color: t.fg, borderRadius: 5, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, fontWeight: 700, fontSize: half ? (print ? 12 : 12) : print ? 14 : 13.5, minHeight: 0 }}>
+        {r.staff_name}
+        {half && <span style={{ fontWeight: 500, fontSize: print ? 10.5 : 11, opacity: 0.85 }}>{half}</span>}
+      </div>
+    )
+  }
+  const empty = (txt) => (
+    <div style={{ flex: 1, color: C.mut, fontSize: print ? 11 : 11.5, display: 'flex', alignItems: 'center', justifyContent: 'center', border: `1px dashed ${C.line}`, borderRadius: 5 }}>
+      {txt}
+    </div>
+  )
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: `${print ? 70 : 64}px repeat(5, minmax(0, 1fr))`, gap: print ? 6 : 6 }}>
+      <div />
+      {ROOM_DAYS.map((d) => (
+        <div key={d} style={{ textAlign: 'center', fontSize: print ? 14 : 12.5, color: C.sub, fontWeight: 700, padding: '2px 0' }}>{d}</div>
+      ))}
+      {ROOMS.map((room) => (
+        <React.Fragment key={room}>
+          <div style={{ display: 'flex', alignItems: 'center', fontWeight: 800, fontSize: print ? 16 : 14 }}>{room}</div>
+          {ROOM_DAYS.map((d, i) => {
+            const wd = i + 1
+            const list = at(room, wd)
+            const full = list.find((r) => r.half === '종일')
+            const am = list.find((r) => r.half === '오전')
+            const pm = list.find((r) => r.half === '오후')
+            return (
+              <div
+                key={d}
+                role={onCell ? 'button' : undefined}
+                onClick={onCell ? () => onCell(room, wd) : undefined}
+                style={{
+                  background: print ? '#fff' : '#F6F7F8', border: print ? `1px solid ${C.line}` : 'none',
+                  borderRadius: 7, height: print ? 104 : 56, display: 'flex', flexDirection: 'column', gap: 3, padding: 3,
+                  cursor: onCell ? 'pointer' : 'default',
+                }}
+              >
+                {full
+                  ? pill(full, null)
+                  : am || pm
+                    ? (
+                      <>
+                        {am ? pill(am, '오전') : empty('오전 비어 있음')}
+                        {pm ? pill(pm, '오후') : empty('오후 비어 있음')}
+                      </>
+                    )
+                    : empty('비어 있음')}
+              </div>
+            )
+          })}
+        </React.Fragment>
+      ))}
+    </div>
+  )
+}
+
+function RoomBoard({ staff, toneOf, say }) {
+  const [rows, setRows] = useState(undefined) // undefined: 불러오는 중 · null: SQL 실행 전
+  const [edit, setEdit] = useState(null) // { room, wd }
+  const [half, setHalf] = useState('종일')
+  const [saving, setSaving] = useState(false)
+  const [printing, setPrinting] = useState(false)
+  const reload = useCallback(() => loadRoomBoard().then(setRows).catch(() => setRows(null)), [])
+  // 선생님 이름을 바꾸거나 퇴사 처리하면 표도 다시 불러옴
+  useEffect(() => { reload() }, [reload, staff])
+  const active = staff.filter((x) => x.active)
+  const openCell = (room, wd) => {
+    const list = (rows || []).filter((r) => r.room === room && Number(r.weekday) === wd)
+    // 지금 반칸으로 나뉘어 있으면 오전부터, 아니면 종일부터
+    setHalf(list.some((r) => r.half !== '종일') ? '오전' : '종일')
+    setEdit({ room, wd })
+  }
+  const cellRows = edit ? (rows || []).filter((r) => r.room === edit.room && Number(r.weekday) === edit.wd) : []
+  const cur = cellRows.find((r) => r.half === half) || null
+  const fullRow = cellRows.find((r) => r.half === '종일') || null
+  // '지금' 안내: 종일을 보고 있는데 반칸으로 나뉘어 있으면 둘 다, 반칸을 보고 있는데 종일이 있으면 종일 선생님을
+  const nowText =
+    half === '종일'
+      ? fullRow
+        ? fullRow.staff_name
+        : cellRows.length
+          ? cellRows.map((r) => `${r.half} ${r.staff_name}`).join(' · ')
+          : null
+      : cur
+        ? cur.staff_name
+        : fullRow
+          ? `종일 ${fullRow.staff_name} (${half}을 정하면 종일은 지워짐)`
+          : null
+  const save = async (staffId) => {
+    setSaving(true)
+    try {
+      await setRoomCell(edit.room, edit.wd, half, staffId)
+      await reload()
+      setEdit(null)
+    } catch (e) {
+      say?.(koError(e?.message || String(e)), 'err')
+    }
+    setSaving(false)
+  }
+  return (
+    <div style={{ maxWidth: 880, marginTop: 26 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+        <div style={{ fontSize: 15, fontWeight: 700 }}>방 배정표</div>
+        <span style={{ fontSize: 12.5, color: C.sub }}>칸을 눌러 선생님을 바꿈</span>
+        <Btn disabled={!rows} onClick={() => setPrinting(true)} style={{ marginLeft: 'auto', padding: '6px 14px' }}>
+          인쇄
+        </Btn>
+      </div>
+      <Card style={{ padding: 14 }}>
+        {rows === undefined && <div style={{ fontSize: 13, color: C.mut }}>불러오는 중…</div>}
+        {rows === null && (
+          <div style={{ fontSize: 13, color: C.sub, lineHeight: 1.6 }}>
+            방 배정표가 DB에 아직 없습니다. Supabase SQL Editor에서 <b>room_board.sql</b> 을 먼저 실행해 주세요.
+          </div>
+        )}
+        {rows && <RoomBoardGrid rows={rows} toneOf={toneOf} onCell={openCell} />}
+      </Card>
+
+      {edit && (
+        <Modal onClose={() => setEdit(null)} max={380}>
+          <div style={{ padding: '16px 18px', borderBottom: `1px solid ${C.line2}` }}>
+            <div style={{ fontSize: 17, fontWeight: 700 }}>{edit.room} · {ROOM_DAYS[edit.wd - 1]}요일</div>
+          </div>
+          <div style={{ padding: 18 }}>
+            <div style={{ fontSize: 12.5, color: C.sub, marginBottom: 6 }}>언제</div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {['종일', '오전', '오후'].map((h) => (
+                <Btn key={h} variant={half === h ? 'primary' : 'default'} onClick={() => setHalf(h)} style={{ flex: 1, padding: '8px 0' }}>
+                  {h}
+                </Btn>
+              ))}
+            </div>
+            <div style={{ fontSize: 12.5, color: C.sub, margin: '14px 0 6px' }}>
+              누가 {nowText ? <span>· 지금 <b style={{ color: C.ink }}>{nowText}</b></span> : <span>· 지금 비어 있음</span>}
+            </div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {active.map((x) => {
+                const t = toneOf ? toneOf(x.name) : null
+                const on = cur && String(cur.staff_id) === String(x.id)
+                return (
+                  <Btn
+                    key={x.id}
+                    disabled={saving}
+                    onClick={() => save(x.id)}
+                    style={{ padding: '7px 12px', background: on ? t?.fg || C.ink : t?.bg, color: on ? '#fff' : t?.fg, borderColor: t?.bd || C.line }}
+                  >
+                    {x.name}
+                  </Btn>
+                )
+              })}
+              {/* 종일 비우기 = 칸 전체(오전 · 오후 포함), 오전/오후 비우기 = 그 반만 */}
+              <Btn disabled={saving || !(half === '종일' ? cellRows.length : cur)} onClick={() => save(null)} style={{ padding: '7px 12px' }}>
+                {half === '종일' && !fullRow && cellRows.length ? '칸 전체 비우기' : '비우기'}
+              </Btn>
+            </div>
+            <div style={{ fontSize: 12, color: C.sub, marginTop: 12, lineHeight: 1.6 }}>
+              종일을 고르면 칸 가득 이름만 · 오전/오후를 고르면 반칸으로 나옵니다.
+              <br />
+              종일로 정하면 그 칸의 오전 · 오후는 지워지고, 오전/오후로 정하면 종일은 지워집니다.
+            </div>
+            <Btn onClick={() => setEdit(null)} style={{ width: '100%', marginTop: 14, padding: '10px 0' }}>
+              닫기
+            </Btn>
+          </div>
+        </Modal>
+      )}
+
+      {printing && rows &&
+        createPortal(
+          <div className="rb-root">
+            <style>{`
+              @page rbport { size: A4 landscape; margin: 12mm; }
+              .rb-root { position: fixed; inset: 0; z-index: 95; background: #E9EAEC; overflow: auto; }
+              .rb-sheet { width: 273mm; margin: 12px auto 30px; background: #fff; padding: 10mm 12mm; box-sizing: border-box;
+                color: #1D2023; box-shadow: 0 1px 4px rgba(0,0,0,.12); page: rbport; }
+              @media print {
+                html, body { height: auto !important; overflow: visible !important; background: #fff !important; }
+                body > *:not(.rb-root) { display: none !important; }
+                .rb-root { position: static !important; overflow: visible !important; background: #fff; }
+                .rb-bar { display: none !important; }
+                .rb-sheet { margin: 0; box-shadow: none; padding: 0; width: auto; }
+                .rb-sheet * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+              }
+            `}</style>
+            <div className="rb-bar" style={{ position: 'sticky', top: 0, zIndex: 2, background: '#fff', borderBottom: `1px solid ${C.line}`, padding: '10px 14px', display: 'flex', gap: 8, alignItems: 'center' }}>
+              <div style={{ fontSize: 15, fontWeight: 700 }}>방 배정표 인쇄</div>
+              <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6 }}>
+                <Btn onClick={() => setPrinting(false)}>닫기</Btn>
+                <Btn variant="primary" onClick={() => printAs('방 배정표')}>인쇄</Btn>
+              </span>
+            </div>
+            <div className="rb-sheet">
+              <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 4 }}>방 배정표</div>
+              <div style={{ fontSize: 12, color: C.sub, marginBottom: 12 }}>검단ABA언어행동연구소 · {isoOf(new Date())} 인쇄</div>
+              <RoomBoardGrid rows={rows} toneOf={toneOf} print />
+            </div>
+          </div>,
+          document.body
+        )}
+    </div>
+  )
+}
+
 /* ================= 선생님 관리 ================= */
 function StaffManage({ staff, busy, onChanged, say, toneOf }) {
   const [logins, setLogins] = useState({})
@@ -12115,6 +12336,8 @@ function App() {
             }}
           />
         )}
+        {/* 방 배정표 — 선생님 관리 표 바로 아래 (정리용, 수업 · 급여와 연결 안 됨) */}
+        {!loading && tab === 'staff' && isAdmin && <RoomBoard staff={staff} toneOf={toneOf} say={say} />}
 
         {!loading && tab === 'plan' && isAdmin && (
           <>
