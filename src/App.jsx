@@ -130,6 +130,8 @@ const koError = (raw) => {
   // 일부 수업 기능은 partial_lesson.sql 을 Supabase에서 먼저 실행해야 합니다
   if (/(mark_partial|report_partial)/i.test(m) && /could not find|does not exist|schema cache/i.test(m))
     return '일부 수업 기능이 DB에 아직 없습니다. Supabase SQL Editor에서 partial_lesson.sql 을 먼저 실행해 주세요'
+  if (/move_lesson_oneday/i.test(m) && /could not find|does not exist|schema cache/i.test(m))
+    return '이 날만 시간 바꾸기 기능이 DB에 아직 없습니다. Supabase SQL Editor에서 이 날만 시간 바꾸기 SQL을 먼저 실행해 주세요'
   if (/refund_with_cancel/i.test(m) && /could not find|does not exist|schema cache/i.test(m))
     return '환불 + 수업 취소 기능이 DB에 아직 없습니다. Supabase SQL Editor에서 refund_cancel.sql 을 먼저 실행해 주세요'
   return m
@@ -726,6 +728,10 @@ async function notifyStaff(to, kind, message, sessionRef, payload) {
 async function markPartial(sessionId, doneMin, noticeId) {
   return ok(await supabase.rpc('mark_partial', { p_session: sessionId, p_done: doneMin, p_notice: noticeId ?? null }))
 }
+// 이 날만 시간 바꾸기: 원래 수업은 결강, 같은 날 새 시간은 보강 (서버에서 한 번에)
+async function moveLessonOneDay(sessionId, start, minutes) {
+  return ok(await supabase.rpc('move_lesson_oneday', { p_session: sessionId, p_start: start, p_minutes: minutes }))
+}
 async function reportPartial(sessionRef, doneMin, message, payload) {
   return ok(await supabase.rpc('report_partial', { p_session: String(sessionRef), p_done: doneMin, p_message: message, p_payload: payload ?? null }))
 }
@@ -1224,6 +1230,7 @@ const NOTICE_KIND = {
   report: { label: '보강 체크', bg: MAKEUP, fg: '#fff' },
   partial: { label: '일부 수업', bg: '#fff', fg: ABSENT, bd: ABSENT }, // 선생님 체크 → 원장님
   partial_set: { label: '일부 수업', bg: '#fff', fg: ABSENT, bd: ABSENT }, // 원장님이 기록 → 선생님
+  moved: { label: '시간 변경', bg: '#E6F1FB', fg: '#0C447C' }, // 원장님이 이 날만 시간 바꿈 → 선생님
   close_req: { label: '마감 확인', bg: '#E6F1FB', fg: '#0C447C' },
   close_ans: { label: '마감 답', bg: '#E6F1FB', fg: '#0C447C' },
   closing_ok: { label: '마감 승인', bg: '#EDF7F1', fg: '#1F5B3A' },
@@ -1645,6 +1652,80 @@ function PartialBox({ s, busy, onSave }) {
           </div>
           <div style={{ display: 'flex', gap: 6, marginTop: 9 }}>
             <Btn variant="primary" disabled={busy || min === now} onClick={() => onSave(min)} style={{ flex: 1, padding: '9px 0' }}>
+              저장
+            </Btn>
+            <Btn disabled={busy} onClick={() => setOpen(false)} style={{ padding: '9px 14px' }}>
+              닫기
+            </Btn>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// 원장님 수업 창의 '이 날만 시간 바꾸기' — 그날만 다른 시간(·더 짧게) 수업할 때
+//   저장하면 원래 수업은 결강, 같은 날 새 시간은 보강으로 한 번에 들어감 (다른 주는 그대로)
+function MoveTimeBox({ s, busy, onSave }) {
+  const tot = minutesBetween(hhmm(s.start_time), hhmm(s.end_time))
+  const orig = hhmm(s.start_time)
+  const [open, setOpen] = useState(false)
+  const [start, setStart] = useState(orig)
+  const [min, setMin] = useState(tot)
+  if (tot < 10) return null
+  const toM = (x) => Number(x.slice(0, 2)) * 60 + Number(x.slice(3, 5))
+  const toHm = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`
+  const starts = []
+  for (let m = 9 * 60; m <= 20 * 60; m += 10) starts.push(toHm(m))
+  if (!starts.includes(orig)) starts.push(orig)
+  starts.sort()
+  const mins = []
+  for (let m = 5; m <= tot; m += 5) mins.push(m)
+  if (!mins.includes(tot)) mins.push(tot)
+  const end = toHm(toM(start) + min)
+  const same = start === orig && min === tot
+  const sameStart = start === orig
+  const BLUE = '#185FA5'
+  return (
+    <div style={{ marginTop: 8 }}>
+      {!open ? (
+        <Btn
+          disabled={busy}
+          onClick={() => setOpen(true)}
+          style={{ width: '100%', padding: '10px 0', fontSize: 13.5, color: BLUE, borderColor: '#85B7EB' }}
+        >
+          이 날만 시간 바꾸기
+        </Btn>
+      ) : (
+        <div style={{ border: '1px solid #85B7EB', borderRadius: 9, padding: 11, background: '#F2F7FD' }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#0C447C', marginBottom: 7 }}>
+            {mdw(s.d)} 하루만 몇 시에 할까요?
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            <select
+              value={start}
+              onChange={(e) => setStart(e.target.value)}
+              style={{ padding: '6px 8px', border: `1px solid ${C.line}`, borderRadius: 7, fontSize: 14 }}
+            >
+              {starts.map((x) => (
+                <option key={x} value={x}>{clock(x)}</option>
+              ))}
+            </select>
+            <span style={{ fontSize: 13, color: C.ink }}>부터</span>
+            <select
+              value={min}
+              onChange={(e) => setMin(Number(e.target.value))}
+              style={{ padding: '6px 8px', border: `1px solid ${C.line}`, borderRadius: 7, fontSize: 14 }}
+            >
+              {mins.map((m) => (
+                <option key={m} value={m}>{m}분</option>
+              ))}
+            </select>
+            <span style={{ fontSize: 13, color: C.ink }}>→ {clock(start)}~{clock(end)}</span>
+          </div>
+          {same && <div style={{ fontSize: 12, color: C.danger, marginTop: 6 }}>원래 시간과 같아요. 시간이나 분을 바꿔 주세요.</div>}
+          <div style={{ display: 'flex', gap: 6, marginTop: 9 }}>
+            <Btn variant="primary" disabled={busy || same} onClick={() => onSave(start, min, end, sameStart)} style={{ flex: 1, padding: '9px 0' }}>
               저장
             </Btn>
             <Btn disabled={busy} onClick={() => setOpen(false)} style={{ padding: '9px 14px' }}>
@@ -2480,7 +2561,7 @@ function WeekGrid({ weekStart, sessions, holidays, outside = [], ownerName, colo
                       ...(part ? PARTIAL_TAG : null),
                     }}
                   >
-                    {part ? (narrow ? '일부' : partialText(s)) : isAbsent ? '결강' : '보강'}
+                    {part ? partialText(s) : isAbsent ? '결강' : '보강'}
                   </span>
                 )
                 const nameEl = (
@@ -6886,7 +6967,7 @@ const GRID_COLORS = [
   ['#BEE3DC', '#11423B'], ['#F2C9B8', '#5B2716'], ['#CBD5E1', '#1E293B'],
   ['#E7C9F0', '#4A1157'],
 ]
-function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unmade = [], endHour = 19, screen = false }) {
+function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unmade = [], endHour = 19, screen = false, onPick = null }) {
   // screen: 시간표 화면의 '한 달' 보기 — 종이 한 장에 맞추지 않고, 한 주씩 위아래로 크게 (인쇄는 그대로)
   const SCREEN_W = 820
   const [y, m] = ym.split('-').map(Number)
@@ -7293,19 +7374,35 @@ function TeacherGrid({ ym, teacher, tone, sessions, holidays, outside = [], unma
                           +{plusMinOf(s2)}분
                         </span>
                       )
+                      // 일부 수업 '일부 ○분' 딱지: 칸 왼쪽 아래 모서리에 따로 붙임 (칸 글자 크기 맞추기 계산에 안 들어감 · +보강 딱지는 오른쪽)
+                      const partBadge = pt && (
+                        <span
+                          key={s2.id + 'pt'}
+                          className="tt-gpt"
+                          style={{ top: pos.top + pos.height, left: `calc(${(k.lane / k.lanes) * 100}% + 3px)` }}
+                        >
+                          일부 {Number(s2.done_min)}분
+                        </span>
+                      )
                       return (
                         <React.Fragment key={s2.id}>
                         {plusBadge}
+                        {partBadge}
                         <div
                           className={`tt-gblk tt-gcell${mk ? ' tt-gmk' : ''}${ab ? ' tt-gab' : ''}${pt ? ' tt-gpart' : ''}${one ? ' tt-g1' : ''}${k.lanes > 1 ? ' tt-glane' : ''}`}
-                          style={pt ? { ...pos, '--tt-part': partialBg(s2) } : ab ? pos : { ...pos, background: mk ? '#fff' : c[0], color: mk ? '#5C3200' : c[1] }}
+                          style={{
+                            ...(pt ? { ...pos, '--tt-part': partialBg(s2) } : ab ? pos : { ...pos, background: mk ? '#fff' : c[0], color: mk ? '#5C3200' : c[1] }),
+                            ...(onPick ? { cursor: 'pointer' } : null),
+                          }}
+                          onClick={onPick ? () => onPick(s2._orig || s2) : undefined}
                         >
                           <b>
                             {mk && <span className="tt-gtag">보강</span>}
                             {s2.student_name}
                           </b>
                           <small>
-                            {pt ? partialText(s2) : ab ? '결강' : `${clock((s2._orig || s2).start_time)}~${clock((s2._orig || s2).end_time)}`}
+                            {ab && !pt ? '결강' : `${clock((s2._orig || s2).start_time)}~${clock((s2._orig || s2).end_time)}`}
+
                             {k.notes && <span className="tt-gnote"> · {k.notes.join('·')} 결강</span>}
                           </small>
                         </div>
@@ -7511,7 +7608,7 @@ function WeekSheet({ ym, days, weekNo, teachers, sessions, outside, holidays, le
   )
 }
 
-function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerName, loadHolidays, toneOf, colorOf, onClose, onlyTeacher, say, inline = false }) {
+function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerName, loadHolidays, toneOf, colorOf, onClose, onlyTeacher, say, inline = false, onPick = null }) {
   // inline: '시간표 → 한 달' 화면 안에 인쇄와 같은 모양으로 바로 보여줄 때 (인쇄 창 · 그림 만들기 없이)
   const rootRef = useRef(null)
   // 그 달에 수업이 있었던 선생님은 퇴사했어도 인쇄에 넣습니다 (퇴사 전 수업이 종이에서 빠지지 않게)
@@ -7812,6 +7909,8 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
         .tt-gblk.tt-gab small { font-weight: 800; opacity: 1 !important; }
         /* 일부 수업: 결강 칸과 같은 빨간 테두리, 수업한 위쪽은 초록 · 못 한 아래쪽은 빗금 */
         .tt-gblk.tt-gab.tt-gpart { background: var(--tt-part) !important; }
+        .tt-gpt { position: absolute; z-index: 3; transform: translate(0, -50%); padding: 0 3px; border-radius: 3px; background: #fff;
+          color: ${ABSENT}; border: 1px solid ${ABSENT}; font-weight: 800; font-size: 9.5px; line-height: 11px; white-space: nowrap; letter-spacing: -0.2px; }
         .tt-gout { background: #F1F2F4; color: #4B5563; border: 1px solid #D9DCE1; border-radius: 2px; padding: 2px 3px; margin-bottom: 1px; line-height: 1.15; }
         .tt-gout b { display: block; font-size: 8.5px; } .tt-gout small { font-size: 7.5px; opacity: .9; }
         .tt-page { width: 297mm; height: 210mm; margin: 0 auto 10mm; background: #fff; padding: 6mm 8mm;
@@ -8010,6 +8109,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
             outside={t.name === ownerName ? outside.filter((e) => e.d.slice(0, 7) === ym) : []}
             endHour={Math.ceil(gEnAll / 60)}
             unmade={unmade.filter((u) => u.staff_name === t.name)}
+            onPick={inline ? onPick : null}
           />
         ))}
         {mode === 'grid' && !shown.length && (
@@ -10655,6 +10755,15 @@ function App() {
     const inSchedNow = (tab === 'month' && (schedView === 'week' || schedView === 'month')) || tab === 'plan' || tab === 'mark'
     if (inSchedNow) schedPos.current = { ym, weekStart }
   }, [tab, schedView, ym, weekStart])
+  // 시간표 짜기는 '보던 달의 다음 달'을 짜는 화면이라, 짜기에서 시간표 · 출결로 넘어갈 때는 방금 짠 달을 보여 줌
+  //   (예: 11월을 짜고 시간표를 누르면 10월이 아니라 11월 — 이번 달이면 이번 주, 아니면 그 달 첫 주)
+  const fromPlanToSched = () => {
+    if (tab !== 'plan') return
+    const planned = shiftYm(ym, 1)
+    setYm(planned)
+    const now = new Date()
+    setWeekStart(planned === ymOf(now) ? mondayOf(now) : mondayOf(new Date(planned + '-01T00:00:00')))
+  }
   const backToSched = () => {
     const p = schedPos.current
     // 시간표를 아직 안 봤으면(돈 화면에서 앱을 연 경우 등) 이번 달 · 이번 주로
@@ -10824,6 +10933,7 @@ function App() {
       unmakeup: `${when} ${s.student_name} 보강을 지웠습니다`,
       uncancel: `${when} ${s.student_name} 수업 취소를 되돌렸습니다 (정상 수업)`,
       partial_set: `${when} ${s.student_name} 수업을 일부 수업으로 기록했습니다${extra}`,
+      moved: `${when} ${s.student_name} 수업을 이 날만 바꿨습니다: ${extra}`,
     }[kind]
     if (!msg) return
     try {
@@ -10867,6 +10977,29 @@ function App() {
       const before = findSession(id)
       await markAttendance(id, status)
       await tellMark(before, status)
+      await reloadAfterAction()
+      setPick(null)
+    } catch (e) {
+      fail(e)
+    }
+    setBusy(false)
+  }
+
+  // 이 날만 시간 바꾸기: 원래 수업 결강 + 같은 날 새 시간 보강 (서버에서 한 번에, 막히면 아무것도 안 바뀜)
+  const doMoveTime = async (p, start, minutes, end, sameStart) => {
+    setBusy(true)
+    try {
+      const msg = await moveLessonOneDay(p.id, start, minutes)
+      const tot = minutesBetween(hhmm(p.start_time), hhmm(p.end_time))
+      const left = tot - minutes > 0 ? ` · 남은 보강 ${tot - minutes}분` : ''
+      await tellTeacher(
+        p,
+        'moved',
+        sameStart
+          ? `${clock(start)}~${clock(end)} (${minutes}분, 일부 수업)${left}`
+          : `${clock(start)}~${clock(end)} (${minutes}분)${left} — 원래 시간은 결강, 새 시간은 보강`
+      )
+      say(msg || '이 날만 시간을 바꿨습니다')
       await reloadAfterAction()
       setPick(null)
     } catch (e) {
@@ -11103,7 +11236,7 @@ function App() {
       h: null,
       items: [
         { k: 'home', label: '홈', badge: adminTodo, on: tab === 'home', go: () => setTab('home') },
-        { k: 'week', label: '시간표', on: inSched, go: () => { if (!inSched) backToSched(); setTab('month'); setSchedView('week') } },
+        { k: 'week', label: '시간표', on: inSched, go: () => { if (!inSched) backToSched(); fromPlanToSched(); setTab('month'); setSchedView('week') } },
         { k: 'mk', label: '보강', badge: unmadeUp.length, on: tab === 'month' && schedView === 'makeup', go: () => { if (!inSched) backToSched(); setTab('month'); setSchedView('makeup') } },
         { k: 'money', label: '돈', badge: unpaidCount, on: inMoney, go: () => { if (!(tab === 'payment' || (tab === 'billing' && billGroup === 'staff'))) setYm(defaultBillingYm()); setTab('payment') } },
         { k: 'staff', label: '관리', on: tab === 'staff', go: () => setTab('staff') },
@@ -11115,8 +11248,8 @@ function App() {
     ? null
     : inSched
       ? [
-          { k: 'week', label: '시간표', on: tab === 'month' && schedView === 'week', go: () => { setTab('month'); setSchedView('week') } },
-          { k: 'att', label: '출결', on: (tab === 'month' && schedView === 'month') || tab === 'mark', go: () => { setTab('month'); setSchedView('month') } },
+          { k: 'week', label: '시간표', on: tab === 'month' && schedView === 'week', go: () => { fromPlanToSched(); setTab('month'); setSchedView('week') } },
+          { k: 'att', label: '출결', on: (tab === 'month' && schedView === 'month') || tab === 'mark', go: () => { fromPlanToSched(); setTab('month'); setSchedView('month') } },
           { k: 'plan', label: '시간표 짜기', on: tab === 'plan', go: () => setTab('plan') },
         ]
       : inMoney
@@ -11912,6 +12045,7 @@ function App() {
                 unmade={unmadeUp}
                 say={say}
                 onClose={() => {}}
+                onPick={setPick}
               />
             ) : (
             <>
@@ -12658,6 +12792,10 @@ function App() {
                   ))}
                 </div>
                 {canPartial && <PartialBox key={pick.id + (pick.done_min || '')} s={pick} busy={busy} onSave={(m) => doPartial(pick, m)} />}
+                {/* 이 날만 시간 바꾸기: 원장님만, 보강이 아직 안 잡힌 수업(진행 · 결강)만 — 일부 수업한 날은 제외 */}
+                {isAdmin && (cur === '진행' || cur === '결강') && !pt && !((Number(pick.made_min) || 0) > 0) && (
+                  <MoveTimeBox key={'mv' + pick.id} s={pick} busy={busy} onSave={(st, m, en, ss) => doMoveTime(pick, st, m, en, ss)} />
+                )}
                 {/* 영수증이 이미 발행된 달이면 청구 넣기/빼기 · 지우기를 막습니다 (발행한 금액이 바뀌지 않게) */}
                 {isAdmin && pick.from_template === false && locked && (
                   <div style={{ fontSize: 12, color: C.sub, marginTop: 10, lineHeight: 1.6 }}>
