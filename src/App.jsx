@@ -3858,11 +3858,10 @@ function PayrollHistory({ rows, staffOrder = [], ownerName, toneOf, busy, onPaid
       {header}
       <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
         <Stat label={`기록된 달 ${months.length}개월`} value={`${won(months.reduce((a, g) => a + g.total, 0))}원`} />
-        <Stat label="아직 이체 안 함 (실지급)" value={`${won(unpaid)}원`} tone={unpaid > 0 ? C.danger : C.mut} />
       </div>
 
       <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.75, marginBottom: 12 }}>
-        마감하면 그 달 급여가 세금까지 계산돼 저장됩니다. 이체하신 뒤 <b>이체함</b>을 누르면 날짜가 남아요.
+        마감하면 그 달 급여가 세금까지 계산돼 저장됩니다. 마감한 달은 추가지급 · 공제가 잠기고, 고치려면 마감을 취소하면 됩니다.
         <b> 엑셀</b> 표시는 예전 엑셀에서 옮긴 기록입니다.
       </div>
 
@@ -3876,13 +3875,7 @@ function PayrollHistory({ rows, staffOrder = [], ownerName, toneOf, busy, onPaid
           >
             <div style={{ fontSize: 14, fontWeight: 700 }}>{g.ym.replace('-', '년 ')}월분</div>
             <span style={{ fontSize: 12, color: C.sub }}>{g.list.length}명</span>
-            {g.legacy ? (
-              <Pill tone="gray">엑셀 기록</Pill>
-            ) : g.unpaid > 0 ? (
-              <Pill tone="pink">이체 전 {won(g.unpaid)}원</Pill>
-            ) : (
-              <Pill tone="green">이체 완료</Pill>
-            )}
+            {g.legacy && <Pill tone="gray">엑셀 기록</Pill>}
             <div style={{ marginLeft: 'auto', fontSize: 16, fontWeight: 700 }}>
               {won(g.total)}원
               <span style={{ fontSize: 11, color: C.sub, fontWeight: 500, marginLeft: 4 }}>실지급</span>
@@ -3912,24 +3905,11 @@ function PayrollHistory({ rows, staffOrder = [], ownerName, toneOf, busy, onPaid
                         지금 {won(r.pay_now)}
                       </span>
                     )}
-                    {r.source === '직접' && !r.paid_on && (
+                    {r.source === '직접' && (
                       <Btn disabled={busy} onClick={() => setManual(r)} style={{ padding: '4px 10px', fontSize: 12 }}>
                         고치기
                       </Btn>
                     )}
-                    {r.source !== '엑셀' &&
-                      (r.paid_on ? (
-                        <>
-                          <span style={{ fontSize: 12, color: '#1F5B3A' }}>{r.paid_on.slice(5).replace('-', '/')} 이체</span>
-                          <Btn disabled={busy} onClick={() => onPaid(r.ym, r.staff_id, null)} style={{ padding: '4px 10px', fontSize: 12 }}>
-                            이체 취소
-                          </Btn>
-                        </>
-                      ) : (
-                        <Btn variant="ok" disabled={busy} onClick={() => onPaid(r.ym, r.staff_id, undefined)} style={{ padding: '4px 10px', fontSize: 12 }}>
-                          이체함
-                        </Btn>
-                      ))}
                   </span>
                 </div>
                 <TaxLine
@@ -4683,11 +4663,6 @@ function BillingView({ ym, lines, byStaff, payroll, unmadeAll = null, receipts, 
   const [detailFor, setDetailFor] = useState(null)
   const [detail, setDetail] = useState(null)
   const [extrasFor, setExtrasFor] = useState(null)
-  // 이 달 급여가 이미 이체 표시된 선생님 (추가지급 · 공제를 못 고침)
-  const paidSet = useMemo(
-    () => new Set((payHistory || []).filter((r) => r.ym === ym && r.paid_on).map((r) => r.staff_id)),
-    [payHistory, ym]
-  )
 
   // 내역을 빨리 바꿔 열면 늦게 온 이전 선생님 내역이 덮지 않게, 마지막 요청만 반영
   const detailSeq = useRef(0)
@@ -4970,8 +4945,8 @@ function BillingView({ ym, lines, byStaff, payroll, unmadeAll = null, receipts, 
                           <span style={{ fontSize: 12, color: C.sub }}>
                             {(r.extra_items || []).length ? itemsText(r.extra_items) : '추가지급 · 공제 없음'}
                           </span>
-                          {paidSet.has(r.staff_id) ? (
-                            <span style={{ marginLeft: 'auto', fontSize: 11.5, color: C.mut }}>이체 표시한 달 — 고치려면 이체 취소</span>
+                          {closedSet.has(r.staff_name) ? (
+                            <span style={{ marginLeft: 'auto', fontSize: 11.5, color: C.mut }}>마감한 달 — 고치려면 마감 취소</span>
                           ) : (
                             <Btn
                               disabled={busy}
@@ -12415,11 +12390,9 @@ function App() {
               closings={closings}
               onClose={async (sid, undo) => {
                 const t = staff.find((x) => x.id === sid)?.name || '선생님'
-                // 이미 이체 표시한 달이면 · 비율이 없어 급여가 비어 있으면 한 번 더 알려 줍니다
-                const paidRec = payHistory.find((h) => h.ym === ym && String(h.staff_id) === String(sid) && h.paid_on)
+                // 비율이 없어 급여가 비어 있으면 한 번 더 알려 줍니다
                 const prRow = payroll.find((p) => String(p.staff_id) === String(sid))
                 const warn =
-                  (paidRec ? `\n\n⚠ 이 달 급여는 이미 ${paidRec.paid_on.slice(5).replace('-', '/')}에 이체 표시돼 있습니다. 다시 마감하면 기록 금액이 바뀔 수 있습니다.` : '') +
                   (!undo && prRow && prRow.pay == null ? '\n\n⚠ 급여 비율이 없어 급여 금액이 비어 있습니다. 비율을 먼저 넣는 편이 좋습니다.' : '')
                 const ok2 = confirm(
                   (undo
