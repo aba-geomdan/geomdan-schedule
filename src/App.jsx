@@ -1258,6 +1258,7 @@ const NOTICE_KIND = {
   moved: { label: '시간 변경', bg: '#E6F1FB', fg: '#0C447C' }, // 원장님이 이 날만 시간 바꿈 → 선생님
   close_req: { label: '마감 확인', bg: '#E6F1FB', fg: '#0C447C' },
   close_ans: { label: '마감 답', bg: '#E6F1FB', fg: '#0C447C' },
+  close_done: { label: '급여 확정', bg: '#EDF7F1', fg: '#1F5B3A' }, // 원장님이 마감 → 선생님께 급여 금액 · 세금 · 실지급
   closing_ok: { label: '마감 승인', bg: '#EDF7F1', fg: '#1F5B3A' },
   closing_back: { label: '마감 반려', bg: '#FDECEF', fg: '#AE2340' },
 }
@@ -1502,9 +1503,43 @@ function TeacherCloseCheck({ ym, state, onAnswer: onAnswerRaw, busy, unmadeNow =
   )
 }
 
+// 선생님 마감 탭: 원장님이 마감한 달의 급여 (금액 · 소득세 · 지방세 · 공제 · 실지급)
+function TeacherPayCard({ ym, rec }) {
+  const n = recNums(rec)
+  const mm = Number(ym.slice(5))
+  const rows = [
+    ['금액', n.gross],
+    ...(rec.tax_method === '3.3%' ? [['세금 3.3%', -n.tax]] : [['소득세 3%', -n.it], ['지방세 0.3%', -n.lt]]),
+    ...(n.ded > 0 ? [['공제', -n.ded]] : []),
+  ]
+  return (
+    <Card style={{ maxWidth: 560, margin: '0 auto 14px', padding: '14px 16px', border: '1.5px solid #9FD3B5' }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+        <div style={{ fontSize: 15, fontWeight: 800 }}>{mm}월 급여</div>
+        <span style={{ fontSize: 11.5, fontWeight: 700, borderRadius: 99, padding: '2px 9px', background: '#EDF7F1', color: '#1F5B3A' }}>마감됨</span>
+      </div>
+      <div style={{ marginTop: 8, background: '#FAFAFB', borderRadius: 9, padding: '10px 12px' }}>
+        {rows.map(([k, v]) => (
+          <div key={k} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, padding: '2px 0' }}>
+            <span style={{ color: C.sub }}>{k}</span>
+            <span>{v < 0 ? '−' + won(-v) : won(v)}원</span>
+          </div>
+        ))}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', borderTop: `1px solid ${C.line}`, marginTop: 6, paddingTop: 6 }}>
+          <span style={{ fontSize: 14, fontWeight: 800 }}>실지급액</span>
+          <span style={{ fontSize: 20, fontWeight: 800, color: C.pkd }}>{won(n.net)}원</span>
+        </div>
+        {(rec.extra_items || []).length > 0 && <div style={{ fontSize: 12, color: C.sub, marginTop: 5 }}>추가 · 공제: {itemsText(rec.extra_items)}</div>}
+      </div>
+    </Card>
+  )
+}
+
 // 선생님 화면 맨 위: 원장님이 바꾼 일정 (확인할 때까지 떠 있음)
-function TeacherNotices({ items, onConfirm, busy, title = '원장님이 일정을 바꿨습니다 · 확인해 주세요' }) {
+function TeacherNotices({ items, onConfirm, busy, title: titleIn }) {
   if (!items.length) return null
+  // 급여 확정 알림만 있으면 제목도 그에 맞게
+  const title = titleIn || (items.every((n) => n.kind === 'close_done') ? '급여가 확정됐습니다 · 확인해 주세요' : '원장님이 일정을 바꿨습니다 · 확인해 주세요')
   return (
     <Card className="no-print" style={{ padding: '12px 14px', marginBottom: 14, border: '1.5px solid #F0C27A', background: '#FFFBF2' }}>
       <div style={{ fontSize: 14.5, fontWeight: 800, color: '#8A4B00', marginBottom: 8 }}>
@@ -2402,8 +2437,8 @@ function WeekGrid({ weekStart, sessions: rawSessions, holidays, outside = [], ow
                       zIndex: 2,
                     }}
                   >
-                    {!wk && one && boxH < 30 ? (
-                      // 하루 보기의 짧은 일정(20분 등): '외부 · 이름 · 시간'을 한 줄로 (이름이 길면 끝을 …)
+                    {one && (!wk ? boxH < 30 : span > 1 && boxH < 44) ? (
+                      // 하루 보기 · 주 보기에서 옆으로 넓힌 짧은 일정(40분 이하 등 세 줄이 안 들어가는 높이): '외부 · 이름 · 시간'을 한 줄로 (이름이 길면 끝을 …)
                       <div style={{ display: 'flex', alignItems: 'center', gap: 5, height: '100%', whiteSpace: 'nowrap', overflow: 'hidden', marginTop: -2 }}>
                         <span style={{ fontSize: 9, fontWeight: 700, color: OUTSIDE.tag, flex: 'none' }}>외부</span>
                         <span style={{ fontSize: 11.5, fontWeight: 700, color: OUTSIDE.fg, overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>{list[0].label}</span>
@@ -3437,7 +3472,7 @@ function TaxLine({ gross, incomeTax, localTax, taxTotal, net, method, deducts })
       ) : (
         <>
           {cell('소득세 3%', incomeTax)}
-          {cell('지방세 10%', localTax)}
+          {cell('지방세 0.3%', localTax)}
         </>
       )}
       {cell('실지급액', net, true)}
@@ -3502,7 +3537,7 @@ function ManualPayModal({ staff, rec, busy, onClose, onSave, onDelete }) {
       <div style={{ padding: '16px 18px', borderBottom: `1px solid ${C.line2}` }}>
         <div style={{ fontSize: 17, fontWeight: 700 }}>{rec ? '급여 기록 고치기' : '급여 직접 입력'}</div>
         <div style={{ fontSize: 12.5, color: C.sub, marginTop: 3, lineHeight: 1.6 }}>
-          수업 기록이 없는 달이나 실장님처럼 수업이 없는 분 급여를 넣습니다. 세금은 3% + 지방세 10%로 자동 계산돼요.
+          수업 기록이 없는 달이나 실장님처럼 수업이 없는 분 급여를 넣습니다. 세금은 소득세 3% + 지방세 0.3%로 자동 계산돼요.
         </div>
       </div>
       <div style={{ padding: 18, display: 'grid', gap: 12 }}>
@@ -7459,16 +7494,42 @@ function TeacherGrid({ ym, teacher, tone, sessions: rawSessions, holidays, outsi
                       )
                       // 딱지가 붙는 칸(보강 · 옮김 · 일부)은 'tt-gmk'로 — 넘치면 그 칸만 글자를 줄임 (표 전체 글자 크기는 그대로)
                       const tagged = mk || mvFrom || pt
+                      // 일부 수업 '일부 ○분' 딱지: 칸 안에 넣으면 그 칸 글자가 작아지므로, 칸 왼쪽 위 모서리에 빨간 딱지로 따로 붙임
+                      const partBadge = null
+                      // '보강' · '옮김' 딱지: 칸 글자와 겹치지 않게 칸 바깥 빈자리에 붙임 — 위가 비면 칸 바로 위, 아니면 칸 바로 아래
+                      //   (위아래 모두 다른 칸이 붙어 있으면 예전처럼 이름 앞에 작은 딱지)
+                      const BADGE_H = 12
+                      const freeUp = k.above + (yOf(k.a) - pos.top)
+                      const freeDown = k.room - pos.height - (pos.top - yOf(k.a))
+                      const badgeAt = !(mk || mvFrom || pt) ? null : freeUp >= BADGE_H ? 'up' : freeDown >= BADGE_H && !(s2._plus && plusAfter) ? 'down' : 'in'
+                      const kindBadge = badgeAt && badgeAt !== 'in' && (
+                        <span
+                          key={s2.id + 'k'}
+                          className="tt-gpl tt-gkind"
+                          style={{
+                            top: badgeAt === 'up' ? pos.top : pos.top + pos.height,
+                            // 오른쪽 끝에 (왼쪽의 주황 빈 시간 막대를 가리지 않게) — '+○분' 딱지가 있는 칸은 왼쪽 끝에
+                            left: s2._plus ? `calc(${(k.lane / k.lanes) * 100}% + 1px)` : `calc(${((k.lane + 1) / k.lanes) * 100}% - 2px)`,
+                            transform: `translate(${s2._plus ? '0' : '-100%'}, ${badgeAt === 'up' ? '-100%' : '0'})`,
+                            borderRadius: badgeAt === 'up' ? '3px 3px 0 0' : '0 0 3px 3px',
+                            background: mvFrom ? MOVED_BLUE : pt ? ABSENT : undefined,
+                          }}
+                        >
+                          {mvFrom ? '옮김' : pt ? `일부 ${Number(s2.done_min)}분` : '보강'}
+                        </span>
+                      )
                       return (
                         <React.Fragment key={s2.id}>
                         {plusBadge}
+                        {partBadge}
+                        {kindBadge}
                         <div
                           className={`tt-gblk tt-gcell${tagged ? ' tt-gmk' : ''}${ab ? ' tt-gab' : ''}${pt ? ' tt-gpart' : ''}${mvTo ? ' tt-gmv0' : ''}${one ? ' tt-g1' : ''}${k.lanes > 1 ? ' tt-glane' : ''}`}
                           style={{
                             ...(mvTo
                               ? pos
                               : pt
-                                ? { ...pos, background: partialBg(s2, 'right', c[0]), color: c[1], border: `1px solid ${ABSENT}` }
+                                ? { ...pos, background: c[0], color: c[1], border: 'none', boxShadow: `inset 0 0 0 2px ${ABSENT}` }
                                 : mvFrom
                                   ? { ...pos, background: c[0], color: c[1], border: `1.5px solid ${MOVED_BLUE}` }
                                   : ab
@@ -7479,13 +7540,22 @@ function TeacherGrid({ ym, teacher, tone, sessions: rawSessions, holidays, outsi
                           onClick={onPick ? () => onPick(s2._orig || s2) : undefined}
                         >
                           <b>
-                            {mk && <span className="tt-gtag">보강</span>}
-                            {mvFrom && <span className="tt-gtag" style={{ background: MOVED_BLUE }}>옮김</span>}
-                            {pt && <span className="tt-gtag" style={{ background: ABSENT }}>일부 {Number(s2.done_min)}분</span>}
+                            {badgeAt === 'in' && mk && <span className="tt-gtag">보강</span>}
+                            {badgeAt === 'in' && mvFrom && <span className="tt-gtag" style={{ background: MOVED_BLUE }}>옮김</span>}
+                            {badgeAt === 'in' && pt && <span className="tt-gtag" style={{ background: ABSENT }}>일부</span>}
                             {s2.student_name}
                           </b>
                           <small>
-                            {ab ? '결강' : mvTo ? `→ ${clock(mvTo.start_time)}` : `${clock((s2._orig || s2).start_time)}~${clock((s2._orig || s2).end_time)}`}
+                            {ab ? '결강' : mvTo ? `→ ${clock(mvTo.start_time)}` : pt ? (
+                              <>
+                                {/* 칸이 반으로 나뉜 날은 시작 시간을 빼고 '~끝 시간 [○분]'만 (글자가 너무 작아지지 않게) */}
+                                {k.lanes > 1 ? '' : clock((s2._orig || s2).start_time)}~
+                                <span style={{ color: ABSENT, fontWeight: 800 }}>
+                                  {clock(`${String(Math.floor((ttMin((s2._orig || s2).start_time) + Number(s2.done_min)) / 60)).padStart(2, '0')}:${String((ttMin((s2._orig || s2).start_time) + Number(s2.done_min)) % 60).padStart(2, '0')}`)}
+                                </span>
+                                {badgeAt === 'in' && <span className="tt-gpin-xs">{Number(s2.done_min)}분</span>}
+                              </>
+                            ) : `${clock((s2._orig || s2).start_time)}~${clock((s2._orig || s2).end_time)}`}
 
                             {k.notes && <span className="tt-gnote"> · {k.notes.join('·')} 결강</span>}
                           </small>
@@ -8007,10 +8077,15 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
         .tt-gblk.tt-gab small { font-weight: 800; opacity: 1 !important; }
         /* 일부 수업: 결강 칸과 같은 빨간 테두리, 수업한 위쪽은 초록 · 못 한 아래쪽은 빗금 */
         .tt-gblk.tt-gpart { text-decoration: none; opacity: 1; }
+        .tt-gpin-xs { margin-left: 2px; color: ${ABSENT}; font-weight: 800; font-size: .7em; }
+        .tt-gpin { display: inline-block; margin-left: 3px; padding: 0 3px; border-radius: 3px; background: ${ABSENT}; color: #fff; font-weight: 800; font-size: .9em; line-height: 1.25; }
+        .tt-gpbar { position: absolute; z-index: 3; height: 11px; border-radius: 2px; background: #FDE3E0; overflow: hidden; box-shadow: 0 0 0 1px #fff; }
+        .tt-gpbar i { position: absolute; left: 0; top: 0; bottom: 0; background: ${ABSENT}; }
+        .tt-gpbar em { position: absolute; left: 4px; top: 0; font-style: normal; font-size: 9.5px; font-weight: 800; color: #fff; line-height: 11px; white-space: nowrap; }
         /* 옮긴 수업의 원래 칸: 회색 점선 · 흐린 글씨 '→ 새 시간' */
         .tt-gblk.tt-gmv0 { background: #F3F4F6 !important; color: #6B7280 !important; border: 1px dashed #9CA3AF !important; }
         .tt-gout { background: #F3F4F6; color: #111827; border: 1px solid #D1D5DB; border-left: 4px solid #374151; border-radius: 2px; padding: 2px 3px; margin-bottom: 1px; line-height: 1.15; }
-        .tt-gout b { display: block; font-size: 8.5px; font-weight: 800; } .tt-gout small { font-size: 7.5px; opacity: 1; color: #374151; }
+        .tt-gout b { display: block; font-size: 8.5px; font-weight: 900; color: #000; } .tt-gout small { font-size: 7.5px; opacity: 1; color: #111827; font-weight: 700; }
         .tt-page { width: 297mm; height: 210mm; margin: 0 auto 10mm; background: #fff; padding: 6mm 8mm;
           box-shadow: 0 1px 4px rgba(0,0,0,.12); display: flex; flex-direction: column; box-sizing: border-box; color: ${C.ink}; }
         .tt-ph { display: flex; align-items: baseline; gap: 8px; margin-bottom: 2mm; flex-wrap: wrap; row-gap: 2px; }
@@ -8328,7 +8403,8 @@ function MakeupLog({ rows, staffOrder = [], activeNames = [], ownerName, toneOf,
           <span style={{ fontSize: 14, fontWeight: 800 }}>{r.student_name}</span>
           {stTab === 'todo' && (
             <span style={{ marginLeft: 'auto', fontSize: 11.5, fontWeight: 700, color: daysSince(r.absent_d) >= 14 ? C.danger : C.mut, whiteSpace: 'nowrap' }}>
-              {daysSince(r.absent_d)}일 지남
+              {/* 아직 안 온 날(미리 결강 처리)은 '○일 뒤', 오늘은 '오늘' */}
+              {daysSince(r.absent_d) < 0 ? `${-daysSince(r.absent_d)}일 뒤` : daysSince(r.absent_d) === 0 ? '오늘' : `${daysSince(r.absent_d)}일 지남`}
             </span>
           )}
         </div>
@@ -10912,6 +10988,19 @@ function App() {
     }
   }, [isAdmin, tab, closeYm])
 
+  // 선생님 마감 탭: 원장님이 마감한 달이면 그 달 본인 급여 기록(금액 · 세금 · 실지급)
+  const [tPay, setTPay] = useState(null)
+  useEffect(() => {
+    if (isAdmin || !session || tab !== 'myclose') return
+    let on = true
+    loadPayrollHistory(closeYm, closeYm)
+      .then((r) => on && setTPay({ ym: closeYm, rec: (r || []).find((h) => h.source !== '엑셀') || (r || [])[0] || null }))
+      .catch(() => on && setTPay(null))
+    return () => {
+      on = false
+    }
+  }, [isAdmin, session, tab, closeYm, notices])
+
   // 선생님 마감 탭: 그 달 본인 수업의 급여 회기를 불러옵니다
   useEffect(() => {
     if (isAdmin || !session || tab !== 'myclose') return
@@ -11952,6 +12041,9 @@ function App() {
               <div style={{ flex: 1, textAlign: 'center', fontSize: 15, fontWeight: 700 }}>{closeYm.replace('-', '년 ')}월</div>
               <Btn onClick={() => setCloseYm(shiftYm(closeYm, 1))} style={{ padding: '6px 11px' }}>→</Btn>
             </div>
+            {tPay && tPay.ym === closeYm && tPay.rec && <TeacherPayCard ym={closeYm} rec={tPay.rec} />}
+            {/* 마감된 달은 '아직 요청하지 않았습니다' 안내를 띄우지 않음 */}
+            {!(tPay && tPay.ym === closeYm && tPay.rec && closeStateOf(notices, me.id, closeYm, null).st === 'none') && (
             <TeacherCloseCheck
               key={closeYm + ':' + (closeStateOf(notices, me.id, closeYm, null).req?.id ?? '')}
               ym={closeYm}
@@ -11971,6 +12063,7 @@ function App() {
                 setBusy(false)
               }}
             />
+            )}
           </>
         )}
         {/* 선생님 마감: 아래에 아이별 날짜와 급여 회기 (보기만 — 결강 처리는 원장님) */}
@@ -12344,7 +12437,24 @@ function App() {
                     // 선생님이 보낸 마감 답도 확인 처리 (마감한 뒤 '확인할 것'에 계속 남지 않게)
                     const ans = notices.filter((n) => n.kind === 'close_ans' && !n.confirmed_at && String(n.from_staff) === String(sid) && n.payload?.ym === ym)
                     for (const n of ans) await confirmNotice(n.id).catch(() => {})
-                    if (open.length || ans.length) await loadNotices().then(setNotices).catch(() => {})
+                    // 마감하면 저장된 급여 기록(금액 · 소득세 · 지방세 · 실지급)을 선생님께 보냄 — 선생님 마감 탭에도 뜸
+                    try {
+                      const rec = (await loadPayrollHistory(ym, ym)).find((h) => String(h.staff_id) === String(sid))
+                      if (rec && !(me && String(sid) === String(me.id))) {
+                        const n = recNums(rec)
+                        const taxTxt = rec.tax_method === '3.3%' ? `세금 3.3% ${won(n.tax)}원` : `소득세 ${won(n.it)}원 · 지방세 ${won(n.lt)}원`
+                        await notifyStaff(
+                          sid,
+                          'close_done',
+                          `${Number(ym.slice(5))}월 급여가 확정됐습니다 — 금액 ${won(n.gross)}원 · ${taxTxt}${n.ded ? ` · 공제 ${won(n.ded)}원` : ''} · 실지급 ${won(n.net)}원. 마감 탭에서 자세히 볼 수 있어요`,
+                          null,
+                          { ym, gross: n.gross, income_tax: n.it, local_tax: n.lt, tax: n.tax, deduct: n.ded, net: n.net }
+                        )
+                      }
+                    } catch (e) {
+                      // 문구를 못 보내도 마감은 된 상태
+                    }
+                    await loadNotices().then(setNotices).catch(() => {})
                   }
                   say(msg || (undo ? '마감을 취소했습니다' : '마감했습니다'))
                   await Promise.all([reloadMonth(), reloadMonthSessions(), reloadWeek()]).catch(() =>
