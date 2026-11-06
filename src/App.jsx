@@ -1416,7 +1416,7 @@ function TeacherCloseList({ ym, rows, snap }) {
 // 선생님 마감 탭: 원장님 요청에 '맞아요 / 달라요'
 //   적던 '달라요' 사유는 화면이 잠깐 다시 그려져도 남도록 따로 기억해 둡니다 (같은 달 · 같은 요청 기준)
 const closeDrafts = {}
-function TeacherCloseCheck({ ym, state, onAnswer: onAnswerRaw, busy, unmadeNow = null }) {
+function TeacherCloseCheck({ ym, state, onAnswer: onAnswerRaw, busy, unmadeNow = null, closed = false }) {
   const draftKey = ym + ':' + (state.req?.id ?? '')
   const [mode, setMode] = useState(() => (closeDrafts[draftKey] != null ? 'no' : null)) // null | 'no'
   const [why, setWhyRaw] = useState(() => closeDrafts[draftKey] || '')
@@ -1455,7 +1455,7 @@ function TeacherCloseCheck({ ym, state, onAnswer: onAnswerRaw, busy, unmadeNow =
     <Card style={{ ...box, padding: '14px 16px', border: state.st === 'wait' ? '1.5px solid #85B7EB' : undefined }}>
       <div style={{ fontSize: 15, fontWeight: 800 }}>{mm}월 마감 확인</div>
       <div style={{ fontSize: 13, color: C.sub, margin: '4px 0 10px', lineHeight: 1.5 }}>
-        원장님 급여 화면의 숫자입니다. 아래 아이별 날짜를 보고 맞는지 확인해 주세요.
+        {closed && state.st !== 'wait' ? '원장님이 마감한 숫자입니다.' : '원장님 급여 화면의 숫자입니다. 아래 아이별 날짜를 보고 맞는지 확인해 주세요.'}
       </div>
       <div style={{ display: 'flex', gap: 8 }}>
         {cell('수업', fmtUnits((Number(sn.units) || 0) - (Number(sn.makeups) || 0)) + '회기')}
@@ -1495,8 +1495,18 @@ function TeacherCloseCheck({ ym, state, onAnswer: onAnswerRaw, busy, unmadeNow =
           </div>
         )
       ) : (
-        <div style={{ marginTop: 12, fontSize: 13.5, padding: '9px 12px', borderRadius: 8, background: state.st === 'disagree' ? '#FDECEF' : '#EDF7F1', color: state.st === 'disagree' ? '#AE2340' : '#1F5B3A' }}>
-          {state.st === 'disagree' ? `'다르다'고 보냈습니다 — ${state.ans.payload?.reason || ''} · 원장님이 고친 뒤 다시 요청하면 여기서 다시 확인합니다` : '맞다고 보냈습니다. 원장님이 마감하면 끝납니다.'}
+        <div style={{ marginTop: 12, fontSize: 13.5, padding: '9px 12px', borderRadius: 8, background: state.st === 'disagree' && !closed ? '#FDECEF' : '#EDF7F1', color: state.st === 'disagree' && !closed ? '#AE2340' : '#1F5B3A' }}>
+          {/* 원장님이 이미 마감한 달이면 '마감하면 끝납니다' 대신 '마감했습니다' */}
+          {closed ? (
+            <>
+              {mm}월 마감이 끝났습니다.
+              {state.st === 'disagree' && state.ans.payload?.reason && (
+                <div style={{ fontSize: 12, marginTop: 3, opacity: 0.85 }}>보냈던 내용: {state.ans.payload.reason}</div>
+              )}
+            </>
+          ) : state.st === 'disagree'
+              ? `'다르다'고 보냈습니다 — ${state.ans.payload?.reason || ''} · 원장님이 고친 뒤 다시 요청하면 여기서 다시 확인합니다`
+              : '맞다고 보냈습니다. 원장님이 마감하면 끝납니다.'}
         </div>
       )}
     </Card>
@@ -10947,6 +10957,28 @@ function App() {
     firstLoad.current = false
   }, [session, staff.length, weekStart, ym, closeYm, ym])
 
+  // 선생님 마감 탭을 열 때: 원장님이 보낸 마감 확인 요청 · 급여 확정 알림 중 가장 최근 달이 기본 달보다 뒤면 그 달로
+  //   (예: 11월 6일에 원장님이 11월을 마감 → 기본은 10월이지만 11월을 바로 보여 줌). 화살표로 옮기는 건 그대로
+  const prevTab = useRef(tab)
+  const closeJump = useRef(null) // '확인하러 가기'처럼 달을 정해서 들어온 경우 그 달 그대로
+  useEffect(() => {
+    const was = prevTab.current
+    prevTab.current = tab
+    if (isAdmin || !me || tab !== 'myclose' || was === 'myclose') return
+    if (closeJump.current) {
+      setCloseYm(closeJump.current)
+      closeJump.current = null
+      return
+    }
+    const yms = notices
+      .filter((n) => (n.kind === 'close_req' || n.kind === 'close_done') && String(n.to_staff) === String(me.id) && /^\d{4}-\d{2}$/.test(n.payload?.ym || ''))
+      .map((n) => n.payload.ym)
+    const latest = yms.sort().pop()
+    const base = defaultClosingYm()
+    if (latest && latest > base) setCloseYm(latest)
+    else setCloseYm(base)
+  }, [isAdmin, me, tab, notices])
+
   // 선생님 마감 화면: 아래 출결 목록이 위 마감과 같은 달을 보도록 하고,
   //   시간표로 돌아오면 보던 달로 되돌립니다
   const tYmBack = useRef(null)
@@ -11788,7 +11820,10 @@ function App() {
                 <Btn
                   variant="primary"
                   onClick={() => {
-                    if (n.payload?.ym) setCloseYm(n.payload.ym)
+                    if (n.payload?.ym) {
+                      setCloseYm(n.payload.ym)
+                      closeJump.current = n.payload.ym
+                    }
                     setTab('myclose')
                   }}
                   style={{ padding: '6px 12px', fontSize: 13 }}
@@ -12024,6 +12059,7 @@ function App() {
               ym={closeYm}
               state={closeStateOf(notices, me.id, closeYm, null)}
               unmadeNow={unmadeUp.filter((u) => String(u.staff_id) === String(me.id) || u.staff_name === me.name).length}
+              closed={myClose && myClose.ym === closeYm ? myClose.status === '승인' : !!(tPay && tPay.ym === closeYm && tPay.rec && tPay.rec.source !== '엑셀')}
               busy={busy}
               onAnswer={async (agree, reason) => {
                 setBusy(true)
