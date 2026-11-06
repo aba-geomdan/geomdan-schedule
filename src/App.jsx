@@ -6219,15 +6219,9 @@ function PlanView({
   //   spare > 0 : 줄였는데 아직 다른 날에 안 붙인 분 / spare < 0 : 더 늘어난 분
   const spareOf = (sid) =>
     (rows || []).filter((x) => x.student_id === sid && !x.removed).reduce((a, x) => a + progMin(x) - lenOf(x), 0)
-  const lenChoices = (r) => {
-    const pm = progMin(r)
-    // 앞뒤 20분까지만 (50분 → 30~70분, 100분 → 80~120분): 이 안에서는 회기 수(50분 = 1회기)가 그대로라 급여 · 마감 숫자가 안 바뀜
-    const max = Math.min(pm + 20, Math.max(pm, lenOf(r) + Math.max(0, spareOf(r.student_id))))
-    const out = []
-    for (let m = Math.max(20, pm - 20); m <= max; m += 10) out.push(m)
-    if (!out.includes(lenOf(r))) out.push(lenOf(r))
-    return out.sort((a, b) => a - b)
-  }
+  // 줄이기: 기본 길이에서 20분까지 (5분 단위로 직접 입력) — 이 안에서는 회기 수(50분 = 1회기)가 그대로
+  // 붙이기: 다른 날 줄인 만큼 계산해서 '+○분 붙이기' 버튼 하나로 (기본 길이 + 20분까지)
+  const addOf = (r) => Math.min(Math.max(0, spareOf(r.student_id)), progMin(r) + 20 - lenOf(r))
   const endOf = (r) => {
     if (!r.start_time) return ''
     const mins = Number(r.minutes) || progMin(r)
@@ -6558,22 +6552,51 @@ function PlanView({
                       style={{ ...planSel, width: 132 }}
                     />
                     <span style={{ fontSize: 11.5, color: C.mut, minWidth: 38 }}>~{clock(endOf(r))}</span>
-                    {/* 길이: 보통은 숨김(수업 종류 길이 그대로). '길이'를 누르거나, 바꾼 길이가 있거나,
-                        그 아이에게 남은/넘친 분이 있을 때만 보임 — 앞뒤 사정으로 이 요일만 짧게/길게 (예: 목 40분 · 화 60분) */}
-                    {(r.minutes || r.showLen || spareOf(r.student_id) !== 0) && <select
-                      value={r.minutes || ''}
-                      disabled={r.removed}
-                      title="이 요일만 수업 길이를 바꿉니다 — 다른 날을 줄인 만큼만 늘릴 수 있어요 (수강료 · 급여는 1회 그대로)"
-                      onChange={(e) => set(r.uid, { minutes: e.target.value ? Number(e.target.value) : '' })}
-                      style={{ ...planSel, width: 74, color: r.minutes ? C.pkd : undefined, fontWeight: r.minutes ? 700 : undefined }}
-                    >
-                      {/* 짧은 것부터 차례로 (기본 길이도 제자리에) */}
-                      {lenChoices(r).map((m) => (
-                        <option key={m} value={m === progMin(r) ? '' : m}>
-                          {m}분
-                        </option>
-                      ))}
-                    </select>}
+                    {/* 길이: 보통은 숨김(수업 종류 길이 그대로). '길이'를 누른 줄은 줄인 분을 직접 입력(5분 단위),
+                        같은 아이 다른 날에는 줄인 만큼 계산된 '+○분 붙이기'만 나옴 (예: 목 45분 → 화 +5분 = 55분) */}
+                    {!r.removed && (r.showLen || lenOf(r) < progMin(r)) && lenOf(r) <= progMin(r) && (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                        <input
+                          type="number"
+                          step={5}
+                          min={progMin(r) - 20}
+                          max={progMin(r)}
+                          value={r.lenTyped ?? lenOf(r)}
+                          title="이 요일만 수업을 짧게 할 때 (최대 20분까지 줄일 수 있어요)"
+                          onChange={(e) => {
+                            const t = e.target.value
+                            const n = Number(t)
+                            // 고치는 동안엔 입력한 그대로 보여 주고, 범위 안 숫자일 때만 길이에 반영
+                            if (t !== '' && n >= progMin(r) - 20 && n <= progMin(r)) set(r.uid, { lenTyped: t, minutes: n === progMin(r) ? '' : n })
+                            else set(r.uid, { lenTyped: t })
+                          }}
+                          onBlur={() => set(r.uid, { lenTyped: undefined })}
+                          style={{ ...planSel, width: 62, color: lenOf(r) < progMin(r) ? C.pkd : undefined, fontWeight: lenOf(r) < progMin(r) ? 700 : undefined }}
+                        />
+                        <span style={{ fontSize: 11.5, color: C.sub }}>분</span>
+                      </span>
+                    )}
+                    {!r.removed && lenOf(r) > progMin(r) && (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, fontWeight: 700, color: C.pkd }}>
+                        {lenOf(r)}분 (+{lenOf(r) - progMin(r)})
+                        <button
+                          onClick={() => set(r.uid, { minutes: '' })}
+                          title="붙인 분을 빼고 기본 길이로"
+                          style={{ border: 'none', background: 'none', color: C.sub, fontSize: 11, cursor: 'pointer', textDecoration: 'underline', padding: 0 }}
+                        >
+                          빼기
+                        </button>
+                      </span>
+                    )}
+                    {!r.removed && lenOf(r) >= progMin(r) && addOf(r) > 0 && (
+                      <button
+                        onClick={() => set(r.uid, { minutes: lenOf(r) + addOf(r), showLen: false })}
+                        title="다른 날 줄인 만큼 이 날에 붙입니다"
+                        style={{ border: `1px solid ${C.pkd}`, background: '#FFF5F7', color: C.pkd, borderRadius: 6, fontSize: 11.5, fontWeight: 700, cursor: 'pointer', padding: '3px 7px' }}
+                      >
+                        +{addOf(r)}분 붙이기
+                      </button>
+                    )}
                     <select
                       value={r.program_code}
                       disabled={r.removed}
@@ -6600,7 +6623,7 @@ function PlanView({
                           </option>
                         ))}
                     </select>
-                    {!r.minutes && !r.showLen && spareOf(r.student_id) === 0 && !r.removed && (
+                    {!r.minutes && !r.showLen && !r.removed && addOf(r) === 0 && (
                       <button
                         onClick={() => set(r.uid, { showLen: true })}
                         title="앞뒤 사정으로 이 요일만 수업을 짧게 하고 다른 날에 붙일 때"
