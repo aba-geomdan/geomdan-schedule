@@ -6007,7 +6007,7 @@ function MonthOnlyCard({ ym, leaves, outside, staff, busy, onAddLeave, onRemoveL
   )
 }
 
-const key = (r) => `${r.student_id}|${r.staff_id}|${r.program_code}|${r.weekday}|${r.start_time}`
+const key = (r) => `${r.student_id}|${r.staff_id}|${r.program_code}|${r.weekday}|${r.start_time}|${r.minutes || ''}`
 // 바뀐 곳을 셀 때는 시작 · 까지 날짜도 함께 봅니다
 const keyFull = (r) => `${key(r)}|${r.from || ''}|${r.to || ''}`
 
@@ -6069,6 +6069,12 @@ function PlanView({
             program_code: p.program_code,
             weekday: p.weekday,
             start_time: hhmm(p.start_time),
+            // 수업 종류 길이와 다른 수업(예: 50분 수업인데 이 요일만 40분)이면 그 분을 기억 — 같으면 비움(기본 길이)
+            minutes: (() => {
+              const pm = programs.find((x) => x.code === p.program_code)?.minutes || 50
+              const len = p.end_time ? ttMin(p.end_time) - ttMin(p.start_time) : pm
+              return len > 0 && len !== pm ? len : ''
+            })(),
             // 이 달 중간에 시작/끝나는 수업이면 그 날짜를 그대로 둡니다
             from: p.valid_from && p.valid_from > mStart && p.valid_from <= mEnd ? p.valid_from : '',
             // 말일에 끝나는 수업: 뒤 달 시간표가 없으면 '말일까지 그만둠'이므로 날짜를 남겨 둡니다
@@ -6206,9 +6212,25 @@ function PlanView({
 
   const isClash = (r) => clashKeys.has(`${r.staff_id}|${r.weekday}|${r.start_time}`)
 
+  const progMin = (r) => programs.find((p) => p.code === r.program_code)?.minutes || 50
+  const lenOf = (r) => Number(r.minutes) || progMin(r)
+  // 길이 규칙: 한 아이의 일주일 수업 시간 합은 그대로 — 어떤 날을 줄인 만큼만 다른 날을 늘릴 수 있음
+  //   (예: 50분 · 50분 → 월 40분으로 줄이면 그때 수요일에 60분이 생김)
+  //   spare > 0 : 줄였는데 아직 다른 날에 안 붙인 분 / spare < 0 : 더 늘어난 분
+  const spareOf = (sid) =>
+    (rows || []).filter((x) => x.student_id === sid && !x.removed).reduce((a, x) => a + progMin(x) - lenOf(x), 0)
+  const lenChoices = (r) => {
+    const pm = progMin(r)
+    // 앞뒤 20분까지만 (50분 → 30~70분, 100분 → 80~120분): 이 안에서는 회기 수(50분 = 1회기)가 그대로라 급여 · 마감 숫자가 안 바뀜
+    const max = Math.min(pm + 20, Math.max(pm, lenOf(r) + Math.max(0, spareOf(r.student_id))))
+    const out = []
+    for (let m = Math.max(20, pm - 20); m <= max; m += 10) out.push(m)
+    if (!out.includes(lenOf(r))) out.push(lenOf(r))
+    return out.sort((a, b) => a - b)
+  }
   const endOf = (r) => {
     if (!r.start_time) return ''
-    const mins = programs.find((p) => p.code === r.program_code)?.minutes || 50
+    const mins = Number(r.minutes) || progMin(r)
     const [h, m] = r.start_time.split(':').map(Number)
     const t = h * 60 + m + mins
     return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`
@@ -6262,12 +6284,24 @@ function PlanView({
                 // 시작 시각을 지운 줄이 있으면 적용하지 않음
                 if (live.some((r) => !r.start_time)) return say('시작 시각이 비어 있는 수업이 있습니다. 시각을 넣어 주세요', 'err')
                 if (live.some((r) => r.from && r.to && r.to < r.from)) return say('시작 날짜가 끝 날짜보다 늦은 수업이 있습니다. 날짜를 고쳐 주세요', 'err')
+                {
+                  const off = [...new Set(live.map((r) => r.student_id))].filter((sid) => spareOf(sid) !== 0)
+                  if (off.length) {
+                    const nm = (sid) => students.find((x) => x.id === sid)?.name || '아동'
+                    return say(
+                      off.map((sid) => (spareOf(sid) > 0 ? `${nm(sid)} ${spareOf(sid)}분 남음` : `${nm(sid)} ${-spareOf(sid)}분 넘침`)).join(' · ') +
+                        ' — 줄인 만큼 다른 날 수업 길이에 붙여 주세요',
+                      'err'
+                    )
+                  }
+                }
                 const payload = live.map((r) => ({
                   student_id: r.student_id,
                   staff_id: r.staff_id,
                   program_code: r.program_code,
                   weekday: r.weekday,
                   start_time: r.start_time,
+                  ...(r.minutes ? { minutes: Number(r.minutes) } : {}),
                   ...(r.from ? { from: r.from } : {}),
                   ...(r.to ? { to: r.to } : {}),
                 }))
@@ -6447,6 +6481,11 @@ function PlanView({
             <div style={{ width: 100, paddingTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
               <div style={{ fontSize: 14, fontWeight: 700 }}>{s.name}</div>
               {(s.gone || (s.status && s.status !== '재원')) && <Pill tone="gray">{s.status}</Pill>}
+              {!s.gone && spareOf(s.id) !== 0 && (
+                <div style={{ fontSize: 11, fontWeight: 700, color: C.danger }} title="줄인 만큼 다른 날 수업에 붙여야 적용할 수 있어요">
+                  {spareOf(s.id) > 0 ? `${spareOf(s.id)}분 남음 — 다른 날에 붙이기` : `${-spareOf(s.id)}분 넘침`}
+                </div>
+              )}
               {s.shared && (
                 <div style={{ fontSize: 10.5, color: C.sub }} title="다른 선생님 수업도 있는 아동입니다">
                   다른 선생님도
@@ -6519,10 +6558,26 @@ function PlanView({
                       style={{ ...planSel, width: 132 }}
                     />
                     <span style={{ fontSize: 11.5, color: C.mut, minWidth: 38 }}>~{clock(endOf(r))}</span>
+                    {/* 길이: 보통은 숨김(수업 종류 길이 그대로). '길이'를 누르거나, 바꾼 길이가 있거나,
+                        그 아이에게 남은/넘친 분이 있을 때만 보임 — 앞뒤 사정으로 이 요일만 짧게/길게 (예: 목 40분 · 화 60분) */}
+                    {(r.minutes || r.showLen || spareOf(r.student_id) !== 0) && <select
+                      value={r.minutes || ''}
+                      disabled={r.removed}
+                      title="이 요일만 수업 길이를 바꿉니다 — 다른 날을 줄인 만큼만 늘릴 수 있어요 (수강료 · 급여는 1회 그대로)"
+                      onChange={(e) => set(r.uid, { minutes: e.target.value ? Number(e.target.value) : '' })}
+                      style={{ ...planSel, width: 74, color: r.minutes ? C.pkd : undefined, fontWeight: r.minutes ? 700 : undefined }}
+                    >
+                      {/* 짧은 것부터 차례로 (기본 길이도 제자리에) */}
+                      {lenChoices(r).map((m) => (
+                        <option key={m} value={m === progMin(r) ? '' : m}>
+                          {m}분
+                        </option>
+                      ))}
+                    </select>}
                     <select
                       value={r.program_code}
                       disabled={r.removed}
-                      onChange={(e) => set(r.uid, { program_code: e.target.value })}
+                      onChange={(e) => set(r.uid, { program_code: e.target.value, minutes: '' })}
                       style={{ ...planSel, width: 126 }}
                     >
                       {programs.map((p) => (
@@ -6545,6 +6600,15 @@ function PlanView({
                           </option>
                         ))}
                     </select>
+                    {!r.minutes && !r.showLen && spareOf(r.student_id) === 0 && !r.removed && (
+                      <button
+                        onClick={() => set(r.uid, { showLen: true })}
+                        title="앞뒤 사정으로 이 요일만 수업을 짧게 하고 다른 날에 붙일 때"
+                        style={{ border: 'none', background: 'none', color: C.sub, fontSize: 11.5, cursor: 'pointer', textDecoration: 'underline', padding: '0 2px' }}
+                      >
+                        길이
+                      </button>
+                    )}
                     {!r.isNewRow && !r.from && !r.to && !r.showDates && !r.removed && (
                       <button
                         onClick={() => set(r.uid, { showDates: true })}
