@@ -4659,7 +4659,7 @@ function RevenueMenu({ total, loadRevenueList }) {
   )
 }
 
-function BillingView({ ym, lines, byStaff, payroll, unmadeAll = null, receipts, onOpenReceipt, onPrintAll, onSetRate, onDetail, busy, closing, closings = [], closeCheck = null, onClose, staffOrder = [], ownerName, payHistory = [], onPayrollPaid, toneOf, allStaff = [], onSaveExtras, onSaveManual, onDeleteManual, loadCopay, loadRevenueList, say, group: groupProp, onGroup }) {
+function BillingView({ ym, lines, byStaff, payroll, unmadeAll = null, receipts, onOpenReceipt, onPrintAll, onSetRate, onDetail, busy, closing, closings = [], closeCheck = null, onClose, staffOrder = [], ownerName, payHistory = [], onPayrollPaid, toneOf, allStaff = [], onSaveExtras, onSaveManual, onDeleteManual, loadCopay, loadRevenueList, say, group: groupProp, onGroup, monthSessions = [] }) {
   // 이 달 마감한 선생님
   const closedSet = useMemo(() => new Set((closings || []).filter((c) => c.status === '승인').map((c) => c.staff_name)), [closings])
   // 정산 화면 선생님 순서: 원장님은 맨 위 고정, 나머지는 등록 순서 (금액과 상관없이 늘 같은 자리)
@@ -5043,7 +5043,7 @@ function BillingView({ ym, lines, byStaff, payroll, unmadeAll = null, receipts, 
           )}
 
           {detailFor && (
-            <Modal onClose={() => setDetailFor(null)} max={420}>
+            <Modal onClose={() => setDetailFor(null)} max={600}>
               <div style={{ padding: '16px 18px', borderBottom: `1px solid ${C.line2}` }}>
                 <div style={{ fontSize: 17, fontWeight: 700 }}>{detailFor.staff_name} 급여 내역</div>
                 <div style={{ fontSize: 12.5, color: C.sub, marginTop: 3 }}>
@@ -5052,41 +5052,148 @@ function BillingView({ ym, lines, byStaff, payroll, unmadeAll = null, receipts, 
                   {detailFor.pay != null && ` = ${won(detailFor.pay)}원`}
                 </div>
               </div>
-              <div style={{ maxHeight: 360, overflow: 'auto' }}>
-                {detail === null ? (
-                  <Empty>불러오는 중…</Empty>
-                ) : detail.length === 0 ? (
-                  <Empty>내역이 없습니다.</Empty>
-                ) : (
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                    <thead>
-                      <tr style={{ color: C.mut, fontSize: 11.5 }}>
-                        <th style={{ textAlign: 'left', padding: '8px 16px', fontWeight: 600 }}>아동</th>
-                        <th style={{ textAlign: 'right', padding: '8px 8px', fontWeight: 600 }}>회기</th>
-                        <th style={{ textAlign: 'right', padding: '8px 16px', fontWeight: 600 }}>수강료</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {detail.map((d, i) => (
-                        <tr key={i} style={{ borderTop: `1px solid ${C.line2}` }}>
-                          <td style={{ padding: '8px 16px' }}>
-                            {d.student_name}
-                            <div style={{ fontSize: 11, color: C.mut }}>
-                              {d.program_label}
-                              {Number(d.makeup_units) > 0 && ` · 보강 ${fmtUnits(d.makeup_units)}회기`}
-                            </div>
-                          </td>
-                          <td style={{ padding: '8px 8px', textAlign: 'right', verticalAlign: 'top' }}>
-                            {fmtUnits(d.units)}
-                          </td>
-                          <td style={{ padding: '8px 16px', textAlign: 'right', fontWeight: 600, verticalAlign: 'top' }}>
-                            {won(d.tuition)}
-                          </td>
-                        </tr>
+              <div style={{ maxHeight: '60vh', overflow: 'auto' }}>
+                {(() => {
+                  // 이 선생님의 이 달 수업 (취소 제외) — 아이 · 수업 종류별로 날짜를 붙여 보여 줌 (보기만)
+                  const mine = monthSessions.filter((x) => String(x.staff_id) === String(detailFor.staff_id) && x.status !== '취소')
+                  const used = new Set()
+                  const sameKid = (x, d) => (d.student_id != null ? String(x.student_id) === String(d.student_id) : x.student_name === d.student_name)
+                  const datesOf = (d) => {
+                    const list = mine
+                      .filter((x) => sameKid(x, d) && (!d.program_label || x.program_label === d.program_label))
+                      .sort((a, b) => a.d.localeCompare(b.d) || String(a.start_time).localeCompare(String(b.start_time)))
+                    list.forEach((x) => used.add(x.id))
+                    return attachShortMakeups(list)
+                  }
+                  const md = (d) => `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}`
+                  // 날짜 숫자만 한 줄로 (달은 제목에 있으니 뺌) · 자세한 건 마우스를 올리면
+                  const chip = (x) => {
+                    const day = Number(x.d.slice(8, 10))
+                    const box = (bg, fg, extra, tip, text = day) => (
+                      <span
+                        key={x.id}
+                        title={tip}
+                        style={{
+                          display: 'inline-block', minWidth: 22, boxSizing: 'border-box', textAlign: 'center',
+                          fontSize: 11.5, fontWeight: 600, borderRadius: 4, padding: '1px 3px', lineHeight: '16px',
+                          background: bg, color: fg, ...extra,
+                        }}
+                      >
+                        {text}
+                      </span>
+                    )
+                    if (isPartial(x))
+                      return box('#fff', '#A32D2D', { boxShadow: `inset 0 0 0 1px ${ABSENT}` }, `${md(x.d)} 일부 수업 ${x.done_min}분${x.needs_makeup ? ' · 미보강' : ' · 보강함'}`, `${day} 일부${x.done_min}`)
+                    if (x.status === '결강')
+                      return x.needs_makeup
+                        ? box('#E24B4A', '#fff', { textDecoration: 'line-through' }, `${md(x.d)} 결강 · 미보강`)
+                        : box('#FCEBEB', '#A32D2D', { textDecoration: 'line-through' }, `${md(x.d)} 결강 · 보강함`)
+                    if (x.status === '보강') {
+                      const a = x.makeup_for ? monthSessions.find((y) => y.id === x.makeup_for) : null
+                      const mins = minutesBetween(hhmm(x.start_time), hhmm(x.end_time))
+                      return box('#E6F1FB', '#0C447C', null, `${md(x.d)} 보강 ${mins}분${x.makeup_for ? (a ? ` · ${md(a.d)} 결강분` : ' · 지난달 결강분') : ''}`)
+                    }
+                    if (x._plus) {
+                      const pm = (m) => toMin((m._orig || m).end_time) - toMin((m._orig || m).start_time)
+                      return (
+                        <span
+                          key={x.id}
+                          title={`${md(x.d)} 수업 · ${x._plus.map((m) => `보강 ${pm(m)}분${m.makeup_for ? (() => { const a = monthSessions.find((y) => y.id === m.makeup_for); return a ? ` (${md(a.d)} 결강분)` : ' (지난달 결강분)' })() : ''}`).join(' · ')}`}
+                          style={{
+                            display: 'inline-flex', alignItems: 'center', gap: 2, fontSize: 11.5, fontWeight: 600, borderRadius: 4,
+                            padding: '1px 2px 1px 4px', lineHeight: '16px', background: '#F1EFE8', color: '#444441',
+                          }}
+                        >
+                          {day}
+                          {x._plus.map((m) => (
+                            <span key={m.id} style={{ background: MAKEUP, color: '#fff', borderRadius: 99, padding: '0 4px', fontSize: 10.5, lineHeight: '14px' }}>
+                              +{pm(m)}
+                            </span>
+                          ))}
+                        </span>
+                      )
+                    }
+                    return box('#F1EFE8', '#444441', null, `${md(x.d)} 수업`)
+                  }
+                  const dateRow = (list) =>
+                    list.length > 0 && <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap', marginTop: 5 }}>{list.map(chip)}</div>
+                  const legend = (
+                    <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', padding: '9px 16px', borderTop: `1px solid ${C.line2}`, fontSize: 11, color: C.sub }}>
+                      {[
+                        ['수업', { background: '#F1EFE8' }],
+                        ['결강 · 보강함', { background: '#FCEBEB' }],
+                        ['결강 · 미보강', { background: '#E24B4A' }],
+                        ['보강', { background: '#E6F1FB' }],
+                        ['일부 수업 (수업한 분)', { background: '#fff', boxShadow: `inset 0 0 0 1px ${ABSENT}` }],
+                      ].map(([t, st]) => (
+                        <span key={t} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                          <span style={{ width: 10, height: 10, borderRadius: 3, ...st }} />
+                          {t}
+                        </span>
                       ))}
-                    </tbody>
-                  </table>
-                )}
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        <span style={{ background: MAKEUP, color: '#fff', borderRadius: 99, padding: '0 4px', fontSize: 10, lineHeight: '13px' }}>+10</span>
+                        그날 수업에 붙인 보강
+                      </span>
+                    </div>
+                  )
+                  if (detail === null) return <Empty>불러오는 중…</Empty>
+                  const rowsD = detail.map((d) => ({ d, dates: datesOf(d) }))
+                  // 회기에는 안 잡혔지만 이 달 수업이 있는 아이 (예: 결강만 있고 아직 보강 안 함)
+                  const rest = {}
+                  mine.filter((x) => !used.has(x.id)).forEach((x) => {
+                    const k = String(x.student_id ?? x.student_name)
+                    if (!rest[k]) rest[k] = { name: x.student_name, list: [] }
+                    rest[k].list.push(x)
+                  })
+                  const restRows = Object.values(rest).sort((a, b) => a.name.localeCompare(b.name, 'ko'))
+                  if (!rowsD.length && !restRows.length) return <Empty>내역이 없습니다.</Empty>
+                  return (
+                    <>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                      <thead>
+                        <tr style={{ color: C.mut, fontSize: 11.5 }}>
+                          <th style={{ textAlign: 'left', padding: '8px 16px', fontWeight: 600 }}>아동</th>
+                          <th style={{ textAlign: 'right', padding: '8px 8px', fontWeight: 600 }}>회기</th>
+                          <th style={{ textAlign: 'right', padding: '8px 16px', fontWeight: 600 }}>수강료</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rowsD.map(({ d, dates }, i) => (
+                          <tr key={i} style={{ borderTop: `1px solid ${C.line2}` }}>
+                            <td style={{ padding: '8px 16px' }}>
+                              {d.student_name}
+                              <div style={{ fontSize: 11, color: C.mut }}>
+                                {d.program_label}
+                                {Number(d.makeup_units) > 0 && ` · 보강 ${fmtUnits(d.makeup_units)}회기`}
+                              </div>
+                              {dateRow(dates)}
+                            </td>
+                            <td style={{ padding: '8px 8px', textAlign: 'right', verticalAlign: 'top' }}>
+                              {fmtUnits(d.units)}
+                            </td>
+                            <td style={{ padding: '8px 16px', textAlign: 'right', fontWeight: 600, verticalAlign: 'top' }}>
+                              {won(d.tuition)}
+                            </td>
+                          </tr>
+                        ))}
+                        {restRows.map((k, i) => (
+                          <tr key={'r' + i} style={{ borderTop: `1px solid ${C.line2}`, background: '#FBFBFC' }}>
+                            <td style={{ padding: '8px 16px' }}>
+                              {k.name}
+                              <div style={{ fontSize: 11, color: C.mut }}>이 달 급여 회기에는 안 들어간 수업</div>
+                              {dateRow(attachShortMakeups(k.list.sort((a, b) => a.d.localeCompare(b.d))))}
+                            </td>
+                            <td style={{ padding: '8px 8px', textAlign: 'right', verticalAlign: 'top', color: C.mut }}>0</td>
+                            <td style={{ padding: '8px 16px', textAlign: 'right', verticalAlign: 'top', color: C.mut }}>—</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {legend}
+                    </>
+                  )
+                })()}
               </div>
               <div style={{ padding: 16 }}>
                 <Btn onClick={() => setDetailFor(null)} style={{ width: '100%', padding: '11px 0' }}>
@@ -12163,7 +12270,7 @@ function App() {
             isAdmin={isAdmin}
             onPrevYm={() => setYm(shiftYm(ym, -1))}
             onNextYm={() => setYm(shiftYm(ym, 1))}
-            onMark={doMark}
+            onMark={null}
           />
         )}
 
@@ -12506,6 +12613,7 @@ function App() {
             <BillingView
               ym={ym}
               unmadeAll={unmadeUp}
+              monthSessions={monthSessions}
               closeCheck={{
                 stateOf: (r) => (me && String(r.staff_id) === String(me.id) ? { st: 'own' } : closeStateOf(notices, r.staff_id, ym, r)),
                 onRequest: async (r) => {
