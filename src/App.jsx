@@ -1416,6 +1416,11 @@ function TeacherCloseList({ ym, rows, snap }) {
 // 선생님 마감 탭: 원장님 요청에 '맞아요 / 달라요'
 //   적던 '달라요' 사유는 화면이 잠깐 다시 그려져도 남도록 따로 기억해 둡니다 (같은 달 · 같은 요청 기준)
 const closeDrafts = {}
+// 수업 종류별 기본 길이(분) — 원장 화면은 불러온 수업 종류에서, 선생님 화면은 이름(예: 'ABA 개별 50분')에서 읽음
+const PROG_MIN = {}
+const progMinOfSession = (s) => PROG_MIN[s.program_code] || Number((String(s.program_label || '').match(/(\d+)\s*분/) || [])[1]) || null
+// 시간표 짜기에서 길이를 조정한 수업 표시 방식: 'border' = 칸 테두리 회색 점선 / 'none' = 표시 없음 (칸을 누르면 창에서 안내)
+const ADJ_MODE = 'border'
 function TeacherCloseCheck({ ym, state, onAnswer: onAnswerRaw, busy, unmadeNow = null, closed = false }) {
   const draftKey = ym + ':' + (state.req?.id ?? '')
   const [mode, setMode] = useState(() => (closeDrafts[draftKey] != null ? 'no' : null)) // null | 'no'
@@ -6217,11 +6222,13 @@ function PlanView({
   // 길이 규칙: 한 아이의 일주일 수업 시간 합은 그대로 — 어떤 날을 줄인 만큼만 다른 날을 늘릴 수 있음
   //   (예: 50분 · 50분 → 월 40분으로 줄이면 그때 수요일에 60분이 생김)
   //   spare > 0 : 줄였는데 아직 다른 날에 안 붙인 분 / spare < 0 : 더 늘어난 분
+  //   달 중간에 시작/끝나는 줄(날짜가 있는 줄)은 주마다 합이 달라지므로 길이 조정에서 뺌
+  const dated = (x) => !!(x.from || x.to)
   const spareOf = (sid) =>
-    (rows || []).filter((x) => x.student_id === sid && !x.removed).reduce((a, x) => a + progMin(x) - lenOf(x), 0)
+    (rows || []).filter((x) => x.student_id === sid && !x.removed && !dated(x)).reduce((a, x) => a + progMin(x) - lenOf(x), 0)
   // 줄이기: 기본 길이에서 20분까지 (5분 단위로 직접 입력) — 이 안에서는 회기 수(50분 = 1회기)가 그대로
   // 붙이기: 다른 날 줄인 만큼 계산해서 '+○분 붙이기' 버튼 하나로 (기본 길이 + 20분까지)
-  const addOf = (r) => Math.min(Math.max(0, spareOf(r.student_id)), progMin(r) + 20 - lenOf(r))
+  const addOf = (r) => (dated(r) ? 0 : Math.min(Math.max(0, spareOf(r.student_id)), progMin(r) + 20 - lenOf(r)))
   const endOf = (r) => {
     if (!r.start_time) return ''
     const mins = Number(r.minutes) || progMin(r)
@@ -6279,6 +6286,12 @@ function PlanView({
                 if (live.some((r) => !r.start_time)) return say('시작 시각이 비어 있는 수업이 있습니다. 시각을 넣어 주세요', 'err')
                 if (live.some((r) => r.from && r.to && r.to < r.from)) return say('시작 날짜가 끝 날짜보다 늦은 수업이 있습니다. 날짜를 고쳐 주세요', 'err')
                 {
+                  // 날짜(부터/까지)가 있는 줄은 길이 조정을 쓰지 않음 — 주마다 합이 달라져서
+                  const dl = live.find((r) => dated(r) && r.minutes)
+                  if (dl) {
+                    const nm = students.find((x) => x.id === dl.student_id)?.name || '아동'
+                    return say(`${nm} — 날짜(부터/까지)가 있는 줄은 길이를 바꿀 수 없어요. 그 줄 길이를 ${progMin(dl)}분으로 돌려 주세요`, 'err')
+                  }
                   const off = [...new Set(live.map((r) => r.student_id))].filter((sid) => spareOf(sid) !== 0)
                   if (off.length) {
                     const nm = (sid) => students.find((x) => x.id === sid)?.name || '아동'
@@ -6554,7 +6567,7 @@ function PlanView({
                     <span style={{ fontSize: 11.5, color: C.mut, minWidth: 38 }}>~{clock(endOf(r))}</span>
                     {/* 길이: 보통은 숨김(수업 종류 길이 그대로). '길이'를 누른 줄은 줄인 분을 직접 입력(5분 단위),
                         같은 아이 다른 날에는 줄인 만큼 계산된 '+○분 붙이기'만 나옴 (예: 목 45분 → 화 +5분 = 55분) */}
-                    {!r.removed && (r.showLen || lenOf(r) < progMin(r)) && lenOf(r) <= progMin(r) && (
+                    {!r.removed && (r.showLen || lenOf(r) < progMin(r)) && lenOf(r) <= progMin(r) && (!dated(r) || r.minutes) && (
                       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
                         <input
                           type="number"
@@ -6562,12 +6575,12 @@ function PlanView({
                           min={progMin(r) - 20}
                           max={progMin(r)}
                           value={r.lenTyped ?? lenOf(r)}
-                          title="이 요일만 수업을 짧게 할 때 (최대 20분까지 줄일 수 있어요)"
+                          title="이 요일만 수업을 짧게 할 때 (5분 단위 · 최대 20분까지 줄일 수 있어요)"
                           onChange={(e) => {
                             const t = e.target.value
                             const n = Number(t)
                             // 고치는 동안엔 입력한 그대로 보여 주고, 범위 안 숫자일 때만 길이에 반영
-                            if (t !== '' && n >= progMin(r) - 20 && n <= progMin(r)) set(r.uid, { lenTyped: t, minutes: n === progMin(r) ? '' : n })
+                            if (t !== '' && n % 5 === 0 && n >= progMin(r) - 20 && n <= progMin(r)) set(r.uid, { lenTyped: t, minutes: n === progMin(r) ? '' : n })
                             else set(r.uid, { lenTyped: t })
                           }}
                           onBlur={() => set(r.uid, { lenTyped: undefined })}
@@ -6589,13 +6602,20 @@ function PlanView({
                       </span>
                     )}
                     {!r.removed && lenOf(r) >= progMin(r) && addOf(r) > 0 && (
-                      <button
-                        onClick={() => set(r.uid, { minutes: lenOf(r) + addOf(r), showLen: false })}
-                        title="다른 날 줄인 만큼 이 날에 붙입니다"
-                        style={{ border: `1px solid ${C.pkd}`, background: '#FFF5F7', color: C.pkd, borderRadius: 6, fontSize: 11.5, fontWeight: 700, cursor: 'pointer', padding: '3px 7px' }}
-                      >
-                        +{addOf(r)}분 붙이기
-                      </button>
+                      // 남은 분을 이 날에 붙이기 — 5분씩 나눠 붙일 수 있게 (예: 10분 남으면 [+5] [+10] → 두 날에 5분씩도 가능)
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                        {addOf(r) > 5 && <span style={{ fontSize: 11.5, color: C.pkd, fontWeight: 700 }}>붙이기</span>}
+                        {Array.from({ length: Math.floor(addOf(r) / 5) }, (_, i) => (i + 1) * 5).map((m) => (
+                          <button
+                            key={m}
+                            onClick={() => set(r.uid, { minutes: lenOf(r) + m, showLen: false })}
+                            title={`다른 날 줄인 분 중 ${m}분을 이 날에 붙입니다`}
+                            style={{ border: `1px solid ${C.pkd}`, background: '#FFF5F7', color: C.pkd, borderRadius: 6, fontSize: 11.5, fontWeight: 700, cursor: 'pointer', padding: '3px 6px' }}
+                          >
+                            {addOf(r) > 5 ? `+${m}` : `+${m}분 붙이기`}
+                          </button>
+                        ))}
+                      </span>
                     )}
                     <select
                       value={r.program_code}
@@ -6623,7 +6643,7 @@ function PlanView({
                           </option>
                         ))}
                     </select>
-                    {!r.minutes && !r.showLen && !r.removed && addOf(r) === 0 && (
+                    {!r.minutes && !r.showLen && !r.removed && !dated(r) && addOf(r) === 0 && (
                       <button
                         onClick={() => set(r.uid, { showLen: true })}
                         title="앞뒤 사정으로 이 요일만 수업을 짧게 하고 다른 날에 붙일 때"
@@ -7565,6 +7585,14 @@ function TeacherGrid({ ym, teacher, tone, sessions: rawSessions, holidays, outsi
                         </span>
                       )
                       // 딱지가 붙는 칸(보강 · 옮김 · 일부)은 'tt-gmk'로 — 넘치면 그 칸만 글자를 줄임 (표 전체 글자 크기는 그대로)
+                      // 시간표 짜기에서 길이를 조정한 수업 (예: 50분 수업을 이 요일만 40분 · 다른 날 60분)
+                      const adjD = (() => {
+                        if (mk || mvFrom || mvTo || pt || ab || s2.status !== '진행' || !(s2._orig || s2).from_template) return 0
+                        const o = s2._orig || s2
+                        const pm = progMinOfSession(o)
+                        return pm ? ttMin(o.end_time) - ttMin(o.start_time) - pm : 0
+                      })()
+                      const adjTxt = adjD ? `${adjD > 0 ? '+' : '−'}${Math.abs(adjD)}` : ''
                       const tagged = mk || mvFrom || pt
                       // 일부 수업 '일부 ○분' 딱지: 칸 안에 넣으면 그 칸 글자가 작아지므로, 칸 왼쪽 위 모서리에 빨간 딱지로 따로 붙임
                       const partBadge = null
@@ -7584,10 +7612,10 @@ function TeacherGrid({ ym, teacher, tone, sessions: rawSessions, holidays, outsi
                             left: s2._plus ? `calc(${(k.lane / k.lanes) * 100}% + 1px)` : `calc(${((k.lane + 1) / k.lanes) * 100}% - 2px)`,
                             transform: `translate(${s2._plus ? '0' : '-100%'}, ${badgeAt === 'up' ? '-100%' : '0'})`,
                             borderRadius: badgeAt === 'up' ? '3px 3px 0 0' : '0 0 3px 3px',
-                            background: mvFrom ? MOVED_BLUE : pt ? ABSENT : undefined,
+                            background: mvFrom ? MOVED_BLUE : pt ? ABSENT : adjD ? '#8A8F98' : undefined,
                           }}
                         >
-                          {mvFrom ? '옮김' : pt ? `일부 ${Number(s2.done_min)}분` : '보강'}
+                          {mvFrom ? '옮김' : pt ? `일부 ${Number(s2.done_min)}분` : adjD ? `길이 ${adjTxt}` : '보강'}
                         </span>
                       )
                       return (
@@ -7606,7 +7634,9 @@ function TeacherGrid({ ym, teacher, tone, sessions: rawSessions, holidays, outsi
                                   ? { ...pos, background: c[0], color: c[1], border: `1.5px solid ${MOVED_BLUE}` }
                                   : ab
                                     ? pos
-                                    : { ...pos, background: mk ? '#fff' : c[0], color: mk ? '#5C3200' : c[1] }),
+                                    : { ...pos, background: mk ? '#fff' : c[0], color: mk ? '#5C3200' : c[1],
+                                        // 길이를 조정한 수업: 칸 테두리만 회색 점선 (글씨는 그대로)
+                                        ...(adjD && ADJ_MODE === 'border' ? { outline: '1.5px dashed #7C828C', outlineOffset: -1.5 } : null) }),
                             ...(onPick ? { cursor: 'pointer' } : null),
                           }}
                           onClick={onPick ? () => onPick(s2._orig || s2) : undefined}
@@ -7627,7 +7657,12 @@ function TeacherGrid({ ym, teacher, tone, sessions: rawSessions, holidays, outsi
                                 </span>
                                 {badgeAt === 'in' && <span className="tt-gpin-xs">{Number(s2.done_min)}분</span>}
                               </>
-                            ) : `${clock((s2._orig || s2).start_time)}~${clock((s2._orig || s2).end_time)}`}
+                            ) : (
+                              <>
+                                {clock((s2._orig || s2).start_time)}~{clock((s2._orig || s2).end_time)}
+                                
+                              </>
+                            )}
 
                             {k.notes && <span className="tt-gnote"> · {k.notes.join('·')} 결강</span>}
                           </small>
@@ -8149,6 +8184,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
         .tt-gblk.tt-gab small { font-weight: 800; opacity: 1 !important; }
         /* 일부 수업: 결강 칸과 같은 빨간 테두리, 수업한 위쪽은 초록 · 못 한 아래쪽은 빗금 */
         .tt-gblk.tt-gpart { text-decoration: none; opacity: 1; }
+        .tt-gadj { margin-left: 3px; color: #8A8F98; font-weight: 800; font-size: .8em; }
         .tt-gpin-xs { margin-left: 2px; color: ${ABSENT}; font-weight: 800; font-size: .7em; }
         .tt-gpin { display: inline-block; margin-left: 3px; padding: 0 3px; border-radius: 3px; background: ${ABSENT}; color: #fff; font-weight: 800; font-size: .9em; line-height: 1.25; }
         .tt-gpbar { position: absolute; z-index: 3; height: 11px; border-radius: 2px; background: #FDE3E0; overflow: hidden; box-shadow: 0 0 0 1px #fff; }
@@ -10986,6 +11022,7 @@ function App() {
     setStudents(st)
     setTemplates(tp)
     setPrograms(pg)
+    ;(pg || []).forEach((x) => (PROG_MIN[x.code] = x.minutes))
     setLeaves(lv)
     setOutside(ev)
     setManageLoaded(true)
@@ -13024,6 +13061,18 @@ function App() {
               {clock(pick.end_time)} · {pick.staff_name}
             </div>
             <div style={{ fontSize: 12.5, color: C.sub }}>{pick.program_label}</div>
+            {(() => {
+              // 시간표 짜기에서 이 요일만 길이를 조정한 수업이면 한 줄 안내
+              const pm = progMinOfSession(pick)
+              const len = ttMin(pick.end_time) - ttMin(pick.start_time)
+              if (!pm || !pick.from_template || pick.makeup_for || len === pm || isPartial(pick)) return null
+              const dd = len - pm
+              return (
+                <div style={{ marginTop: 7, fontSize: 12.5, color: '#4B5057', background: '#F3F4F6', borderRadius: 7, padding: '6px 9px', lineHeight: 1.5 }}>
+                  시간표에서 이 요일만 <b>{len}분</b>으로 조정한 수업이에요 ({dd > 0 ? `+${dd}분 — 다른 날 줄인 만큼 붙임` : `−${-dd}분 — 다른 날에 붙임`})
+                </div>
+              )
+            })()}
           </div>
           <div style={{ padding: 18 }}>
             <div style={{ fontSize: 12, color: C.sub, marginBottom: 8 }}>
