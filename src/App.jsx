@@ -1061,27 +1061,30 @@ function ChoiceHost() {
     </Modal>
   )
 }
-// 급여 비율을 바꿀 때 '몇 월부터'인지 — 지난달이 아직 마감 전일 때만 물어봄
-//   viewYm: 급여 화면에서 보고 있는 달 (그 달이 지난달이면 그 달부터도 고를 수 있게)
+// 급여 비율을 바꿀 때 '몇 월부터'인지 — 늘 물어봄
+//   고를 수 있는 달: (마감 전인 지난달 또는 보고 있는 앞 달) · 이번 달 · 다음 달
+//   viewYm: 급여 화면에서 보고 있는 달 (그 달이 이번 달보다 앞이고 그 뒤로 마감한 달이 없으면 그 달부터도 고를 수 있게)
 //   돌려주는 값: 'YYYY-MM' (그 달부터) · null (취소)
 async function askRateFrom(staffId, name, fromPct, toPct, viewYm) {
   const cur = ymOf(new Date())
+  const next = shiftYm(cur, 1)
   let older = viewYm && viewYm < cur ? viewYm : null
-  // 보고 있는 달이나 그 뒤에 이미 마감한 달이 있으면 그 달부터는 바꿀 수 없으니 묻지 않음
+  // 보고 있는 달이나 그 뒤에 이미 마감한 달이 있으면 그 달부터는 바꿀 수 없으니 고르지 않게
   if (older) {
     const { data, error } = await supabase.rpc('last_closed_from', { p_staff: staffId, p_ym: older })
     if (!error && data) older = null
   }
   if (!older) older = await unclosedPrevMonth(staffId).catch(() => null)
-  if (!older || older >= cur) return cur
+  if (older && older >= cur) older = null
   const m = (y) => `${Number(y.slice(5, 7))}월`
   const pct = (v) => (v == null ? '없음' : `${v}%`)
   return askChoice({
     title: `${name} 선생님 비율 ${pct(fromPct)} → ${pct(toPct)}`,
-    body: `${m(older)}은 아직 마감 전입니다. 언제부터 ${pct(toPct)}로 할까요?`,
+    body: `언제부터 ${pct(toPct)}로 할까요? 그 전 달 급여는 ${pct(fromPct)} 그대로입니다.`,
     buttons: [
-      { label: `${m(older)}부터`, value: older },
-      { label: `${m(cur)}부터`, value: cur, primary: true },
+      ...(older ? [{ label: `${m(older)}부터`, value: older }] : []),
+      { label: `${m(cur)}부터 (이번 달)`, value: cur, primary: true },
+      { label: `${m(next)}부터`, value: next },
     ],
   })
 }
@@ -6046,10 +6049,13 @@ function StudentModal({ student, staff, defaultMain, onClose, onSave, onRemove, 
             )}
           </div>
         )}
-        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, marginBottom: 12, cursor: 'pointer' }}>
-          <input type="checkbox" checked={legacy} onChange={(e) => setLegacy(e.target.checked)} />
-          원장님 수업은 <b>재원 가격</b>으로 (예전부터 다니던 아이)
-        </label>
+        {/* 담당 선생님이 원장님일 때만 보임 — 다른 선생님 아이는 원장님 수업이 없어 쓰지 않는 값 (저장된 값은 그대로 둠) */}
+        {staff.find((x) => String(x.id) === String(main))?.role === 'admin' && (
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, marginBottom: 12, cursor: 'pointer' }}>
+            <input type="checkbox" checked={legacy} onChange={(e) => setLegacy(e.target.checked)} />
+            원장님 수업은 <b>재원 가격</b>으로 (예전부터 다니던 아이)
+          </label>
+        )}
         {student && onRemove && (
           <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${C.line2}` }}>
             <Btn
@@ -6812,7 +6818,13 @@ function PlanView({
             }}
           >
             <div style={{ width: 100, paddingTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
-              <div style={{ fontSize: 14, fontWeight: 700 }}>{s.name}</div>
+              <div style={{ fontSize: 14, fontWeight: 700 }}>
+                {s.name}
+                {/* 원장님 묶음에서만: 원장님 수업을 재원 가격으로 받는 아이 (다른 선생님 아이였다가 원장님 아이가 돼도 그대로 보임) */}
+                {s.legacy_price && staff.find((x) => String(x.id) === String(g.id))?.role === 'admin' && (
+                  <span style={{ marginLeft: 5, fontSize: 11, fontWeight: 600, color: '#254B8C' }}>재원</span>
+                )}
+              </div>
               {(s.gone || (s.status && s.status !== '재원')) && <Pill tone="gray">{s.status}</Pill>}
               {!s.gone && [...new Set((rows || []).filter((x) => x.student_id === s.id && !x.removed).map((x) => String(x.staff_id)))]
                 .filter((tid) => spareOf(s.id, tid) !== 0)
@@ -9907,8 +9919,15 @@ function StaffManage({ staff, busy, onChanged, say, toneOf }) {
                             if (v === '' && !confirm(`${x.name} 선생님 급여 비율을 지울까요?`)) { el.value = shown; return }
                             const from = await askRateFrom(x.id, x.name, shown === '' ? null : Number(shown), v === '' ? null : Number(v))
                             if (!from) { el.value = shown; return }
-                            const okSaved = await run(() => setPayRate(x.id, rate, from), `급여 비율을 저장했습니다 (${Number(from.slice(5, 7))}월부터)`)
-                            if (!okSaved) el.value = shown // 저장이 안 됐으면 칸도 원래 값으로
+                            const later = from > ymOf(new Date())
+                            const okSaved = await run(
+                              () => setPayRate(x.id, rate, from),
+                              later
+                                ? `${Number(from.slice(5, 7))}월부터 ${v === '' ? '비율 없음' : v + '%'}로 바꿨습니다. ${Number(shiftYm(from, -1).slice(5, 7))}월까지는 ${shown === '' ? '비율 없음' : shown + '%'}입니다.`
+                                : `급여 비율을 저장했습니다 (${Number(from.slice(5, 7))}월부터)`
+                            )
+                            // 저장이 안 됐거나 다음 달부터 바뀌면 칸은 지금 비율 그대로
+                            if (!okSaved || later) el.value = shown
                           }}
                           style={{ width: 56, fontSize: 13, padding: '5px 7px', border: '1px solid #DEE0E3', borderRadius: 6, textAlign: 'right' }}
                         />
@@ -13313,7 +13332,7 @@ function App() {
                   saved = true
                   say(
                     from > ym
-                      ? `${Number(from.slice(5, 7))}월부터 바뀝니다. 보고 있는 ${Number(ym.slice(5, 7))}월은 예전 비율 그대로입니다`
+                      ? `${Number(from.slice(5, 7))}월부터 ${toPct == null ? '비율 없음' : toPct + '%'}로 바꿨습니다. ${Number(shiftYm(from, -1).slice(5, 7))}월까지는 ${fromPct == null ? '비율 없음' : fromPct + '%'}입니다.`
                       : `급여 비율을 저장했습니다 (${Number(from.slice(5, 7))}월부터)`
                   )
                   // 선생님 관리 화면의 비율도 새 값으로 (옛 값이 남아 있으면 되돌려 넣을 때 저장이 안 됨)
