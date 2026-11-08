@@ -420,6 +420,10 @@ async function setRoomCell(room, weekday, half, staffId) {
 async function removeDeposit(id) {
   return ok(await supabase.rpc('remove_deposit', { p_id: id }))
 }
+// 환불+수업취소 기록이 취소했던 수업 (지우면 되살아나는 수업 — 선생님께 알릴 때 씀)
+async function loadDepositCancelSessions(id) {
+  return ok(await supabase.rpc('deposit_cancel_sessions', { p_id: id })) || []
+}
 
 async function depositHistory(studentId) {
   return ok(await supabase.rpc('deposit_history', { p_student: studentId }))
@@ -821,7 +825,10 @@ async function removeLeave(id, restore = false) {
 // 이 휴무 때문에 취소·결강으로 바뀐 수업 수 (지울 때 되살릴지 물어보려고)
 async function leaveAffected(id) {
   const { data, error } = await supabase.rpc('leave_affected', { p_id: id })
-  return error ? 0 : Number(data) || 0
+  // SQL을 아직 안 넣어 함수가 없을 때만 0 — 인터넷이 끊긴 것 같은 다른 오류는 알림 (되살리기를 묻지 않고 지워지지 않게)
+  if (error && /could not find|does not exist|schema cache/i.test(error.message || '')) return 0
+  if (error) throw error
+  return Number(data) || 0
 }
 
 
@@ -1060,6 +1067,11 @@ function ChoiceHost() {
 async function askRateFrom(staffId, name, fromPct, toPct, viewYm) {
   const cur = ymOf(new Date())
   let older = viewYm && viewYm < cur ? viewYm : null
+  // 보고 있는 달이나 그 뒤에 이미 마감한 달이 있으면 그 달부터는 바꿀 수 없으니 묻지 않음
+  if (older) {
+    const { data, error } = await supabase.rpc('last_closed_from', { p_staff: staffId, p_ym: older })
+    if (!error && data) older = null
+  }
   if (!older) older = await unclosedPrevMonth(staffId).catch(() => null)
   if (!older || older >= cur) return cur
   const m = (y) => `${Number(y.slice(5, 7))}월`
@@ -1997,7 +2009,7 @@ function TeacherMakeupCheck({ unmade, reports, onReport, onWithdraw, busy }) {
               ))}
               {open && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap', marginTop: 9 }}>
-                  <input type="date" value={d} min={u.d} max={isoOf(new Date())} onChange={(e) => setD(e.target.value)}
+                  <input type="date" value={d} max={isoOf(new Date())} onChange={(e) => setD(e.target.value)}
                     style={{ padding: '6px 8px', border: `1px solid ${C.line}`, borderRadius: 7, fontSize: 13.5 }} />
                   {/* 몇 시에 했는지 원장님이 알 수 있게 시작 시각은 꼭 넣습니다 */}
                   <TimePick value={start} onChange={setStart} style={{ padding: '6px 8px', fontSize: 13.5, borderColor: start ? C.line : '#E39AAB' }} />
@@ -2012,7 +2024,7 @@ function TeacherMakeupCheck({ unmade, reports, onReport, onWithdraw, busy }) {
                   </select>
                   <Btn
                     variant="primary"
-                    disabled={busy || !d || !start || !mins || d < u.d /* 결강한 날보다 앞선 날짜는 보내지 않음 */}
+                    disabled={busy || !d || !start || !mins /* 미리 보강하는 경우가 많아 결강일보다 앞선 날짜도 보냄 */}
                     onClick={async () => {
                       // 창을 연 뒤 다른 체크가 생겼으면 남은 분을 넘지 않게 맞춤
                       const mm = Math.min(mins, left - pendMin)
@@ -4825,7 +4837,7 @@ function BillingView({ ym, lines, byStaff, payroll, unmadeAll = null, receipts, 
     try {
       d = await onDetail(r.staff_id)
     } catch {
-      d = []
+      d = 'err'
     }
     if (my === detailSeq.current) setDetail(d)
   }
@@ -5294,6 +5306,7 @@ function BillingView({ ym, lines, byStaff, payroll, unmadeAll = null, receipts, 
                     </div>
                   )
                   if (detail === null) return <Empty>불러오는 중…</Empty>
+                  if (detail === 'err') return <Empty>급여 내역을 불러오지 못했습니다. 창을 닫고 다시 열어 주세요.</Empty>
                   const rowsD = detail.map((d) => ({ d, dates: datesOf(d) }))
                   // 회기에는 안 잡혔지만 이 달 수업이 있는 아이 (예: 결강만 있고 아직 보강 안 함)
                   const rest = {}
@@ -5950,7 +5963,7 @@ const inp = {
   background: '#fff',
 }
 
-function StudentModal({ student, staff, defaultMain, onClose, onSave, onRemove, busy }) {
+function StudentModal({ student, staff, defaultMain, onClose, onSave, onRemove, onCancelPending, busy }) {
   const [name, setName] = useState(student?.name || '')
   const [display, setDisplay] = useState(student?.display_name || '')
   const [main, setMain] = useState(student?.main_staff_id || defaultMain || staff[0]?.id || '')
@@ -6015,8 +6028,22 @@ function StudentModal({ student, staff, defaultMain, onClose, onSave, onRemove, 
           </div>
         )}
         {student?.pending_status && student?.pending_from && (
-          <div style={{ fontSize: 12, color: '#854F0B', background: '#FAEEDA', borderRadius: 8, padding: '7px 10px', marginBottom: 12, lineHeight: 1.55 }}>
-            {Number(student.pending_from.slice(5, 7))}/{Number(student.pending_from.slice(8, 10))}부터 {student.pending_status} 예정입니다. 그 전날까지 수업은 그대로 있습니다.
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#854F0B', background: '#FAEEDA', borderRadius: 8, padding: '7px 10px', marginBottom: 12, lineHeight: 1.55 }}>
+            <span style={{ flex: 1 }}>
+              {Number(student.pending_from.slice(5, 7))}/{Number(student.pending_from.slice(8, 10))}부터 {student.pending_status} 예정입니다. 그 전날까지 수업은 그대로 있습니다.
+            </span>
+            {onCancelPending && (
+              <Btn
+                disabled={busy}
+                onClick={() => {
+                  const mo = Number(student.pending_from.slice(5, 7))
+                  if (confirm(`${student.name} 아동의 ${student.pending_status} 예정을 취소할까요?\n${mo}월 시간표가 다시 만들어집니다.`)) onCancelPending(student.id)
+                }}
+                style={{ padding: '4px 10px', fontSize: 12, whiteSpace: 'nowrap', flexShrink: 0 }}
+              >
+                예정 취소
+              </Btn>
+            )}
           </div>
         )}
         <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, marginBottom: 12, cursor: 'pointer' }}>
@@ -6339,7 +6366,13 @@ function PlanView({
         // 뒤 달 시간표가 이미 있는지 (없으면 '말일까지'로 끝낸 수업의 '까지' 날짜를 그대로 보여줍니다)
         const later = await loadTemplates()
           // 이 확인에 실패하면 '말일까지' 날짜가 잘못 지워질 수 있어서, 추측하지 않고 불러오기 실패로 보여 줌
-          .then((all) => (all || []).some((t) => t.valid_from && t.valid_from > `${ym}-${String(new Date(...ym.split('-').map(Number), 0).getDate()).padStart(2, '0')}`))
+          // 바로 다음 달 1일에 시작하는 시간표가 있을 때만 '뒤 달 시간표 있음'
+          //   (예: 11월을 다시 열 때 1월 시간표만 있으면, '까지'를 비우면 서버가 12/31까지로 채워 12월에 수업이 다시 생기므로 날짜를 남겨 둠)
+          .then((all) => {
+            const mEnd = `${ym}-${String(new Date(...ym.split('-').map(Number), 0).getDate()).padStart(2, '0')}`
+            const next = (all || []).map((t) => t.valid_from).filter((v) => v && v > mEnd).sort()[0]
+            return next === `${shiftYm(ym, 1)}-01`
+          })
         if (alive) setFrom(src)
         return [plan, lk, later]
       })
@@ -8719,7 +8752,7 @@ const ADD_DOW = ['일', '월', '화', '수', '목', '금', '토']
 /* ================= 보강 (선생님별 → 달별) ================= */
 let makeupTabMemo = 'todo' // 보강 화면에서 마지막으로 본 탭 (이 창에서만 기억)
 
-function MakeupLog({ rows, staffOrder = [], activeNames = [], ownerName, toneOf, busy, isAdmin, unmade = [], onMakeup, onAdd, onFix }) {
+function MakeupLog({ rows, loadErr = false, staffOrder = [], activeNames = [], ownerName, toneOf, busy, isAdmin, unmade = [], onMakeup, onAdd, onFix }) {
   const rank = (n) => (n === ownerName ? -1 : staffOrder.indexOf(n) < 0 ? 99 : staffOrder.indexOf(n))
   const md = (d) => (d ? d.slice(5).replace('-', '/') : '')
   const hm2 = (t) => clock(t)
@@ -8784,7 +8817,11 @@ function MakeupLog({ rows, staffOrder = [], activeNames = [], ownerName, toneOf,
     return (
       <div>
         <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 12 }}>보강</div>
-        <Empty>결강 기록이 없습니다.</Empty>
+        {loadErr ? (
+          <Empty>보강 목록을 불러오지 못했습니다. 잠시 뒤 새로고침해 주세요.</Empty>
+        ) : (
+          <Empty>결강 기록이 없습니다.</Empty>
+        )}
       </div>
     )
 
@@ -8841,6 +8878,11 @@ function MakeupLog({ rows, staffOrder = [], activeNames = [], ownerName, toneOf,
           <div style={{ fontSize: 15, fontWeight: 700 }}>보강</div>
           <span style={{ fontSize: 12.5, color: C.sub }}>보강은 결강 칸의 <b>보강 잡기</b>로 넣고, 잡은 보강은 <b>고치기</b>로 옮기거나 지웁니다.</span>
         </div>
+        {loadErr && (
+          <div style={{ fontSize: 12.5, color: C.danger, background: '#FDECEF', borderRadius: 8, padding: '7px 10px', marginBottom: 10 }}>
+            보강 목록을 새로 불러오지 못해 전에 불러온 목록을 보여 주고 있습니다. 잠시 뒤 새로고침해 주세요.
+          </div>
+        )}
         {/* 탭: 숫자가 큰 단추 세 개 */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10, marginBottom: 14 }}>
           {tabsDef.map(([k, label, n, bg, fg]) => {
@@ -9153,11 +9195,14 @@ function AddSessionModal({ students, staff, programs, absent, preset = null, pai
                   const n = Math.round(Number(v))
                   setPartMin(n > 0 ? Math.min(n, leftMin) : null)
                 }}
-                style={{ ...addInp, width: 90, textAlign: 'right', borderColor: typed && Number(typed) > leftMin ? C.danger : undefined }}
+                style={{ ...addInp, width: 90, textAlign: 'right', borderColor: typed !== '' && (Number(typed) > leftMin || !(Math.round(Number(typed)) > 0)) ? C.danger : undefined }}
               />
               <span style={{ fontSize: 12.5, color: C.sub }}>분</span>
               {typed && Number(typed) > leftMin && (
                 <span style={{ fontSize: 12, color: C.danger }}>남은 {leftMin}분까지만 돼요</span>
+              )}
+              {typed !== '' && !(Math.round(Number(typed)) > 0) && (
+                <span style={{ fontSize: 12, color: C.danger }}>1분 이상 넣어 주세요 (비우면 남은 {leftMin}분 전부)</span>
               )}
             </div>
             <div style={{ fontSize: 11.5, color: C.sub, marginTop: 6, lineHeight: 1.55 }}>
@@ -9204,7 +9249,7 @@ function AddSessionModal({ students, staff, programs, absent, preset = null, pai
         <div style={{ display: 'flex', gap: 7, marginTop: 4 }}>
           <Btn
             variant="primary"
-            disabled={busy || !date || !start || !end || start < '07:00' || (!linked && !studentId) || (linked && typed !== '' && Number(typed) > leftMin)}
+            disabled={busy || !date || !start || !end || start < '07:00' || (!linked && !studentId) || (linked && typed !== '' && (Number(typed) > leftMin || !(Math.round(Number(typed)) > 0)))}
             onClick={async () => {
               setSaveErr('')
               const errMsg = await onSave({
@@ -9295,8 +9340,9 @@ function PayPrint({ ym, rows, teachersOf, rank, loadMonthDeposits, onClose }) {
     return parts.join(' · ')
   }
 
-  const tot = rows.reduce((a, r) => ({ b: a.b + r.billed, a: a.a + r.allocated, u: a.u + Math.max(r.balance, 0) }), { b: 0, a: 0, u: 0 })
-  const unpaidN = rows.filter((r) => r.balance > 0).length
+  const prevOf = (r) => Math.max(Number(r.prev_balance) || 0, 0)
+  const tot = rows.reduce((a, r) => ({ b: a.b + r.billed, a: a.a + r.allocated, u: a.u + Math.max(r.balance, 0), p: a.p + prevOf(r) }), { b: 0, a: 0, u: 0, p: 0 })
+  const unpaidN = rows.filter((r) => r.balance > 0 || prevOf(r) > 0).length
   const today = isoOf(new Date())
 
   // 한 장에 들어갈 때까지 글자를 한 단계씩 줄입니다 (A4 세로 인쇄 영역 약 273mm)
@@ -9352,12 +9398,12 @@ function PayPrint({ ym, rows, teachersOf, rank, loadMonthDeposits, onClose }) {
         <div className="pp-sum">
           <div>이 달 청구<b>{won(tot.b)}원</b></div>
           <div>받은 돈(선입금 포함)<b>{won(tot.a)}원</b></div>
-          <div>미수 {unpaidN}명<b className="red">{won(tot.u)}원</b></div>
+          <div>미수 {unpaidN}명<b className="red">{won(tot.u)}원</b>{tot.p > 0 && <span>+ 지난달 미수 {won(tot.p)}원</span>}</div>
           <div>아동 수<b>{rows.length}명</b></div>
         </div>
         <table>
           <colgroup>
-            <col style={{ width: '12%' }} /><col style={{ width: '11%' }} /><col style={{ width: '11%' }} /><col style={{ width: '11%' }} /><col />
+            <col style={{ width: '12%' }} /><col style={{ width: '11%' }} /><col style={{ width: '11%' }} /><col style={{ width: '19%' }} /><col />
           </colgroup>
           <thead>
             <tr><th>아동</th><th>청구</th><th>받은 돈</th><th>미수</th><th>입금 내역 (날짜 · 방법 · 금액)</th></tr>
@@ -9367,11 +9413,14 @@ function PayPrint({ ym, rows, teachersOf, rank, loadMonthDeposits, onClose }) {
               <React.Fragment key={g.name}>
                 <tr className="g"><td colSpan={5}>{g.name} 선생님 · {g.list.length}명</td></tr>
                 {g.list.map((r) => (
-                  <tr key={r.student_id} className={r.balance > 0 ? 'u' : ''}>
+                  <tr key={r.student_id} className={r.balance > 0 || prevOf(r) > 0 ? 'u' : ''}>
                     <td>{r.student_name}</td>
                     <td className="n">{won(r.billed)}</td>
                     <td className="n">{r.allocated > 0 ? won(r.allocated) : ''}</td>
-                    <td className={`n${r.balance > 0 ? ' red' : ''}`}>{r.balance > 0 ? won(r.balance) : ''}</td>
+                    <td className={`n${r.balance > 0 || prevOf(r) > 0 ? ' red' : ''}`}>
+                      {r.balance > 0 ? won(r.balance) : prevOf(r) > 0 ? '0' : ''}
+                      {prevOf(r) > 0 && <span style={{ fontWeight: 400 }}> (+지난달 {won(prevOf(r))})</span>}
+                    </td>
                     <td className="d">{Array.isArray(deps) ? detail(r) : ''}</td>
                   </tr>
                 ))}
@@ -9382,7 +9431,7 @@ function PayPrint({ ym, rows, teachersOf, rank, loadMonthDeposits, onClose }) {
               <td className="n">{won(tot.b)}</td>
               <td className="n">{won(tot.a)}</td>
               <td className="n red">{tot.u ? won(tot.u) : ''}</td>
-              <td />
+              <td>{tot.p > 0 ? `지난달 미수 ${won(tot.p)}원` : ''}</td>
             </tr>
           </tbody>
         </table>
@@ -9652,7 +9701,7 @@ function PriceTable({ say, students = [] }) {
   const save = async () => {
     const bad = changed.find(([, v]) => !(Number.isInteger(Number(v)) && Number(v) >= 0))
     if (bad) return say?.('가격은 0원 이상 원 단위 숫자로 넣어 주세요', 'err')
-    if (!confirm(`${Number(from.slice(5, 7))}월부터 이 가격으로 청구됩니다.\n(바꾼 칸 ${changed.length}개 · 그 전 달과 이미 발행한 영수증은 그대로)`)) return
+    if (!confirm(`${from.slice(0, 4)}년 ${Number(from.slice(5, 7))}월부터 이 가격으로 바꿀까요? (바꾼 칸 ${changed.length}개)\n\n이미 발행한 영수증의 수업은 영수증 가격 그대로 청구·급여가 계산되고, 잠금을 풀고 다시 발행해도 그때 가격 그대로입니다. 새 가격은 아직 발행하지 않은 영수증부터 적용됩니다.`)) return
     setSaving(true)
     try {
       for (const [k, v] of changed) {
@@ -9895,7 +9944,7 @@ function StaffManage({ staff, busy, onChanged, say, toneOf }) {
                       <Btn
                         disabled={dis}
                         onClick={() => {
-                          if (!confirm(`${x.name} 선생님을 퇴사 처리할까요?\n\n· 지난 수업 · 급여 기록은 그대로 남습니다\n· 지금 목록과 시간표 짜기에서만 빠집니다\n· 나중에 다시 재직으로 돌릴 수 있어요`)) return
+                          if (!confirm(`${x.name} 선생님을 퇴사 처리할까요?\n\n· 지난 수업 · 급여 기록은 그대로 남습니다\n· 지금 목록과 시간표 짜기에서 빠지고, 로그인 연결도 끊깁니다\n· 나중에 다시 재직으로 돌릴 수 있어요 (로그인은 [연결하기]로 이메일을 다시 넣어야 합니다)`)) return
                           run(() => staffSetActive(x.id, false), `${x.name} 선생님을 퇴사 처리했습니다`)
                         }}
                         style={{ padding: '5px 11px', fontSize: 12, color: C.danger }}
@@ -9926,7 +9975,7 @@ function StaffManage({ staff, busy, onChanged, say, toneOf }) {
               {old.map((x) => (
                 <div key={x.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 12px', borderBottom: `1px solid ${C.line2}`, fontSize: 13.5 }}>
                   <span style={{ color: C.sub }}>{x.name}</span>
-                  <Btn disabled={dis} onClick={() => run(() => staffSetActive(x.id, true), `${x.name} 선생님을 다시 재직으로 바꿨습니다`)} style={{ marginLeft: 'auto', padding: '4px 10px', fontSize: 12 }}>
+                  <Btn disabled={dis} onClick={() => run(() => staffSetActive(x.id, true), `${x.name} 선생님을 다시 재직으로 바꿨습니다. 로그인은 [연결하기]로 이메일을 다시 넣어 주세요.`)} style={{ marginLeft: 'auto', padding: '4px 10px', fontSize: 12 }}>
                     다시 재직
                   </Btn>
                 </div>
@@ -10149,7 +10198,8 @@ function PaymentView({
                 </td>
               </tr>,
               ...g.list.map((r) => {
-              const done = r.balance <= 0
+              const prevOwed = Number(r.prev_balance) > 0
+              const done = r.balance <= 0 && !prevOwed
               const partial = r.allocated > 0 && r.balance > 0
               return (
                 <tr key={r.student_id} style={{ borderBottom: `1px solid ${C.line2}`, background: onOpenReceipt && r.balance > 0 ? '#FFF6F7' : undefined }}>
@@ -10163,6 +10213,11 @@ function PaymentView({
                     {partial && (
                       <span style={{ marginLeft: 6 }}>
                         <Pill tone="amber">부분</Pill>
+                      </span>
+                    )}
+                    {r.balance <= 0 && prevOwed && (
+                      <span style={{ marginLeft: 6 }}>
+                        <Pill tone="pink">지난달 미수</Pill>
                       </span>
                     )}
                   </td>
@@ -10380,7 +10435,7 @@ function DepositModal({ row, ym, onClose, onSave, busy }) {
             </Btn>
           ))}
         </div>
-        {amount > row.balance && row.billed > 0 && (
+        {amount > Math.max(row.balance, 0) + (Number(row.prev_balance) || 0) && row.billed > 0 && (
           <div style={{ marginTop: 10, padding: '9px 12px', background: '#EEF3FD', borderRadius: 8, fontSize: 12, color: '#254B8C', lineHeight: 1.6 }}>
             이 달 청구({won(row.billed)}원) 기준 약 <b>{months}개월치</b>입니다. 남는 금액은 선입금으로 쌓여 다음 달부터 자동
             차감돼요.
@@ -11285,6 +11340,7 @@ function App() {
   const [extrasErr, setExtrasErr] = useState(false)
   const [payHistory, setPayHistory] = useState([])
   const [makeupLog, setMakeupLog] = useState([])
+  const [makeupErr, setMakeupErr] = useState(false)
   const [notices, setNotices] = useState([]) // 원장님 ↔ 선생님 확인 문구
   const [makeupPreset, setMakeupPreset] = useState(null) // 선생님 보강 체크로 보강 등록할 때 미리 채울 값
   const [fixMk, setFixMk] = useState(null)       // 보강 화면 '고치기'로 연 결강 줄
@@ -11501,7 +11557,8 @@ function App() {
       // 급여 기록은 원장 화면에서만 씀 — 선생님 계정에서는 불러오지 않음 (선생님 화면에는 급여 금액을 보여주지 않음)
       // 못 불러오면 null — 보던 기록을 그대로 둠 ('기록이 없습니다'로 보여 지워진 줄 오해하지 않게)
       isAdmin ? loadPayrollHistory().catch(() => null) : Promise.resolve([]),
-      loadMakeupLog(null).catch(() => []),
+      // 못 불러오면 null — 보던 목록을 그대로 두고 '불러오지 못했습니다'로 알림 ('결강 기록 없음'으로 보이지 않게)
+      loadMakeupLog(null).catch(() => null),
     ])
     if (my !== monthSeq.current) return
     setBilling(b)
@@ -11509,7 +11566,8 @@ function App() {
     setReceiptExtras(rx || [])
     setExtrasErr(rx === null)
     if (ph) setPayHistory(ph)
-    setMakeupLog(ml || [])
+    if (ml) setMakeupLog(ml)
+    setMakeupErr(ml === null)
     setByStaff(bs)
     setClosings(cl)
     setReceipts(r)
@@ -13008,6 +13066,7 @@ function App() {
         {!loading && tab === 'month' && schedView === 'makeup' && (
           <MakeupLog
             rows={makeupLog}
+            loadErr={makeupErr}
             staffOrder={staff.map((x) => x.name)}
             activeNames={staff.filter((x) => x.active).map((x) => x.name)}
             ownerName={staff.find((x) => x.role === 'admin')?.name}
@@ -13338,11 +13397,21 @@ function App() {
                 // 지워졌는지(true/false)를 돌려줍니다 — 내역 창은 성공했을 때만 목록에서 뺌
                 setBusy(true)
                 let done = false
+                // 환불+수업취소 기록이면 되살아날 수업 (못 불러와도 지우기는 그대로 진행)
+                let back = []
+                try {
+                  back = await loadDepositCancelSessions(id)
+                } catch {
+                  back = []
+                }
                 try {
                   const msg = await removeDeposit(id)
                   done = true
                   say(typeof msg === 'string' && msg ? msg : '입금 기록을 지웠습니다')
+                  // 되살아난 수업은 그 선생님 화면에도 알림 (취소 되돌리기와 같은 문구)
+                  for (const l of back || []) await tellTeacher(l, l.prev_status === '결강' ? 'absent' : 'uncancel')
                   await reloadMonth()
+                  if ((back || []).length) await reloadAfterAction()
                 } catch (e) {
                   if (done) say('지웠습니다. 화면이 안 바뀌었으면 새로고침해 주세요', 'err')
                   else fail(e)
@@ -13416,7 +13485,13 @@ function App() {
               }}
               onRemoveLeave={async (id, what) => {
                 // 이 휴무 때문에 취소·결강으로 바뀐 수업이 있으면 되살릴지 묻고, 없으면 그냥 지울지만 확인
-                const n = await leaveAffected(id)
+                let n = 0
+                try {
+                  n = await leaveAffected(id)
+                } catch (e) {
+                  say('바뀐 수업을 확인하지 못했습니다. 잠시 뒤 다시 해 주세요', 'err')
+                  return
+                }
                 let restore = false
                 if (n > 0) {
                   const pick = await askChoice({
@@ -13711,7 +13786,9 @@ function App() {
               // 일부 수업: 원장님만, 보강이 아직 안 잡힌 수업만 (보강이 있으면 서버도 막음)
               const canPartial =
                 isAdmin && (cur === '진행' || cur === '결강') && !((Number(pick.made_min) || 0) > (Number(pick.done_min) || 0))
-              if (isAdmin && cur !== '취소') btns.push(locked ? ['carry', '취소 (다음 달 차감)'] : ['취소', '취소'])
+              // 일부 수업한 날은 '다음 달 차감'으로 취소하지 않음 (서버도 막음) — 남은 시간은 보강으로
+              const noCarry = locked && pt
+              if (isAdmin && cur !== '취소' && !noCarry) btns.push(locked ? ['carry', '취소 (다음 달 차감)'] : ['취소', '취소'])
               return (
                 <div>
                 <div style={{ display: 'flex', gap: 6 }}>
@@ -13727,6 +13804,11 @@ function App() {
                     </Btn>
                   ))}
                 </div>
+                {isAdmin && noCarry && (
+                  <div style={{ fontSize: 12, color: C.sub, marginTop: 8, lineHeight: 1.6 }}>
+                    일부 수업({pick.done_min}분)한 날이라 다음 달 차감으로 취소할 수 없습니다. 남은 시간은 보강으로 잡아 주세요.
+                  </div>
+                )}
                 {canPartial && <PartialBox key={pick.id + (pick.done_min || '')} s={pick} busy={busy} onSave={(m, why) => doPartial(pick, m, null, why)} />}
                 {/* 이 날만 시간 바꾸기: 원장님만, 보강이 아직 안 잡힌 수업(진행 · 결강)만 — 일부 수업한 날은 제외 */}
                 {isAdmin && (cur === '진행' || cur === '결강') && !pt && !((Number(pick.made_min) || 0) > 0) && (
@@ -13832,6 +13914,20 @@ function App() {
             }
             setBusy(false)
           }}
+          onCancelPending={async (id) => {
+            if (!okToDropPlan()) return
+            setEditStudent(null)
+            setBusy(true)
+            try {
+              const msg = await setStudentStatus(id, '재원', null)
+              say(msg || '예정을 취소했습니다')
+              setPlanReload((n) => n + 1)
+              await reloadAll()
+            } catch (e) {
+              fail(e)
+            }
+            setBusy(false)
+          }}
           onSave={async (v, leaveFrom) => {
             const id = editStudent === 'new' || editStudent?.__new ? null : editStudent.id
             if (id && leaveFrom && !okToDropPlan()) return
@@ -13874,7 +13970,8 @@ function App() {
       {receiptFor && (
         <ReceiptModal
           ym={ym}
-          student={receiptFor}
+          // 잠금을 풀거나 다시 발행하면 지금 수업 기록으로 다시 보여 줌 (열 때 받은 옛 줄 · 금액이 남지 않게)
+          student={billKids.find((k) => k.id === receiptFor.id) || receiptFor}
           receipt={receipts.find((r) => r.student_id === receiptFor.id)}
           extra={receiptExtras.find((x) => x.student_id === receiptFor.id)}
           extrasErr={extrasErr}
