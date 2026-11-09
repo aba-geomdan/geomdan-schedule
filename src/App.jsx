@@ -458,8 +458,12 @@ async function loadStaffLogins() {
 }
 async function withPayRates(rows) {
   const rates = ok(await supabase.rpc('staff_pay_rates'))
-  const byId = new Map((rates || []).map((r) => [String(r.staff_id), r.pay_rate]))
-  return (rows || []).map((x) => ({ ...x, pay_rate: byId.has(String(x.id)) ? byId.get(String(x.id)) : null }))
+  const byId = new Map((rates || []).map((r) => [String(r.staff_id), r]))
+  // pay_rate: 이번 달 비율 / next_from · next_rate: 뒤 달로 미리 정해 둔 비율 (없으면 null)
+  return (rows || []).map((x) => {
+    const r = byId.get(String(x.id))
+    return { ...x, pay_rate: r ? r.pay_rate : null, next_from: r?.next_from || null, next_rate: r ? r.next_rate ?? null : null }
+  })
 }
 async function loadStaffList() {
   const rows = ok(await supabase.from('staff').select(STAFF_COLS).order('sort_order'))
@@ -1049,6 +1053,11 @@ function ChoiceHost() {
       <div style={{ padding: '18px 18px 6px' }}>
         <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>{ask.title}</div>
         <div style={{ fontSize: 13.5, color: C.sub, lineHeight: 1.6, whiteSpace: 'pre-line' }}>{ask.body}</div>
+        {ask.warn && (
+          <div style={{ fontSize: 13, color: '#854F0B', background: '#FAEEDA', borderRadius: 8, padding: '7px 10px', marginTop: 10, lineHeight: 1.55 }}>
+            {ask.warn}
+          </div>
+        )}
       </div>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', padding: 16 }}>
         {(ask.buttons || []).map((b) => (
@@ -1078,9 +1087,20 @@ async function askRateFrom(staffId, name, fromPct, toPct, viewYm) {
   if (older && older >= cur) older = null
   const m = (y) => `${Number(y.slice(5, 7))}월`
   const pct = (v) => (v == null ? '없음' : `${v}%`)
+  // 뒤 달로 미리 정해 둔 비율이 있으면 알려 줌 (이번에 바꾸면 그것은 지워짐)
+  let warn = null
+  try {
+    const rows = ok(await supabase.rpc('staff_pay_rates'))
+    const r = (rows || []).find((x) => String(x.staff_id) === String(staffId))
+    if (r?.next_from)
+      warn = `${m(r.next_from)}부터 ${r.next_rate == null ? '비율 없음' : `${Math.round(r.next_rate * 1000) / 10}%`}으로 미리 정해 둔 것이 있습니다. 이번에 바꾸면 그것은 지워지고, 고른 달부터 계속 ${pct(toPct)}가 됩니다.`
+  } catch {
+    warn = null
+  }
   return askChoice({
     title: `${name} 선생님 비율 ${pct(fromPct)} → ${pct(toPct)}`,
     body: `언제부터 ${pct(toPct)}로 할까요? 그 전 달 급여는 ${pct(fromPct)} 그대로입니다.`,
+    warn,
     buttons: [
       ...(older ? [{ label: `${m(older)}부터`, value: older }] : []),
       { label: `${m(cur)}부터 (이번 달)`, value: cur, primary: true },
@@ -4624,8 +4644,9 @@ function CertAmount({ value, onChange }) {
       className="cert-in r"
       inputMode="numeric"
       autoComplete="off"
-      value={text != null ? text : won(Math.round(value))}
-      onFocus={() => setText(String(Math.round(value)))}
+      // 안 낸 달(0원)은 '—' — 눌러서 고치면 숫자 칸
+      value={text != null ? text : Math.round(value) === 0 ? '—' : won(Math.round(value))}
+      onFocus={() => setText(Math.round(value) === 0 ? '' : String(Math.round(value)))}
       onChange={(e) => {
         setText(e.target.value)
         onChange(parse(e.target.value))
@@ -4680,7 +4701,7 @@ function CopayYearPrint({ year, kids, months, rows, onClose }) {
                   const r = k.months[m]
                   return (
                     <td key={m}>
-                      {r ? won(r.copay) : ''}
+                      {r ? (Number(r.copay) ? won(r.copay) : '—') : ''}
                       {r && sessLabel(r) && <small>{sessLabel(r)}</small>}
                     </td>
                   )
@@ -9908,14 +9929,15 @@ function StaffManage({ staff, busy, onChanged, say, toneOf }) {
                             const el = e.target
                             const v = el.value.trim()
                             const shown = x.pay_rate != null ? String(Math.round(x.pay_rate * 1000) / 10) : ''
-                            if (v === shown) return // 눌렀다 나가기만 했으면 저장하지 않음
+                            // 눌렀다 나가기만 했으면 저장하지 않음 (미리 정해 둔 비율이 있으면 같은 값으로 다시 넣어 그 예약을 없앨 수 있게)
+                            if (v === shown && !x.next_from) return
                             // 소수 첫째 자리까지 (57.7% → 0.577, 0.5770000000000001 같은 값이 저장되지 않게)
                             const rate = v === '' ? null : Math.round(Number(v) * 10) / 1000
                             if (v !== '' && (isNaN(rate) || rate < 0 || rate > 1)) {
                               el.value = shown // 잘못 넣은 값은 원래 값으로 되돌림
                               return say?.('0에서 100 사이 숫자로 넣어주세요', 'err')
                             }
-                            if (rate === (x.pay_rate != null ? Number(x.pay_rate) : null)) return
+                            if (rate === (x.pay_rate != null ? Number(x.pay_rate) : null) && !x.next_from) return
                             if (v === '' && !confirm(`${x.name} 선생님 급여 비율을 지울까요?`)) { el.value = shown; return }
                             const from = await askRateFrom(x.id, x.name, shown === '' ? null : Number(shown), v === '' ? null : Number(v))
                             if (!from) { el.value = shown; return }
@@ -9932,6 +9954,11 @@ function StaffManage({ staff, busy, onChanged, say, toneOf }) {
                           style={{ width: 56, fontSize: 13, padding: '5px 7px', border: '1px solid #DEE0E3', borderRadius: 6, textAlign: 'right' }}
                         />
                         <span style={{ fontSize: 12, color: C.sub, marginLeft: 3 }}>%</span>
+                        {x.next_from && (
+                          <div style={{ fontSize: 11.5, color: '#254B8C', marginTop: 3 }}>
+                            {Number(x.next_from.slice(5, 7))}월부터 {x.next_rate == null ? '비율 없음' : `${Math.round(x.next_rate * 1000) / 10}%`}
+                          </div>
+                        )}
                       </>
                     )}
                   </td>
@@ -10866,6 +10893,20 @@ function teacherLabel(summary) {
 }
 
 function Sheet({ ym, s, adjustment, reason, compact, stamp, x }) {
+  // 3등분 칸: 글자를 줄여도 칸(A4 1/3)을 넘치면 칸 높이에 딱 맞게 영수증 전체를 줄임
+  const slotRef = useRef(null)
+  const innerRef = useRef(null)
+  useLayoutEffect(() => {
+    if (!compact) return
+    const slot = slotRef.current
+    const inner = innerRef.current
+    if (!slot || !inner) return
+    inner.style.zoom = '' // 줄이기 전 원래 높이를 잼
+    // 인쇄할 때 칸이 화면보다 조금 작으므로(289mm÷3) 3% 여유를 둠
+    const avail = slot.clientHeight * 0.97
+    const need = inner.scrollHeight
+    if (avail > 0 && need > avail) inner.style.zoom = String(Math.max(0.5, Math.floor((avail / need) * 100) / 100))
+  })
   const R = receiptShow(s.subtotal, adjustment, x)
   const partial = R.used > 0 && !R.full
   const showDue = R.carry < 0 || partial
@@ -10874,7 +10915,12 @@ function Sheet({ ym, s, adjustment, reason, compact, stamp, x }) {
   const usedLine = R.used > 0 && showDue
   const rowsN = s.lines.length + (adjustment ? 1 : 0) + (R.carry < 0 ? 1 : 0) + (usedLine ? 1 : 0)
   const F = compact
-    ? (rowsN >= 5
+    ? (rowsN >= 9
+        // 줄이 아주 많으면 더 작게 (그래도 넘치면 아래에서 칸 높이에 맞게 전체를 줄임)
+        ? { title: 13, sub: 9.5, name: 14, th: 9, td: 10, note: 9, sum: 15, foot: 9, pad: '3mm 9mm', row: '1px 0', logo: 15, stamp: 30, lbl: 10 }
+        : rowsN >= 7
+        ? { title: 15, sub: 10.5, name: 16.5, th: 9.5, td: 11.5, note: 9.5, sum: 18, foot: 10, pad: '4mm 10mm', row: '2px 0', logo: 18, stamp: 34, lbl: 11 }
+        : rowsN >= 5
         // 줄 수에 맞춰 글자 크기를 정합니다 — 칸(A4 1/3)을 넘치지 않으면서 비어 보이지 않게
         ? { title: 17, sub: 11.5, name: 19, th: 10.5, td: 13, note: 10.5, sum: 21, foot: 11, pad: '5mm 10mm', row: '3px 0', logo: 20, stamp: 40, lbl: 12 }
         : rowsN >= 3
@@ -10883,8 +10929,8 @@ function Sheet({ ym, s, adjustment, reason, compact, stamp, x }) {
     : { title: 19, sub: 12.5, name: 18, th: 11, td: 12.5, note: 10.5, sum: 19, foot: 11, pad: '14mm 13mm', row: '8px 0', logo: 34, stamp: 42, lbl: 13 }
 
   return (
-    <div className={compact ? 'receipt-slot' : 'receipt-page'}>
-      <div style={{ padding: F.pad, height: compact ? 'auto' : '100%', display: 'flex', flexDirection: 'column', justifyContent: 'flex-start', boxSizing: 'border-box' }}>
+    <div ref={slotRef} className={compact ? 'receipt-slot' : 'receipt-page'}>
+      <div ref={innerRef} style={{ padding: F.pad, height: compact ? 'auto' : '100%', display: 'flex', flexDirection: 'column', justifyContent: 'flex-start', boxSizing: 'border-box' }}>
         {compact ? (
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 7, borderBottom: `1px solid ${C.pk}`, paddingBottom: 3, marginBottom: 5 }}>
             {LOGO_URL && (
@@ -13332,7 +13378,8 @@ function App() {
                   saved = true
                   say(
                     from > ym
-                      ? `${Number(from.slice(5, 7))}월부터 ${toPct == null ? '비율 없음' : toPct + '%'}로 바꿨습니다. ${Number(shiftYm(from, -1).slice(5, 7))}월까지는 ${fromPct == null ? '비율 없음' : fromPct + '%'}입니다.`
+                      ? `${Number(from.slice(5, 7))}월부터 ${toPct == null ? '비율 없음' : toPct + '%'}로 바꿨습니다.` +
+                        (shiftYm(from, -1) === ym ? ` ${Number(ym.slice(5, 7))}월은 ${fromPct == null ? '비율 없음' : fromPct + '%'} 그대로입니다.` : '')
                       : `급여 비율을 저장했습니다 (${Number(from.slice(5, 7))}월부터)`
                   )
                   // 선생님 관리 화면의 비율도 새 값으로 (옛 값이 남아 있으면 되돌려 넣을 때 저장이 안 됨)
