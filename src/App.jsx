@@ -11365,13 +11365,48 @@ function SurveyBar() {
   const w = Number(c.wait) || 0
   const o = Number(c.old) || 0
   if (n === 0 && o === 0 && !c.mail_error) return null
+
+  // 누르면 설문 앱을 새 창으로 열고, 지금 로그인을 넘겨줘서 로그인 화면 없이 바로 들어가게 합니다
+  //   (통합본 → 시간표 앱과 같은 방식. 넘기는 것은 1시간짜리 출입증뿐이라 시간표 앱 로그인에는 영향 없음)
+  const openSurvey = async () => {
+    if (!c.url) return
+    const win = window.open('about:blank', '_blank') // 팝업 차단을 피하려고 누르는 즉시 창부터 엶
+    if (!win) {
+      window.location.href = c.url
+      return
+    }
+    let s = null
+    try {
+      s = (await supabase.auth.getSession())?.data?.session || null
+    } catch (e) {}
+    // 출입증이 10분 안에 끝나면 새것으로 받아서 넘김 (평소 자동 갱신과 같은 일)
+    if (!s || !s.expires_at || s.expires_at - Date.now() / 1000 < 600) {
+      try {
+        const r = await supabase.auth.refreshSession()
+        if (r?.data?.session) s = r.data.session
+      } catch (e) {}
+    }
+    try {
+      if (s?.access_token) {
+        win.sessionStorage.setItem(
+          'rein-handoff',
+          JSON.stringify({ access_token: s.access_token, expires_at: s.expires_at, user_id: s.user?.id || '' })
+        )
+      }
+    } catch (e) {}
+    win.location.href = c.url
+  }
+
   return (
     <div
       className="no-print"
+      onClick={c.url ? openSurvey : undefined}
+      title={c.url ? '누르면 설문 현황이 열립니다' : undefined}
       style={{
         marginBottom: 14, padding: '10px 14px', borderRadius: 10,
-        border: `1px solid ${C.line}`, background: '#fff',
+        border: `1px solid ${c.url ? C.pk : C.line}`, background: '#fff',
         display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+        cursor: c.url ? 'pointer' : 'default',
       }}
     >
       <span style={{ fontSize: 16 }} aria-hidden="true">🔔</span>
@@ -11392,17 +11427,14 @@ function SurveyBar() {
         )}
       </div>
       {c.url ? (
-        <a
-          href={c.url}
-          target="_blank"
-          rel="noopener noreferrer"
+        <span
           style={{
-            fontSize: 13, fontWeight: 700, color: C.pkd, textDecoration: 'none',
+            fontSize: 13, fontWeight: 700, color: C.pkd,
             border: `1px solid ${C.pk}`, borderRadius: 8, padding: '6px 12px', whiteSpace: 'nowrap',
           }}
         >
           설문 현황 열기 →
-        </a>
+        </span>
       ) : null}
     </div>
   )
