@@ -11332,6 +11332,82 @@ const weekOfYm = (ym) => {
   return mondayOf(d)
 }
 
+// ── 설문 알림 줄 (원장 화면 맨 위) ──────────────────────────────────
+//   설문 앱에 새로 들어온 설문·7일 넘게 안 온 설문이 있을 때만 보입니다.
+//   아무것도 없으면 줄 자체가 안 나와서 화면이 그대로입니다.
+//   설문 쪽 준비(survey_counts)가 아직 없거나 실패해도 시간표는 그대로 씁니다.
+function SurveyBar() {
+  const [c, setC] = useState(null)
+  useEffect(() => {
+    let alive = true
+    const load = () => {
+      supabase
+        .rpc('survey_counts')
+        .then(({ data, error }) => {
+          if (alive && !error && data) setC(data)
+        })
+        .catch(() => {})
+    }
+    load()
+    const t = setInterval(() => {
+      if (document.visibilityState === 'visible') load()
+    }, 120000)
+    const onFocus = () => load()
+    window.addEventListener('focus', onFocus)
+    return () => {
+      alive = false
+      clearInterval(t)
+      window.removeEventListener('focus', onFocus)
+    }
+  }, [])
+  if (!c) return null
+  const n = Number(c.new) || 0
+  const w = Number(c.wait) || 0
+  const o = Number(c.old) || 0
+  if (n === 0 && o === 0 && !c.mail_error) return null
+  return (
+    <div
+      className="no-print"
+      style={{
+        marginBottom: 14, padding: '10px 14px', borderRadius: 10,
+        border: `1px solid ${C.line}`, background: '#fff',
+        display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+      }}
+    >
+      <span style={{ fontSize: 16 }} aria-hidden="true">🔔</span>
+      <div style={{ flex: 1, minWidth: 200, fontSize: 14, lineHeight: 1.6 }}>
+        설문{' '}
+        {n > 0 && <b style={{ color: C.ok }}>새로 {n}건</b>}
+        {n > 0 && ' · '}기다리는 중 {w}건
+        {o > 0 && (
+          <>
+            {' · '}
+            <span style={{ color: C.danger }}>7일 넘음 {o}건</span>
+          </>
+        )}
+        {c.mail_error && (
+          <span style={{ display: 'block', fontSize: 12, color: C.danger }}>
+            알림 메일이 안 나가고 있습니다 — 설문 앱 첫 화면을 확인해 주세요
+          </span>
+        )}
+      </div>
+      {c.url ? (
+        <a
+          href={c.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            fontSize: 13, fontWeight: 700, color: C.pkd, textDecoration: 'none',
+            border: `1px solid ${C.pk}`, borderRadius: 8, padding: '6px 12px', whiteSpace: 'nowrap',
+          }}
+        >
+          설문 현황 열기 →
+        </a>
+      ) : null}
+    </div>
+  )
+}
+
 function App() {
   const [session, setSession] = useState(undefined)
   const [me, setMe] = useState(null)
@@ -12461,6 +12537,7 @@ function App() {
       )}
 
       <div style={{ padding: 16, maxWidth: MAIN_W, margin: '0 auto' }}>
+        {!loading && isAdmin && <SurveyBar />}
         {!loading && isAdmin && needRegen && (
           <div
             className="no-print"
