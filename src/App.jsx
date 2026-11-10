@@ -11693,29 +11693,72 @@ function App() {
     setWeekStart(p.weekStart)
   }
 
+  // '불러오는 중' 표시: 띄운 불러오기 수를 세어, 모두 끝나야 닫음 (주만 바꾸는 조용한 불러오기와 섞여도 멈추지 않게)
+  const spinCount = useRef(0)
+  const fullDay = useRef(null) // 마지막으로 전부 불러온 날 (앱을 켜 둔 채 날짜가 바뀌면 오늘 수업 · 퇴소 예정 반영을 다시 하려고)
+  const partSeq = useRef(0) // 바뀐 것만 불러오기 — 마지막으로 시작한 것의 오류만 알림
+  const spinStart = () => {
+    spinCount.current += 1
+    setLoading(true)
+  }
+  const spinEnd = () => {
+    spinCount.current = Math.max(0, spinCount.current - 1)
+    if (spinCount.current === 0) setLoading(false)
+  }
+
   const reloadAll = useCallback(async (opts = {}) => {
     // 시간표 짜기 화면에서는 화면을 닫지 않고 뒤에서만 다시 불러옴 (적용 전에 고친 줄 유지)
     const quiet = opts.quiet ?? tabRef.current === 'plan'
     const my = ++allSeq.current
-    if (!quiet) setLoading(true)
-    // 앞날짜로 저장해 둔 퇴소·휴원은 그날이 되면 여기서 반영 (원장님만, 실패해도 화면은 그대로 엶)
-    if (isAdminRef.current) await applyPendingStatus().catch(() => {})
+    if (!quiet) spinStart()
+    // 앞날짜로 저장해 둔 퇴소·휴원은 그날이 되면 반영 — 앱을 처음 열 때와 날짜가 바뀐 뒤 처음 불러올 때 (원장님만, 실패해도 화면은 그대로 엶)
+    if (opts.first) fullDay.current = isoOf(new Date())
+    if (opts.first && isAdminRef.current) await applyPendingStatus().catch(() => {})
     try {
       await Promise.all([reloadWeek(), reloadCommon(), reloadMonth(), reloadManage(), reloadMonthSessions()])
     } catch (e) {
       if (my === allSeq.current) fail(e)
     }
-    // 마지막으로 시작한 불러오기가 끝났을 때만 화면을 엽니다
-    if (my === allSeq.current) setLoading(false)
+    // '불러오는 중'을 띄운 불러오기가 모두 끝났을 때 화면을 엽니다
+    if (!quiet) spinEnd()
   }, [reloadWeek, reloadCommon, reloadMonth, reloadManage, reloadMonthSessions])
 
   const firstLoad = useRef(true)
+  const lastLoad = useRef(null) // 마지막으로 불러온 달 · 주 · 마감 달 · 로그인
   useEffect(() => {
     if (!(session && staff.length)) return
-    // 처음 불러올 때는 어느 화면이든 '불러오는 중'을 보여줌 (시간표 짜기로 열려도 빈 화면이 먼저 뜨지 않게)
-    reloadAll(firstLoad.current ? { quiet: false } : {})
-    firstLoad.current = false
-  }, [session, staff.length, weekStart, ym, closeYm, ym])
+    // 로그인한 사람 (로그인 정보가 자동으로 새로 고쳐져도 같은 사람이면 다시 불러오지 않음)
+    const who = session?.user?.id || session
+    const now = { who, admin: isAdmin, ym, week: isoOf(weekStart), closeYm }
+    const prev = lastLoad.current
+    lastLoad.current = now
+    // 처음 열 때(또는 로그인한 사람이 바뀌거나, 앱을 켜 둔 채 날짜가 바뀌면) 전부 불러오고 '불러오는 중'을 보여줌
+    if (firstLoad.current || !prev || prev.who !== who || prev.admin !== isAdmin || fullDay.current !== isoOf(new Date())) {
+      firstLoad.current = false
+      reloadAll({ quiet: false, first: true })
+      return
+    }
+    // 그 뒤로는 바뀐 것만 불러옴
+    //   · 주만 바뀜 → 그 주 시간표만 ('불러오는 중' 없이 바로)
+    //   · 달이 바뀜 → 그 달 숫자(수강료 · 급여 등)와 그 달 수업 — 다른 달 숫자가 섞여 보이지 않게 '불러오는 중'을 잠깐 띄움
+    //   · 선생님 마감 달만 바뀜 → 그 달 마감 정보
+    const ymChanged = prev.ym !== now.ym
+    const tasks = []
+    if (ymChanged) tasks.push(reloadMonth(), reloadMonthSessions())
+    else if (prev.closeYm !== now.closeYm) tasks.push(reloadMonth())
+    if (prev.week !== now.week) tasks.push(reloadWeek())
+    if (!tasks.length) return
+    // 달이 바뀔 때, 또는 달 바꾸기를 불러오는 중에 주가 따라 바뀔 때 '불러오는 중'을 띄움 (주 시간표가 늦게 바뀌어 보이지 않게)
+    const spin = (ymChanged || spinCount.current > 0) && tabRef.current !== 'plan'
+    if (spin) spinStart()
+    const my = ++partSeq.current
+    // 모두 끝난 뒤에 닫음 (하나가 먼저 실패해도 나머지를 기다림)
+    Promise.allSettled(tasks).then((rs) => {
+      if (spin) spinEnd()
+      const bad = rs.find((r) => r.status === 'rejected')
+      if (bad && my === partSeq.current) fail(bad.reason)
+    })
+  }, [session, staff.length, isAdmin, weekStart, ym, closeYm])
 
   // 선생님 마감 탭을 열 때: 원장님이 보낸 마감 확인 요청 · 급여 확정 알림 중 가장 최근 달이 기본 달보다 뒤면 그 달로
   //   (예: 11월 6일에 원장님이 11월을 마감 → 기본은 10월이지만 11월을 바로 보여 줌). 화살표로 옮기는 건 그대로
@@ -11794,6 +11837,11 @@ function App() {
       if (on) setNotices(nt)
       // 원장님이 보강을 등록 · 확인하면 선생님 화면의 남은 보강과 시간표도 바뀌도록 같이 새로 불러옴
       if (on) {
+        // 앱을 켜 둔 채 날짜가 바뀌었으면 처음 열 때처럼 전부 다시 불러옴 (오늘 수업 · 퇴소 예정 반영)
+        if (fullDay.current && fullDay.current !== isoOf(new Date())) {
+          reloadAll({ quiet: true, first: true })
+          return
+        }
         loadUnmadeUp().then((u) => on && setUnmadeUp(u)).catch(() => {})
         reloadMonthSessions().catch(() => {})
       }
