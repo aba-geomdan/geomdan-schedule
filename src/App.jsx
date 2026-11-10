@@ -11338,9 +11338,28 @@ const weekOfYm = (ym) => {
 //   설문 쪽 준비(survey_counts)가 아직 없거나 실패해도 시간표는 그대로 씁니다.
 function SurveyBar() {
   const [c, setC] = useState(null)
+  const passRef = useRef(null) // 미리 준비해 둔 출입증 — 누르는 순간 바로 새 창을 열려고 (팝업 차단 방지)
+  const makePass = async () => {
+    let s = null
+    try {
+      s = (await supabase.auth.getSession())?.data?.session || null
+    } catch (e) {}
+    // 출입증이 10분 안에 끝나면 새것으로 (평소 자동 갱신과 같은 일)
+    if (!s || !s.expires_at || s.expires_at - Date.now() / 1000 < 600) {
+      try {
+        const r = await supabase.auth.refreshSession()
+        if (r?.data?.session) s = r.data.session
+      } catch (e) {}
+    }
+    if (!s?.access_token) return null
+    return { access_token: s.access_token, expires_at: s.expires_at, user_id: s.user?.id || '' }
+  }
   useEffect(() => {
     let alive = true
     const load = () => {
+      makePass().then((p) => {
+        if (alive) passRef.current = p
+      })
       supabase
         .rpc('survey_counts')
         .then(({ data, error }) => {
@@ -11368,33 +11387,28 @@ function SurveyBar() {
 
   // 누르면 설문 앱을 새 창으로 열고, 지금 로그인을 넘겨줘서 로그인 화면 없이 바로 들어가게 합니다
   //   (통합본 → 시간표 앱과 같은 방식. 넘기는 것은 1시간짜리 출입증뿐이라 시간표 앱 로그인에는 영향 없음)
-  const openSurvey = async () => {
+  const openSurvey = () => {
     if (!c.url) return
-    const win = window.open('about:blank', '_blank') // 팝업 차단을 피하려고 누르는 즉시 창부터 엶
-    if (!win) {
-      window.location.href = c.url
-      return
-    }
-    let s = null
+    const p = passRef.current
+    const fresh = p && p.expires_at && p.expires_at - Date.now() / 1000 > 120
+    const pass = fresh ? JSON.stringify(p) : ''
+    // 1) 넘겨줄 출입증을 이 창 저장소에 먼저 둠 — 새 창은 열릴 때 이 저장소를 그대로 복사해 감
     try {
-      s = (await supabase.auth.getSession())?.data?.session || null
+      if (pass) window.sessionStorage.setItem('rein-handoff', pass)
     } catch (e) {}
-    // 출입증이 10분 안에 끝나면 새것으로 받아서 넘김 (평소 자동 갱신과 같은 일)
-    if (!s || !s.expires_at || s.expires_at - Date.now() / 1000 < 600) {
+    // 2) 새 창 열기 (누르는 즉시 — 기다렸다 열면 팝업 차단에 걸림)
+    const win = window.open(c.url, '_blank')
+    // 3) 혹시 복사가 안 되는 브라우저를 위해 새 창 저장소에도 직접 한 번 더 넣음
+    try {
+      if (win && pass) win.sessionStorage.setItem('rein-handoff', pass)
+    } catch (e) {}
+    // 4) 이 창에 둔 것은 바로 치움
+    setTimeout(() => {
       try {
-        const r = await supabase.auth.refreshSession()
-        if (r?.data?.session) s = r.data.session
+        window.sessionStorage.removeItem('rein-handoff')
       } catch (e) {}
-    }
-    try {
-      if (s?.access_token) {
-        win.sessionStorage.setItem(
-          'rein-handoff',
-          JSON.stringify({ access_token: s.access_token, expires_at: s.expires_at, user_id: s.user?.id || '' })
-        )
-      }
-    } catch (e) {}
-    win.location.href = c.url
+    }, 1500)
+    if (!win) window.location.href = c.url // 새 창이 막혔으면 이 창에서 엶
   }
 
   return (
