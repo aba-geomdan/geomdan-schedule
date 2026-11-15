@@ -172,6 +172,12 @@ const readJSON = (st, k) => {
   }
 }
 const ownSession = () => readJSON(window.sessionStorage, SB_KEY)
+// 설문 메뉴(틀 안 설문 화면)가 이 창에 남긴 로그인도 같이 지움 — 로그아웃 뒤 다른 사람이 설문을 열지 못하게
+function clearSurveyLogin() {
+  try {
+    ;['sb-rein-auth-session', 'rein-handoff', 'rein-handoff-used', 'rein-bad-pass'].forEach((k) => window.sessionStorage.removeItem(k))
+  } catch (e) {}
+}
 
 async function signOut() {
   if (getHandoffUser()) {
@@ -179,6 +185,7 @@ async function signOut() {
     //   통합본에서 다시 [시간표 앱 열기]를 누르면 바로 열립니다 (통합본에서 로그아웃하면 그때 모두 끊김)
     try {
       window.sessionStorage.removeItem(SB_KEY)
+      clearSurveyLogin()
     } catch (e) {}
     setHandoffUser(null)
     window.location.reload()
@@ -188,6 +195,7 @@ async function signOut() {
   await supabase.auth.signOut({ scope: 'local' }).catch(() => {})
   try {
     window.sessionStorage.removeItem(SB_KEY)
+    clearSurveyLogin()
   } catch (e) {}
   // 앞 사람 화면(불러온 명단·급여 등)이 다음 로그인에 남지 않도록 새로고침
   window.location.reload()
@@ -268,6 +276,7 @@ try {
     if (uid && mine && uid === mine) {
       try {
         window.sessionStorage.removeItem(SB_KEY)
+        clearSurveyLogin()
         window.sessionStorage.removeItem(HANDOFF_USER_KEY)
       } catch (e) {}
       window.location.reload()
@@ -285,6 +294,7 @@ try {
     if (error && (error.status === 401 || error.status === 403 || /session/i.test(error.message || ''))) {
       try {
         window.sessionStorage.removeItem(SB_KEY)
+        clearSurveyLogin()
         window.sessionStorage.removeItem(HANDOFF_USER_KEY)
       } catch (e) {}
       window.location.reload()
@@ -976,7 +986,7 @@ function Empty({ children }) {
 }
 
 // 원장님이 마지막에 보던 메뉴 (localStorage · 계정별). 화면 위치만 담고 데이터는 담지 않습니다
-const LAST_VIEW_TABS = ['home', 'month', 'plan', 'payment', 'billing', 'staff', 'mark']
+const LAST_VIEW_TABS = ['home', 'month', 'plan', 'payment', 'billing', 'staff', 'mark', 'survey']
 function loadLastView(uid) {
   try {
     const v = JSON.parse(window.localStorage.getItem('sched-last-view:' + (uid || '')) || 'null')
@@ -11336,16 +11346,14 @@ const weekOfYm = (ym) => {
 //   설문 앱에 새로 들어온 설문·7일 넘게 안 온 설문이 있을 때만 보입니다.
 //   아무것도 없으면 줄 자체가 안 나와서 화면이 그대로입니다.
 //   설문 쪽 준비(survey_counts)가 아직 없거나 실패해도 시간표는 그대로 씁니다.
-function SurveyBar() {
-  const [c, setC] = useState(null)
-  const passRef = useRef(null) // 미리 준비해 둔 출입증 — 누르는 순간 바로 새 창을 열려고 (팝업 차단 방지)
-  const makePass = async () => {
+// 설문 앱에 넘겨줄 1시간짜리 출입증 (시간표 앱 로그인에는 영향 없음)
+async function makeSurveyPass(minLeftSec = 600) {
     let s = null
     try {
       s = (await supabase.auth.getSession())?.data?.session || null
     } catch (e) {}
     // 출입증이 10분 안에 끝나면 새것으로 (평소 자동 갱신과 같은 일)
-    if (!s || !s.expires_at || s.expires_at - Date.now() / 1000 < 600) {
+    if (!s || !s.expires_at || s.expires_at - Date.now() / 1000 < minLeftSec) {
       try {
         const r = await supabase.auth.refreshSession()
         if (r?.data?.session) s = r.data.session
@@ -11353,7 +11361,14 @@ function SurveyBar() {
     }
     if (!s?.access_token) return null
     return { access_token: s.access_token, expires_at: s.expires_at, user_id: s.user?.id || '' }
-  }
+}
+// 설문 관리 화면 주소 — 시간표와 같은 주소(aba-geomdan.github.io) 아래 /survey/
+const SURVEY_URL = (typeof window !== 'undefined' ? window.location.origin : '') + '/survey/'
+
+function SurveyBar({ onOpen, onCount, hidden }) {
+  const [c, setC] = useState(null)
+  const passRef = useRef(null) // 미리 준비해 둔 출입증 — 누르는 순간 바로 새 창을 열려고 (팝업 차단 방지)
+  const makePass = makeSurveyPass
   useEffect(() => {
     let alive = true
     const load = () => {
@@ -11363,7 +11378,10 @@ function SurveyBar() {
       supabase
         .rpc('survey_counts')
         .then(({ data, error }) => {
-          if (alive && !error && data) setC(data)
+          if (alive && !error && data) {
+            setC(data)
+            if (onCount) onCount(data)
+          }
         })
         .catch(() => {})
     }
@@ -11379,7 +11397,7 @@ function SurveyBar() {
       window.removeEventListener('focus', onFocus)
     }
   }, [])
-  if (!c) return null
+  if (!c || hidden) return null
   const n = Number(c.new) || 0
   const w = Number(c.wait) || 0
   const o = Number(c.old) || 0
@@ -11388,6 +11406,8 @@ function SurveyBar() {
   // 누르면 설문 앱을 새 창으로 열고, 지금 로그인을 넘겨줘서 로그인 화면 없이 바로 들어가게 합니다
   //   (통합본 → 시간표 앱과 같은 방식. 넘기는 것은 1시간짜리 출입증뿐이라 시간표 앱 로그인에는 영향 없음)
   const openSurvey = () => {
+    // 시간표 안 '설문' 메뉴로 옮겨 감 (새 창을 열지 않음)
+    if (onOpen) return onOpen()
     if (!c.url) return
     const p = passRef.current
     const fresh = p && p.expires_at && p.expires_at - Date.now() / 1000 > 120
@@ -11414,13 +11434,13 @@ function SurveyBar() {
   return (
     <div
       className="no-print"
-      onClick={c.url ? openSurvey : undefined}
-      title={c.url ? '누르면 설문 현황이 열립니다' : undefined}
+      onClick={c.url || onOpen ? openSurvey : undefined}
+      title={c.url || onOpen ? '누르면 설문 현황이 열립니다' : undefined}
       style={{
         marginBottom: 14, padding: '10px 14px', borderRadius: 10,
-        border: `1px solid ${c.url ? C.pk : C.line}`, background: '#fff',
+        border: `1px solid ${c.url || onOpen ? C.pk : C.line}`, background: '#fff',
         display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
-        cursor: c.url ? 'pointer' : 'default',
+        cursor: c.url || onOpen ? 'pointer' : 'default',
       }}
     >
       <span style={{ fontSize: 16 }} aria-hidden="true">🔔</span>
@@ -11440,7 +11460,7 @@ function SurveyBar() {
           </span>
         )}
       </div>
-      {c.url ? (
+      {c.url || onOpen ? (
         <span
           style={{
             fontSize: 13, fontWeight: 700, color: C.pkd,
@@ -11454,8 +11474,104 @@ function SurveyBar() {
   )
 }
 
+// ── 설문 메뉴: 설문 관리 화면을 시간표 안에 그대로 띄웁니다 ─────────────
+//   로그인은 시간표 것을 넘겨주므로 다시 로그인하지 않습니다.
+//   넘겨주는 출입증이 1시간짜리라, 5분마다 확인해서 20분 안에 끝나면 새 출입증을 건네줍니다.
+function SurveyFrame() {
+  const [n, setN] = useState(0) // 화면을 새로 열 때마다 1씩 올림
+  const lastSent = useRef('') // 설문 화면에 마지막으로 건넨 출입증
+  const [ready, setReady] = useState(false)
+  const [fail, setFail] = useState(false)
+  const openFresh = async () => {
+    setReady(false)
+    const p = await makeSurveyPass(20 * 60)
+    if (!p) {
+      setFail(true)
+      return
+    }
+    try {
+      window.sessionStorage.setItem('rein-handoff', JSON.stringify(p))
+    } catch (e) {}
+    lastSent.current = p.access_token
+    setFail(false)
+    setN((x) => x + 1)
+    setReady(true)
+  }
+  const frameRef = useRef(null)
+  // 새 출입증을 화면을 다시 열지 않고 살짝 건네줌 → 쓰던 내용이 날아가지 않고 로그인이 계속 이어짐
+  const passOn = async (force) => {
+    // 남은 시간이 20분보다 적으면 새로 받아서 건넴 (5분마다 확인하므로 틀 안 출입증은 늘 15분 넘게 남아 있음)
+    const p = await makeSurveyPass(20 * 60)
+    if (!p || (!force && p.access_token === lastSent.current)) return
+    const w = frameRef.current && frameRef.current.contentWindow
+    if (!w) return
+    try {
+      w.postMessage({ type: 'rein-pass', pass: p }, window.location.origin)
+      lastSent.current = p.access_token // 실제로 건넨 것만 기록
+    } catch (e) {}
+  }
+  useEffect(() => {
+    openFresh()
+    const t = setInterval(() => passOn(false), 5 * 60 * 1000)
+    const onShow = () => {
+      if (document.visibilityState === 'visible') passOn(false)
+    }
+    // 설문 화면이 '출입증이 끝났다'고 알려 오면 바로 새것을 건넴 (같은 주소의 틀에서 온 것만)
+    const onAsk = (e) => {
+      if (e.origin !== window.location.origin) return
+      if (!frameRef.current || e.source !== frameRef.current.contentWindow) return
+      if (e.data && e.data.type === 'rein-need-pass') passOn(true)
+    }
+    document.addEventListener('visibilitychange', onShow)
+    window.addEventListener('message', onAsk)
+    return () => {
+      clearInterval(t)
+      document.removeEventListener('visibilitychange', onShow)
+      window.removeEventListener('message', onAsk)
+    }
+  }, [])
+  // 새 창: 창을 먼저 열고(팝업 차단 방지) 넉넉한 출입증을 넣은 뒤 설문 주소로 보냄
+  const openWin = async () => {
+    const win = window.open('', '_blank')
+    if (!win) {
+      window.open(SURVEY_URL, '_blank')
+      return
+    }
+    const p = await makeSurveyPass(45 * 60)
+    try {
+      if (p) win.sessionStorage.setItem('rein-handoff', JSON.stringify(p))
+    } catch (e) {}
+    win.location.href = SURVEY_URL
+  }
+  if (fail) {
+    return (
+      <Card style={{ padding: 18 }}>
+        <div style={{ fontSize: 14, marginBottom: 10 }}>설문 화면을 여는 데 필요한 로그인 정보를 만들지 못했습니다.</div>
+        <Btn onClick={openFresh}>다시 열기</Btn>
+      </Card>
+    )
+  }
+  if (!ready) return <Loading />
+  return (
+    <div>
+      <div className="no-print" style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginBottom: 8 }}>
+        <Btn variant="ghost" onClick={openFresh} style={{ padding: '6px 11px', fontSize: 12.5 }}>새로고침</Btn>
+        <Btn variant="ghost" onClick={openWin} style={{ padding: '6px 11px', fontSize: 12.5 }}>새 창으로 열기</Btn>
+      </div>
+      <iframe
+        ref={frameRef}
+        key={n}
+        title="설문 관리"
+        src={SURVEY_URL}
+        style={{ width: '100%', height: 'calc(100vh - 140px)', minHeight: 560, border: `1px solid ${C.line}`, borderRadius: 12, background: '#fff', display: 'block' }}
+      />
+    </div>
+  )
+}
+
 function App() {
   const [session, setSession] = useState(undefined)
+  const [surveyNew, setSurveyNew] = useState(0) // 설문 메뉴 옆 숫자 (새로 들어온 설문)
   const [me, setMe] = useState(null)
   const [staff, setStaff] = useState([])
   const [isAdmin, setIsAdmin] = useState(false)
@@ -12383,6 +12499,12 @@ function App() {
         { k: 'staff', label: '관리', on: tab === 'staff', go: () => setTab('staff') },
       ],
     },
+    // 설문은 따로 떼어 왼쪽 맨 아래에
+    {
+      h: null,
+      bottom: true,
+      items: [{ k: 'survey', label: '📋 설문', badge: surveyNew, on: tab === 'survey', go: () => setTab('survey') }],
+    },
   ]
   // 묶은 메뉴 안의 버튼
   const subTabs = !isAdmin
@@ -12450,9 +12572,28 @@ function App() {
           style={{
             position: 'fixed', left: 8, top: 10, zIndex: 25, border: `1px solid ${C.line}`, background: '#fff', borderRadius: 8,
             padding: '6px 10px', fontSize: 13, fontWeight: 700, color: C.ink, cursor: 'pointer', boxShadow: '0 1px 3px rgba(0,0,0,.08)',
+            overflow: 'visible',
           }}
         >
           ☰ 메뉴
+          {/* 메뉴를 접어 시간표를 넓게 볼 때도 새 설문 알림이 보이게 — 숫자를 누르면 설문으로 바로 감 */}
+          {surveyNew > 0 && tab !== 'survey' && (
+            <span
+              role="button"
+              title="새로 들어온 설문 보기"
+              onClick={(e) => {
+                e.stopPropagation()
+                if (okToDropPlan()) setTab('survey')
+              }}
+              style={{
+                position: 'absolute', top: -9, right: -22, minWidth: 18, height: 18, lineHeight: '18px', padding: '0 5px',
+                boxSizing: 'border-box', borderRadius: 99, background: C.pkd, color: '#fff', fontSize: 11, fontWeight: 700,
+                textAlign: 'center', boxShadow: '0 0 0 2px #fff',
+              }}
+            >
+              📋{surveyNew}
+            </span>
+          )}
         </button>
       )}
       {isAdmin && !foldNow && phoneW && (
@@ -12464,6 +12605,7 @@ function App() {
           style={{
             position: 'fixed', left: 0, top: 0, bottom: 0, width: SIDE_W, boxSizing: 'border-box', zIndex: 20,
             background: '#fff', borderRight: `1px solid ${C.line}`, padding: '16px 10px', overflowY: 'auto',
+            display: 'flex', flexDirection: 'column',
           }}
         >
           <style>{`@media print { .app-with-side { padding-left: 0 !important; } }`}</style>
@@ -12479,7 +12621,7 @@ function App() {
             </button>
           </div>
           {side.map((g, gi) => (
-            <div key={gi} style={{ marginBottom: 8 }}>
+            <div key={gi} style={g.bottom ? { marginTop: 'auto', paddingTop: 10, borderTop: `1px solid ${C.line}` } : { marginBottom: 8 }}>
               {g.h && <div style={{ fontSize: 11.5, color: C.mut, fontWeight: 700, padding: '10px 8px 4px' }}>{g.h}</div>}
               {g.items.map((it) => (
                 <button
@@ -12583,7 +12725,13 @@ function App() {
       )}
 
       <div style={{ padding: 16, maxWidth: MAIN_W, margin: '0 auto' }}>
-        {!loading && isAdmin && <SurveyBar />}
+        {!loading && isAdmin && (
+          <SurveyBar
+            hidden={tab === 'survey'}
+            onOpen={() => okToDropPlan() && setTab('survey')}
+            onCount={(d) => setSurveyNew(Number(d?.new) || 0)}
+          />
+        )}
         {!loading && isAdmin && needRegen && (
           <div
             className="no-print"
@@ -12679,6 +12827,7 @@ function App() {
         )}
 
         {loading && <Loading />}
+        {tab === 'survey' && isAdmin && <SurveyFrame />}
 
         {/* 확인 문구 — 원장님: 선생님이 체크한 보강 / 선생님: 원장님이 바꾼 일정 */}
         {!loading && isAdmin && tab === 'home' && (
