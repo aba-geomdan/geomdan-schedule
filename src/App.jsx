@@ -129,11 +129,11 @@ const koError = (raw) => {
   if (/^internal server error|status of 5\d\d/i.test(m)) return '서버에 문제가 생겼습니다. 잠시 뒤 다시 해 주세요'
   // 일부 수업 기능은 partial_lesson.sql 을 Supabase에서 먼저 실행해야 합니다
   if (/(mark_partial|report_partial)/i.test(m) && /could not find|does not exist|schema cache/i.test(m))
-    return '일부 수업 기능이 DB에 아직 없습니다. Supabase SQL Editor에서 partial_lesson.sql 을 먼저 실행해 주세요'
+    return '원장님께 알려 주세요 — 일부 수업 기능이 DB에 아직 없습니다. Supabase SQL Editor에서 partial_lesson.sql을 먼저 실행해 주세요' // ★ [4차 시간표 33]
   if (/move_lesson_oneday/i.test(m) && /could not find|does not exist|schema cache/i.test(m))
-    return '이 날만 시간 바꾸기 기능이 DB에 아직 없습니다. Supabase SQL Editor에서 이 날만 시간 바꾸기 SQL을 먼저 실행해 주세요'
+    return '원장님께 알려 주세요 — 이 날만 시간 바꾸기 기능이 DB에 아직 없습니다. Supabase SQL Editor에서 이 날만 시간 바꾸기 SQL을 먼저 실행해 주세요' // ★ [4차 시간표 33]
   if (/refund_with_cancel/i.test(m) && /could not find|does not exist|schema cache/i.test(m))
-    return '환불 + 수업 취소 기능이 DB에 아직 없습니다. Supabase SQL Editor에서 refund_cancel.sql 을 먼저 실행해 주세요'
+    return '원장님께 알려 주세요 — 환불 + 수업 취소 기능이 DB에 아직 없습니다. Supabase SQL Editor에서 refund_cancel.sql을 먼저 실행해 주세요' // ★ [4차 시간표 33]
   return m
 }
 
@@ -625,7 +625,7 @@ async function saveAdjust(ym, studentId, amount, reason) {
         .select('student_id')
     )
     // 영수증 줄이 없어 아무것도 저장 안 됐는데 감액이 있으면 실패로 (감액 없이 발행되지 않게)
-    if ((!rows || !rows.length) && Number(amount)) throw new Error('감액을 저장하지 못했습니다. 서버에 set_receipt_adjust 함수를 먼저 넣어 주세요')
+    if ((!rows || !rows.length) && Number(amount)) throw new Error('감액을 저장하지 못했습니다. 원장님께 알려 주세요 — 서버에 set_receipt_adjust 함수를 먼저 넣어 주세요') // ★ [4차 시간표 33] 글만 바꿈
     return rows
   }
   throw error
@@ -1157,6 +1157,12 @@ const HOLIDAY = {
 }
 // 보강 — 어느 선생님이든 같은 표시 (흰 바탕 · 점선 · 주황 이름표)
 const MAKEUP = '#E07B00'
+// ★ [4차 검토] 지울까요 확인 글의 조사: 마지막 한글 글자에 받침이 있으면 '을', 없으면 '를'. 한글이 없으면 '을(를)' (화면 글자만)
+const eulReul = (w) => {
+  const ch = [...String(w || '')].reverse().find((c) => c >= '\uAC00' && c <= '\uD7A3')
+  if (!ch) return '을(를)'
+  return (ch.charCodeAt(0) - 0xac00) % 28 ? '을' : '를'
+}
 // 결강 딱지 · 테두리 색 (보강 주황과 짝이 되게 빨강)
 const ABSENT = '#D6455F'
 // 일부 수업 (아이가 아파서 100분 중 80분만 한 날 등) — 상태는 '결강' 그대로 + 실제로 한 분(done_min)
@@ -1352,10 +1358,10 @@ function WeekAgenda({ days, sessions, holidayMap, outByDay, showTeacher, colorOf
                     </span>
                   </span>
                   {s.status === '보강' && chip(MAKEUP, '#fff', '보강')}
-                  {s.status === '결강' && !pt && chip('#FDECEF', '#AE2340', s.needs_makeup ? '결강 · 미보강' : '결강 · 보강완료')}
+                  {s.status === '결강' && !pt && chip('#FDECEF', '#AE2340', s.needs_makeup ? '결강 · 미보강' : '결강 · 보강 완료' /* ★ [4차 시간표 38] */)}
                   {pt && (
                     <span style={{ fontSize: 11, fontWeight: 700, borderRadius: 99, padding: '2px 8px', whiteSpace: 'nowrap', ...PARTIAL_TAG }}>
-                      {partialText(s)}{s.needs_makeup ? ' · 미보강' : ' · 보강완료'}
+                      {partialText(s)}{s.needs_makeup ? ' · 미보강' : ' · 보강 완료' /* ★ [4차 시간표 38] */}
                     </span>
                   )}
                   {s.status === '취소' && chip('#F2F3F5', C.mut, '취소')}
@@ -1375,7 +1381,7 @@ const mdw = (d) => (d ? `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}(${'�
 const NOTICE_KIND = {
   absent: { label: '결강', bg: '#FDECEF', fg: '#AE2340' },
   makeup: { label: '보강', bg: MAKEUP, fg: '#fff' },
-  unmakeup: { label: '보강 취소', bg: '#F2F3F5', fg: '#4B5057' },
+  unmakeup: { label: '보강 지움', bg: '#F2F3F5', fg: '#4B5057' }, // ★ [4차 시간표 23] 문구('지웠습니다')와 맞춤
   undo: { label: '되돌림', bg: '#F2F3F5', fg: '#4B5057' },
   uncancel: { label: '되돌림', bg: '#F2F3F5', fg: '#4B5057' },
   cancel: { label: '취소', bg: '#F2F3F5', fg: '#4B5057' },
@@ -1533,7 +1539,7 @@ function TeacherCloseList({ ym, rows, snap }) {
       </Card>
       {partial && (
         <div style={{ fontSize: 12.5, color: C.sub, marginTop: 8, lineHeight: 1.55 }}>
-          '(회기 0)'은 10분씩 나눠 한 보강이라 아직 회기로 잡히지 않은 것입니다. 나눠 한 보강은 모인 시간만큼 회기로 들어갑니다.
+          {/* ★ [4차 시간표 19] */}'(회기 0)'은 이 보강까지 합쳐도 아직 한 회기 분량이 차지 않아 회기로 잡히지 않은 것입니다. 그날 한 시간과 앞선 보강을 합쳐 한 회기 분량이 찰 때마다 1회기로 들어갑니다.
         </div>
       )}
     </div>
@@ -1692,7 +1698,7 @@ function TeacherPayCard({ ym, rec }) {
 function TeacherNotices({ items, onConfirm, busy, title: titleIn }) {
   if (!items.length) return null
   // 급여 확정 알림만 있으면 제목도 그에 맞게
-  const title = titleIn || (items.every((n) => n.kind === 'close_done') ? '급여가 확정됐습니다 · 확인해 주세요' : '원장님이 일정을 바꿨습니다 · 확인해 주세요')
+  const title = titleIn || (items.every((n) => n.kind === 'close_done') ? '급여가 확정됐습니다 · 확인해 주세요' : '원장님 알림 · 확인해 주세요') // ★ [4차 결정 마] 확인 문구도 같이 떠서 '일정을 바꿨습니다' → '원장님 알림'
   return (
     <Card className="no-print" style={{ padding: '12px 14px', marginBottom: 14, border: '1.5px solid #F0C27A', background: '#FFFBF2' }}>
       <div style={{ fontSize: 14.5, fontWeight: 800, color: '#8A4B00', marginBottom: 8 }}>
@@ -1750,7 +1756,7 @@ function AdminNotices({ reports, partials = [], closings = [], waiting, nameOf, 
           <div style={{ fontSize: 14.5, fontWeight: 800, color: '#AE2340', marginBottom: 8 }}>
             선생님이 일부 수업을 체크했습니다 · 확인해 주세요 ({partials.length}건)
           </div>
-          <div style={{ fontSize: 12, color: C.sub, margin: '-4px 0 8px' }}>확인을 누르기 전에는 보강 목록 · 급여에 들어가지 않습니다.</div>
+          <div style={{ fontSize: 12, color: C.sub, margin: '-4px 0 8px' }}>[맞아요, 반영]을 누르기 전에는 보강 목록 · 급여에 들어가지 않습니다.{/* ★ [4차 시간표 6] */}</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {partials.map((n) => (
               <div key={n.id} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', background: '#fff', borderRadius: 8, padding: '8px 10px', border: `1px solid ${C.line}` }}>
@@ -1801,7 +1807,7 @@ function AdminNotices({ reports, partials = [], closings = [], waiting, nameOf, 
             onClick={() => setOpenWait(!openWait)}
             style={{ border: 'none', background: 'none', padding: 0, cursor: 'pointer', color: C.sub, fontSize: 12.5 }}
           >
-            {openWait ? '▾' : '▸'} 선생님이 아직 확인 안 한 일정 변경 {waiting.length}건
+            {openWait ? '▾' : '▸'} 선생님이 아직 확인 안 한 알림 {waiting.length}건{/* ★ [4차 시간표 16] */}
           </button>
           {openWait && (
             <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -1894,8 +1900,8 @@ function PartialBox({ s, busy, onSave }) {
             </span>
           </div>
           <div style={{ fontSize: 12, color: C.sub, marginTop: 6, lineHeight: 1.6 }}>
-            수강료는 그대로 · 선생님 급여는 이날 {dayUnits}타임
-            {dayUnits < units ? `, 남은 ${tot - min}분을 보강으로 채우면 나머지 ${units - dayUnits}타임` : ''}
+            {/* ★ [4차 시간표 13] '타임' → '회기' */}수강료는 그대로 · 선생님 급여는 이날 {dayUnits}회기
+            {dayUnits < units ? `, 남은 ${tot - min}분을 보강으로 채우면 나머지 ${units - dayUnits}회기` : ''}
           </div>
           <ReasonPicker value={why} onChange={setWhy} chips={PARTIAL_REASONS} placeholder="예: 열이 나서 40분만 하고 귀가" />
           <div style={{ display: 'flex', gap: 6, marginTop: 9 }}>
@@ -1998,7 +2004,7 @@ function TeacherMakeupCheck({ unmade, reports, onReport, onWithdraw, busy }) {
     <Card style={{ padding: '12px 14px', marginBottom: 14 }}>
       <div style={{ fontSize: 14.5, fontWeight: 800, color: C.ink }}>보강 했어요 체크</div>
       <div style={{ fontSize: 12.5, color: C.sub, margin: '3px 0 9px', lineHeight: 1.5 }}>
-        수업을 10분씩 늘려서 보강했다면 여기서 체크해 주세요. 원장님이 확인하면 보강으로 기록됩니다.
+        {/* ★ [4차 시간표 18] */}보강을 했다면(수업을 10분씩 늘려 한 보강 포함) 여기서 체크해 주세요. 원장님이 확인하면 보강으로 기록됩니다.
       </div>
       {!rows.length && <div style={{ fontSize: 13, color: C.mut, padding: '6px 0' }}>보강할 결강이 없습니다.</div>}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -2062,7 +2068,7 @@ function TeacherMakeupCheck({ unmade, reports, onReport, onWithdraw, busy }) {
                       // 창을 연 뒤 다른 체크가 생겼으면 남은 분을 넘지 않게 맞춤
                       const mm = Math.min(mins, left - pendMin)
                       if (!(mm > 0)) return
-                      const msg = `${mdw(d)} ${start ? clock(start) + '부터 ' : ''}${mm}분 보강 — ${u.student_name} ${mdw(u.d)} 결강분`
+                      const msg = `${mdw(d)} ${start ? clock(start) + '부터 ' : ''}${mm}분 보강 — ${u.student_name} ${mdw(u.d)} ${Number(u.done_min) > 0 ? '일부 수업 남은 시간' : '결강분'}` // ★ [4차 시간표 17·결정 사]
                       const ok2 = await onReport(u, msg, { d, start: start || null, minutes: mm, student_name: u.student_name, absent_d: u.d })
                       if (ok2) setOpenId(null)
                     }}
@@ -2104,7 +2110,7 @@ function TeacherPartialCheck({ ym, lessons, reports, onReport, onWithdraw, busy 
     <Card style={{ padding: '12px 14px', marginBottom: 14 }}>
       <div style={{ fontSize: 14.5, fontWeight: 800, color: C.ink }}>일부만 수업했어요 체크</div>
       <div style={{ fontSize: 12.5, color: C.sub, margin: '3px 0 9px', lineHeight: 1.5 }}>
-        아이가 아파서 일찍 가는 등 수업을 다 못 한 날이 있으면 여기서 체크해 주세요. 원장님이 확인하면 남은 시간이 보강으로 잡힙니다.
+        아이가 아파서 일찍 가는 등 수업을 다 못 한 날이 있으면 여기서 체크해 주세요. 원장님이 확인하면 남은 시간이 '보강 잡아야 함'에 올라갑니다. 원장님이 보강 날짜를 잡거나, 수업을 늘려 채웠다면 아래 '보강 했어요 체크'로 알려 주세요.{/* ★ [4차 시간표 4] 확인해도 보강 날짜는 생기지 않음 */}
       </div>
       {pend.map((n) => (
         <div key={n.id} style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 6, fontSize: 12.5, color: '#AE2340' }}>
@@ -3263,7 +3269,7 @@ function MonthView({
                       )}
                       {g.loose > 0 && (
                         <span style={{ color: '#B3261E', marginLeft: 7, fontWeight: 700 }}>
-                          · 결강과 연결 안 된 보강 {g.loose} (빨간 ! 칸 — 실수로 넣은 거면 지우고, 결강의 보강이면 지운 뒤 결강 칸에서 '보강 잡기'로)
+                          · 결강과 연결 안 된 보강 {g.loose} (빨간 ! 칸 — 시간표 화면에서 그 칸을 눌러 [이 수업 지우기]를 한 뒤, 결강의 보강이면 '보강' 메뉴에서 [보강 잡기]로 다시 넣으세요){/* ★ [4차 시간표 10] 출결 화면은 보기 전용 */}
                         </span>
                       )}
                       {onMark && <span style={{ marginLeft: 7 }}>· 날짜를 눌러 결강 처리</span>}
@@ -3285,7 +3291,7 @@ function MonthView({
                                   ? (() => {
                                       // 선생님 필터 전 목록에서 찾음 (다른 선생님 수업의 결강분도 날짜가 나오게)
                                       const a = (allSessions || sessions).find((x) => x.id === s.makeup_for)
-                                      return a ? ` (${Number(a.d.slice(5, 7))}/${Number(a.d.slice(8))} 결강분)` : ' (지난달 결강분)'
+                                      return a ? ` (${Number(a.d.slice(5, 7))}/${Number(a.d.slice(8))} ${Number(a.done_min) > 0 ? '일부 수업 남은 시간' : '결강분'})` : ' (지난달 결강분)' // ★ [4차 검토] 일부 수업이면 '일부 수업 남은 시간'
                                     })()
                                   : ' (결강과 연결 안 됨)'
                                 : ''
@@ -3634,8 +3640,8 @@ function cleanItems(items) {
     const label = String(x.label || '').trim()
     const amount = Math.round(Number(x.amount))
     if (!label && !x.amount) continue
-    if (!label) return { error: '항목 이름을 적어주세요.' }
-    if (!(amount > 0)) return { error: `${label} — 금액을 넣어주세요.` }
+    if (!label) return { error: '항목 이름을 적어 주세요.' } /* ★ [4차 시간표 36] */
+    if (!(amount > 0)) return { error: `${label} — 금액을 넣어 주세요.` } /* ★ [4차 시간표 36] */
     out.push(x.kind === 'deduct' ? { kind: 'deduct', label, amount } : { kind: 'add', label, amount, taxed: x.taxed !== false })
   }
   return { items: out }
@@ -3725,7 +3731,7 @@ function ManualPayModal({ staff, rec, busy, onClose, onSave, onDelete }) {
       <div style={{ padding: '16px 18px', borderBottom: `1px solid ${C.line2}` }}>
         <div style={{ fontSize: 17, fontWeight: 700 }}>{rec ? '급여 기록 고치기' : '급여 직접 입력'}</div>
         <div style={{ fontSize: 12.5, color: C.sub, marginTop: 3, lineHeight: 1.6 }}>
-          수업 기록이 없는 달이나 실장님처럼 수업이 없는 분 급여를 넣습니다. 세금은 소득세 3% + 지방세 0.3%로 자동 계산돼요.
+          수업 기록이 없는 달이나 실장님처럼 수업이 없는 분 급여를 넣습니다. 2026년 이후 달은 소득세 3% + 지방세 0.3%로 자동 계산됩니다.{/* ★ [4차 시간표 28] */}
         </div>
       </div>
       <div style={{ padding: 18, display: 'grid', gap: 12 }}>
@@ -3775,10 +3781,10 @@ function ManualPayModal({ staff, rec, busy, onClose, onSave, onDelete }) {
             disabled={busy}
             style={{ flex: 2 }}
             onClick={async () => {
-              if (!staffId) return setErr('이름을 골라주세요.')
-              if (!/^\d{4}-\d{2}$/.test(ym)) return setErr('몇 월분인지 골라주세요.')
+              if (!staffId) return setErr('이름을 골라 주세요.') /* ★ [4차 검토] 띄어쓰기 */
+              if (!/^\d{4}-\d{2}$/.test(ym)) return setErr('몇 월분인지 골라 주세요.') /* ★ [4차 검토] 띄어쓰기 */
               const p = Math.round(Number(pay))
-              if (pay === '' || !(p >= 0)) return setErr('금액을 넣어주세요.')
+              if (pay === '' || !(p >= 0)) return setErr('금액을 넣어 주세요.') // ★ [4차 시간표 36]
               const c = cleanItems(items)
               if (c.error) return setErr(c.error)
               if (await onSave({ ym, staffId, pay: p, items: c.items, memo })) onClose()
@@ -4001,7 +4007,7 @@ function PayrollHistory({ rows, staffOrder = [], ownerName, toneOf, busy, onPaid
       <div>
         {header}
         <Empty>
-          아직 급여 기록이 없습니다. 마감을 <b>승인</b>하면 그 달 급여가 금액까지 여기에 저장됩니다.
+          {/* ★ [4차 시간표 8] '승인' 버튼은 없음 */}아직 급여 기록이 없습니다. 이 달 화면에서 <b>[마감하기]</b>를 누르면 그 달 급여가 금액까지 여기에 저장됩니다.
         </Empty>
         {modal}
       </div>
@@ -4220,7 +4226,7 @@ function CopayView({ loadCopay, say }) {
   return (
     <div>
       <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.75, marginBottom: 12 }}>
-        엄마들이 연말정산 서류를 달라고 하시면 아이 이름 옆 <b>증명서</b>를 누르세요. 기간을 골라 인쇄하거나 이미지로 저장할 수 있어요.
+        {/* ★ [4차 시간표 41] */}보호자가 연말정산 서류를 요청하면 아이 이름 옆 <b>증명서</b>를 누르세요. 기간을 골라 인쇄하거나 이미지로 저장할 수 있어요.
         <br />
         금액은 그 달 수강료로 <b>실제로 받은 돈</b>(바우처 포함, 환불은 뺌)입니다. 아직 안 낸 달은 0원으로 나옵니다.
       </div>
@@ -4547,7 +4553,7 @@ function CertificatePrint({ name, kidKey, year, rows: yearRows, loadCopay, say, 
           </span>
         </div>
         <div style={{ fontSize: 12, color: C.sub, marginTop: 6, lineHeight: 1.6 }}>
-          분홍 칸은 눌러서 바로 적거나 고칠 수 있어요 (인쇄에는 글자만 나옵니다). 주민번호는 저장하지 않으니 매번 적어주세요.
+          분홍 칸은 눌러서 바로 적거나 고칠 수 있어요 (인쇄에는 글자만 나옵니다). 주민번호는 저장하지 않으니 매번 적어 주세요.{/* ★ [4차 시간표 36] */}
           {edited && (
             <>
               {' '}금액·횟수를 고친 곳이 있어요 —{' '}
@@ -4997,10 +5003,10 @@ function BillingView({ ym, lines, byStaff, payroll, unmadeAll = null, receipts, 
           ) : (
         <div>
           <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.75, marginBottom: 12 }}>
-            급여 = <b>(진행 + 보강)</b> 수강료 합계 × 선생님 비율. 회기 = 50분 1회기 (100분 = 2, 150분 = 3). 결강은 보강해야 집계됩니다.
+            {/* ★ [4차 시간표 2] '진행' → '수업한 것', '정산 탭' → '돈 › 수강료' */}급여 = <b>(수업한 것 + 보강)</b> 수강료 합계 × 선생님 비율. 회기 = 50분 1회기 (100분 = 2, 150분 = 3). 결강은 보강해야 집계됩니다.
             보강은 <b>보강한 달</b>에 잡혀요.
             <br />
-            수강료 청구는 (진행 + 결강) 기준이라 아래 <b>수강료</b> 금액과 정산 탭의 금액이 다를 수 있습니다.
+            수강료 청구는 (수업한 것 + 결강) 기준이라 아래 <b>수강료</b> 금액과 '돈 › 수강료' 화면의 청구 금액이 다를 수 있습니다.
           </div>
           {closeCheck && (payroll || []).length > 0 && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
@@ -5063,7 +5069,7 @@ function BillingView({ ym, lines, byStaff, payroll, unmadeAll = null, receipts, 
                           // 숫자로 읽을 수 없는 값(58.5. 같은)은 브라우저가 빈칸으로 넘기므로 따로 막음 — 지우기로 저장되지 않게
                           if (el.validity && el.validity.badInput) {
                             back()
-                            return say?.('숫자만 넣어주세요 (예: 58.5)', 'err')
+                            return say?.('숫자만 넣어 주세요 (예: 58.5)', 'err') // ★ [4차 시간표 36]
                           }
                           // 눌렀다 나가기만 했으면(보이는 값 그대로) 저장하지 않음
                           if (raw === shown) return
@@ -5071,7 +5077,7 @@ function BillingView({ ym, lines, byStaff, payroll, unmadeAll = null, receipts, 
                           const pct = raw === '' ? null : Number(raw)
                           if (pct != null && (isNaN(pct) || pct < 0 || pct > 100)) {
                             back()
-                            return say?.('0에서 100 사이 숫자로 넣어주세요', 'err')
+                            return say?.('0에서 100 사이 숫자로 넣어 주세요', 'err') // ★ [4차 시간표 36]
                           }
                           const v = pct == null ? null : Math.round(pct * 10) / 1000
                           if (v === cur) return back()
@@ -5293,14 +5299,14 @@ function BillingView({ ym, lines, byStaff, payroll, unmadeAll = null, receipts, 
                     if (x.status === '보강') {
                       const a = x.makeup_for ? monthSessions.find((y) => y.id === x.makeup_for) : null
                       const mins = minutesBetween(hhmm(x.start_time), hhmm(x.end_time))
-                      return box('#E6F1FB', '#0C447C', null, `${md(x.d)} 보강 ${mins}분${x.makeup_for ? (a ? ` · ${md(a.d)} 결강분` : ' · 지난달 결강분') : ''}`)
+                      return box('#E6F1FB', '#0C447C', null, `${md(x.d)} 보강 ${mins}분${x.makeup_for ? (a ? ` · ${md(a.d)} ${Number(a.done_min) > 0 ? '일부 수업 남은 시간' : '결강분'}` : ' · 지난달 결강분') : ''}`) // ★ [4차 검토] 일부 수업이면 '일부 수업 남은 시간'
                     }
                     if (x._plus) {
                       const pm = (m) => toMin((m._orig || m).end_time) - toMin((m._orig || m).start_time)
                       return (
                         <span
                           key={x.id}
-                          title={`${md(x.d)} 수업 · ${x._plus.map((m) => `보강 ${pm(m)}분${m.makeup_for ? (() => { const a = monthSessions.find((y) => y.id === m.makeup_for); return a ? ` (${md(a.d)} 결강분)` : ' (지난달 결강분)' })() : ''}`).join(' · ')}`}
+                          title={`${md(x.d)} 수업 · ${x._plus.map((m) => `보강 ${pm(m)}분${m.makeup_for ? (() => { const a = monthSessions.find((y) => y.id === m.makeup_for); return a ? ` (${md(a.d)} ${Number(a.done_min) > 0 ? '일부 수업 남은 시간' : '결강분'})` : ' (지난달 결강분)' })() : ''}`).join(' · ')}`} /* ★ [4차 검토] 일부 수업이면 '일부 수업 남은 시간' */
                           style={{
                             display: 'inline-flex', alignItems: 'center', gap: 2, fontSize: 11.5, fontWeight: 600, borderRadius: 4,
                             padding: '1px 2px 1px 4px', lineHeight: '16px', background: '#F1EFE8', color: '#444441',
@@ -6019,7 +6025,7 @@ function StudentModal({ student, staff, defaultMain, onClose, onSave, onRemove, 
         <Field label="이름">
           <input value={name} onChange={(e) => setName(e.target.value)} style={inp} placeholder="김지환" />
           <div style={{ fontSize: 11.5, color: C.mut, marginTop: 5, lineHeight: 1.55 }}>
-            같은 이름의 아동이 이미 다니고 있으면 뒤에 구분을 붙여주세요 (예: 김지환B). 영수증에는 아래
+            같은 이름의 아동이 이미 다니고 있으면 뒤에 구분을 붙여 주세요 (예: 김지환B).{/* ★ [4차 시간표 36] */} 영수증에는 아래
             표기명이 나가니 거기에는 이름만 적으시면 됩니다.
           </div>
         </Field>
@@ -6340,8 +6346,9 @@ function MonthOnlyCard({ ym, leaves, outside, staff, busy, onAddLeave, onRemoveL
             disabled={busy}
             onClick={() => {
               // 휴무일은 지울 때 '취소된 수업을 되살릴지' 함께 묻습니다 (App 쪽에서)
-              if (r.kind === 'leave') return onRemoveLeave(r.id, `${r.d} ${r.label}`)
-              if (!confirm(`${r.d} ${r.label} 을(를) 삭제할까요?`)) return
+              // ★ [4차 시간표 22] 날짜를 '11/14'로, '을(를)' 앞 띄어쓰기 없앰
+              if (r.kind === 'leave') return onRemoveLeave(r.id, `${Number(r.d.slice(5, 7))}/${Number(r.d.slice(8, 10))} '${r.label}'`)
+              if (!confirm(`${Number(r.d.slice(5, 7))}/${Number(r.d.slice(8, 10))} '${r.label}'${eulReul(r.label)} 지울까요?`)) return // ★ [4차 검토] 조사
               onRemoveOutside(r.id)
             }}
             style={{ padding: '5px 11px', fontSize: 12, color: C.danger }}
@@ -6684,7 +6691,7 @@ function PlanView({
                 }
                 setClash(bad)
                 if (bad.length) {
-                  say(`시간이 겹치는 곳이 ${bad.length}군데 있습니다. 빨간 줄을 고쳐주세요`, 'err')
+                  say(`시간이 겹치는 곳이 ${bad.length}군데 있습니다. 빨간 줄을 고쳐 주세요`, 'err') // ★ [4차 검토] 띄어쓰기
                   return
                 }
                 if (
@@ -6716,7 +6723,7 @@ function PlanView({
           <br />
           <b>{prev.replace('-', '년 ')}월 이전 기록은 절대 바뀌지 않습니다.</b>
           <br />
-          달 중간에 들어온 아동은 <b>수업 추가</b>로 넣고 <b>시작</b> 날짜를 정해주세요.
+          {/* ★ [4차 시간표 3] 이 화면 버튼 이름에 맞춤 */}달 중간에 들어온 아동은 아이 이름 아래 <b>[+ 수업]</b>으로 넣고, 그 줄의 <b>'시작'</b> 날짜를 정해 주세요. (새 아이면 먼저 <b>[+ 새 아동]</b>)
         </div>
       </Card>
 
@@ -6799,7 +6806,7 @@ function PlanView({
       <div style={{ fontSize: 14, fontWeight: 700, margin: '4px 0 8px' }}>
         매주 반복되는 수업{' '}
         <span style={{ fontSize: 12, fontWeight: 400, color: C.sub, marginLeft: 7 }}>
-          고치고 아래 적용을 누르세요
+          {/* ★ [4차 시간표 9] 적용 버튼은 위에 하나 */}고친 뒤 위의 [{ym.replace('-', '년 ')}월에 적용]을 누르세요
         </span>
       </div>
 
@@ -6821,7 +6828,7 @@ function PlanView({
               <span style={{ fontWeight: 400, opacity: 0.8 }}>{g.kids.length}명</span>
               {g.gone && (
                 <span style={{ fontWeight: 400, marginLeft: 1, fontSize: 11.5 }}>
-                  다시 다니면 <b>수정</b>에서 상태를 재원으로 바꾼 뒤 수업을 넣어주세요
+                  다시 다니면 <b>수정</b>에서 상태를 재원으로 바꾼 뒤 수업을 넣어 주세요{/* ★ [4차 시간표 36] */}
                 </span>
               )}
               {onNewStudent && !g.gone && (
@@ -6853,7 +6860,7 @@ function PlanView({
                 {s.name}
                 {/* 원장님 묶음에서만: 원장님 수업을 재원 가격으로 받는 아이 (다른 선생님 아이였다가 원장님 아이가 돼도 그대로 보임) */}
                 {s.legacy_price && staff.find((x) => String(x.id) === String(g.id))?.role === 'admin' && (
-                  <span style={{ marginLeft: 5, fontSize: 11, fontWeight: 600, color: '#254B8C' }}>재원</span>
+                  <span style={{ marginLeft: 5, fontSize: 11, fontWeight: 600, color: '#254B8C' }}>기존가{/* ★ [4차 시간표 26] */}</span>
                 )}
               </div>
               {(s.gone || (s.status && s.status !== '재원')) && <Pill tone="gray">{s.status}</Pill>}
@@ -7303,7 +7310,7 @@ function HomeView({ ym, onPrevYm, onNextYm, onLoad, onGo, busy }) {
       title: `다음 달(${nextLabel}) 영수증 발행`,
       desc: h.next_students
         ? `${h.next_students}명 · ${h.next_receipts} / ${h.next_students}장 발행`
-        : `${nextLabel} 회차를 먼저 만들어주세요`,
+        : `다음 달 시간표 짜기에서 [${nextYm.replace('-', '년 ')}월에 적용]을 먼저 눌러 주세요`, // ★ [4차 시간표 5] '회차 만들기' 버튼은 없음
       go: 'billing-next',
     }
     const makeup = {
@@ -7321,8 +7328,8 @@ function HomeView({ ym, onPrevYm, onNextYm, onLoad, onGo, busy }) {
       state: closingDone ? 'done' : 'todo',
       title: `${closeLabel} 마감 · 급여`,
       desc: closeH.closing_total
-        ? `선생님 ${closeH.closing_total}명 중 ${closeH.closing_done}명 마감함 (정산 › 급여에서)`
-        : '정산 › 급여에서 선생님별로 마감하세요',
+        ? `선생님 ${closeH.closing_total}명 중 ${closeH.closing_done}명 마감함 (돈 › 급여에서)` // ★ [4차 시간표 1] 메뉴 이름 '정산' → '돈'
+        : '돈 › 급여에서 선생님별로 마감하세요',
       go: 'closing',
       ym: closeYmH,
     }
@@ -7332,7 +7339,7 @@ function HomeView({ ym, onPrevYm, onNextYm, onLoad, onGo, busy }) {
       title: `${closeLabel} 급여 확인`,
       desc: closeH.payroll_staff
         ? `선생님 ${closeH.payroll_staff}명 · 합계 ${won(closeH.payroll_total)}원`
-        : '급여 비율을 먼저 넣어주세요',
+        : '급여 비율을 먼저 넣어 주세요', // ★ [4차 시간표 36]
       go: 'payroll',
       ym: closeYmH,
     }
@@ -7459,7 +7466,7 @@ function MarkView({ onLoad, onMark, busy, say }) {
       <div style={{ padding: '13px 15px', borderBottom: `1px solid ${C.line2}` }}>
         <div style={{ fontSize: 15, fontWeight: 700 }}>결강 찍기</div>
         <div style={{ fontSize: 12.5, color: C.sub, marginTop: 3, lineHeight: 1.6 }}>
-          아이가 안 온 수업만 눌러주세요. 정상 진행한 수업은 아무것도 안 누르시면 됩니다.
+          아이가 안 온 수업만 눌러 주세요. 정상 진행한 수업은 아무것도 안 누르시면 됩니다.{/* ★ [4차 검토] 띄어쓰기 */}
         </div>
       </div>
 
@@ -7492,7 +7499,7 @@ function MarkView({ onLoad, onMark, busy, say }) {
                 </div>
                 {off && (
                   <div style={{ fontSize: 12, fontWeight: 700, color: C.danger }}>
-                    {pt ? partialText(r) : '결강'}{r.needs_makeup ? ' · 미보강' : ' · 보강완료'}
+                    {pt ? partialText(r) : '결강'}{r.needs_makeup ? ' · 미보강' : ' · 보강 완료' /* ★ [4차 시간표 38] */}
                   </div>
                 )}
                 <div style={{ marginLeft: 'auto' }}>
@@ -8669,11 +8676,11 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
         <div style={{ fontSize: 15, fontWeight: 700 }}>
           {ym.replace('-', '년 ')}월 시간표 인쇄
           {/* 새 파일이 제대로 올라갔는지 확인용 — 브라우저가 옛 파일을 기억하고 있으면 이 표시가 안 보입니다 */}
-          <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: C.mut }}>v1014-40</span>
+          {/* ★ [4차 시간표 35] 확인용 'v1014-40' 표시 뺌 */}
           {mode === 'grid' && (
             <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: imgErr ? C.danger : useImgs ? '#1F7A45' : C.mut }}>
               {imgErr ? `그림 실패: ${imgErr.slice(0, 60)}` : useImgs ? `그림 준비됨 ${imgs.length}장` : '그림 만드는 중'}
-              {' · '}화면 {Math.round((window.devicePixelRatio || 1) * 100)}%
+              {/* ★ [4차 시간표 35] '화면 N%' 뺌 */}
             </span>
           )}
         </div>
@@ -8770,7 +8777,7 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
           />
         ))}
         {mode === 'grid' && !shown.length && (
-          <div style={{ textAlign: 'center', color: C.sub, padding: 40 }}>뽑을 선생님을 골라주세요.</div>
+          <div style={{ textAlign: 'center', color: C.sub, padding: 40 }}>뽑을 선생님을 골라 주세요.{/* ★ [4차 검토] 띄어쓰기 */}</div>
         )}
       </div>
       {useImgs && (
@@ -8996,7 +9003,7 @@ function MakeupFixModal({ row, busy, onClose, onMove, onRemove }) {
       <div style={{ padding: '16px 18px', borderBottom: `1px solid ${C.line2}` }}>
         <div style={{ fontSize: 17, fontWeight: 700 }}>보강 고치기</div>
         <div style={{ fontSize: 12.5, color: C.sub, marginTop: 3, lineHeight: 1.6 }}>
-          {row.student_name} · {row.absent_d.slice(5).replace('-', '/')} {clock(row.absent_start)} 결강분 · {row.staff_name} 선생님
+          {row.student_name} · {row.absent_d.slice(5).replace('-', '/')} {clock(row.absent_start)} {Number(row.done_min) > 0 ? '일부 수업 남은 시간' : '결강분'} · {row.staff_name} 선생님{/* ★ [4차 검토] 일부 수업이면 '일부 수업 남은 시간' */}
         </div>
       </div>
       <div style={{ padding: 18 }}>
@@ -9030,7 +9037,7 @@ function MakeupFixModal({ row, busy, onClose, onMove, onRemove }) {
           ))
         )}
         <div style={{ fontSize: 11.5, color: C.sub, lineHeight: 1.6, marginTop: 4 }}>
-          옮기면 원래 보강은 지워지고 새 날짜로 다시 잡힙니다. 지우면 이 결강은 다시 '아직'으로 돌아갑니다.
+          옮기면 원래 보강은 지워지고 새 날짜로 다시 잡힙니다. 지우면 이 결강은 다시 '보강 잡아야 함'으로 돌아갑니다.{/* ★ [4차 시간표 11] */}
         </div>
         <Btn onClick={onClose} style={{ width: '100%', marginTop: 12 }}>닫기</Btn>
       </div>
@@ -9146,7 +9153,7 @@ function AddSessionModal({ students, staff, programs, absent, preset = null, pai
     if (absent) return partMin && partMin < leftMin ? partMin : leftMin
     return programs.find((p) => p.code === pcode)?.minutes ?? 50
   }, [absent, leftMin, partMin, pcode, programs])
-  const [note, setNote] = useState(absent ? `${absent.d.slice(5).replace('-', '/')} 결강분` : '')
+  const [note, setNote] = useState(absent ? `${absent.d.slice(5).replace('-', '/')} ${Number(absent.done_min) > 0 ? '일부 수업 남은 시간' : '결강분'}` : '') // ★ [4차 시간표 17·결정 사]
   // 추가한 수업은 언제나 수강료를 청구합니다 ('청구 안 함'은 없음)
   const noCharge = false
 
@@ -9166,7 +9173,7 @@ function AddSessionModal({ students, staff, programs, absent, preset = null, pai
         <div style={{ fontSize: 17, fontWeight: 700 }}>{linked ? (preset?.moving ? '보강 옮기기 — 새 날짜·시간을 고르세요' : '보강 등록') : '수업 추가'}</div>
         <div style={{ fontSize: 12.5, color: C.sub, marginTop: 3, lineHeight: 1.6 }}>
           {linked
-            ? `${absent.student_name} · ${absent.d.slice(5).replace('-', '/')} 결강분`
+            ? `${absent.student_name} · ${absent.d.slice(5).replace('-', '/')} ${Number(absent.done_min) > 0 ? '일부 수업 남은 시간' : '결강분'}` /* ★ [4차 시간표 17·결정 사] */
             : '정규 시간표에 없는 수업을 한 번만 넣을 때 씁니다. 결강의 보강은 보강 화면의 보강 잡기로 넣으세요.'}
         </div>
       </div>
@@ -9268,7 +9275,7 @@ function AddSessionModal({ students, staff, programs, absent, preset = null, pai
           {/* 오후 12시대를 '오전 12시'(새벽 0시)로 넣는 실수 막기 — 새벽 시간은 저장되지 않게 */}
           {start && start < '07:00' && (
             <div style={{ fontSize: 12.5, color: C.danger, marginTop: 6, lineHeight: 1.5 }}>
-              새벽 시간({start})으로 들어가 있습니다. 낮 12시대라면 <b>오후</b>로 바꿔 주세요. (오후 12:10 = 12:10 PM)
+              새벽 시간({start})으로 들어가 있습니다. 낮 12시대라면 시 칸에서 <b>'낮 12시'</b>를 고르세요.{/* ★ [4차 시간표 40] */}
             </div>
           )}
         </AddField>
@@ -9441,7 +9448,7 @@ function PayPrint({ ym, rows, teachersOf, rank, loadMonthDeposits, onClose }) {
         <div className="pp-sum">
           <div>이 달 청구<b>{won(tot.b)}원</b></div>
           <div>받은 돈(선입금 포함)<b>{won(tot.a)}원</b></div>
-          <div>미수 {unpaidN}명<b className="red">{won(tot.u)}원</b>{tot.p > 0 && <span>+ 지난달 미수 {won(tot.p)}원</span>}</div>
+          <div>미납 {unpaidN}명<b className="red">{won(tot.u)}원</b>{tot.p > 0 && <span>+ 지난달 미납 {won(tot.p)}원</span>}{/* ★ [4차 시간표 27] */}</div>
           <div>아동 수<b>{rows.length}명</b></div>
         </div>
         <table>
@@ -9606,7 +9613,7 @@ function RoomBoard({ staff, toneOf, say }) {
         {rows === undefined && <div style={{ fontSize: 13, color: C.mut }}>불러오는 중…</div>}
         {rows === null && (
           <div style={{ fontSize: 13, color: C.sub, lineHeight: 1.6 }}>
-            방 배정표가 DB에 아직 없습니다. Supabase SQL Editor에서 <b>room_board.sql</b> 을 먼저 실행해 주세요.
+            {/* ★ [4차 시간표 33] */}원장님께 알려 주세요 — 방 배정표가 DB에 아직 없습니다. Supabase SQL Editor에서 <b>room_board.sql</b>을 먼저 실행해 주세요.
           </div>
         )}
         {rows === 'err' && (
@@ -9818,7 +9825,7 @@ function PriceTable({ say, students = [] }) {
           <div style={{ fontSize: 12, color: '#633806', background: '#FAEEDA', borderRadius: 8, padding: '8px 11px', marginTop: 10, lineHeight: 1.6 }}>
             아이별 가격이 따로 정해진 아이:{' '}
             {overrides.length ? overrides.map((o) => `${o.student_name}(${o.program_label || o.program_code} ${won(o.unit_price)}원)`).join(', ') : '없음'}
-            {' · '}재원 가격 표시 켜진 아이 {legacyCount}명
+            {' · '}기존 가격(원장 재원가) 받는 아이 {legacyCount}명{/* ★ [4차 시간표 26] */}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
             <Btn variant="primary" disabled={saving || changed.length === 0} onClick={save}>
@@ -9916,7 +9923,7 @@ function StaffManage({ staff, busy, onChanged, say, toneOf }) {
                     <button
                       disabled={dis}
                       onClick={() => {
-                        const n = prompt('바꿀 이름을 넣어주세요', x.name)
+                        const n = prompt('바꿀 이름을 넣어 주세요', x.name) // ★ [4차 시간표 36]
                         if (n && n.trim() && n.trim() !== x.name) run(() => staffRename(x.id, n.trim()), '이름을 바꿨습니다')
                       }}
                       style={{ marginLeft: 6, border: 'none', background: 'none', color: C.mut, cursor: 'pointer', fontSize: 12 }}
@@ -9945,7 +9952,7 @@ function StaffManage({ staff, busy, onChanged, say, toneOf }) {
                             const rate = v === '' ? null : Math.round(Number(v) * 10) / 1000
                             if (v !== '' && (isNaN(rate) || rate < 0 || rate > 1)) {
                               el.value = shown // 잘못 넣은 값은 원래 값으로 되돌림
-                              return say?.('0에서 100 사이 숫자로 넣어주세요', 'err')
+                              return say?.('0에서 100 사이 숫자로 넣어 주세요', 'err') // ★ [4차 시간표 36]
                             }
                             if (rate === (x.pay_rate != null ? Number(x.pay_rate) : null) && !x.next_from) return
                             if (v === '' && !confirm(`${x.name} 선생님 급여 비율을 지울까요?`)) { el.value = shown; return }
@@ -9983,8 +9990,8 @@ function StaffManage({ staff, busy, onChanged, say, toneOf }) {
                       onClick={() => {
                         const e = prompt(
                           email
-                            ? `${x.name} 선생님 로그인 이메일을 바꾸려면 새 이메일을, 연결을 끊으려면 비워서 확인을 눌러주세요.`
-                            : `${x.name} 선생님 로그인 이메일을 넣어주세요.\n(Supabase → Authentication → Users 에서 먼저 계정을 만들어야 합니다)`,
+                            ? `${x.name} 선생님 로그인 이메일을 바꾸려면 새 이메일을, 연결을 끊으려면 비워서 확인을 눌러 주세요.` /* ★ [4차 검토] 띄어쓰기 */
+                            : `${x.name} 선생님 로그인 이메일을 넣어 주세요.\n(Supabase → Authentication → Users 에서 먼저 계정을 만들어야 합니다)`,
                           email || ''
                         )
                         if (e === null) return
@@ -10145,11 +10152,11 @@ function PaymentView({
         <Stat label="이 달 청구" value={`${won(t.billed)}원`} />
         <Stat label={onOpenReceipt ? '받은 돈' : '충당됨'} value={`${won(t.allocated)}원`} tone="#1F5B3A" />
         <Stat
-          label={`미수 (${t.thisUnpaid.length}명)`}
+          label={`미납 (${t.thisUnpaid.length}명)` /* ★ [4차 시간표 27] */}
           value={`${won(t.balance)}원`}
           tone={t.balance > 0 ? C.danger : C.mut}
         />
-        {t.prevN > 0 && <Stat label={`지난달 미수 (${t.prevN}명)`} value={`${won(t.prev)}원`} tone={C.danger} />}
+        {t.prevN > 0 && <Stat label={`지난달 미납 (${t.prevN}명)` /* ★ [4차 시간표 27] */} value={`${won(t.prev)}원`} tone={C.danger} />}
       </div>
 
       <div style={{ marginBottom: 14 }}>
@@ -10375,7 +10382,7 @@ function PaymentView({
         선입금은 받은 순서대로 매달 청구에서 자동으로 빠집니다. 3개월치를 한 번에 받으셔도 달마다 알아서
         차감돼요. <b>선입금 잔액</b>은 앞으로 쓸 수 있는 돈입니다.
         <br />
-        지난 달 청구는 영수증을 뽑았으면 <b>영수증 금액</b>, 안 뽑았으면 <b>그 달 수업으로 계산한 금액</b>으로 셉니다. 받은 돈은 오래된 달부터 채워져요.
+        {/* ★ [4차 시간표 37] */}지난달 청구는 영수증을 뽑았으면 <b>영수증 금액</b>, 안 뽑았으면 <b>그 달 수업으로 계산한 금액</b>으로 셉니다. 받은 돈은 오래된 달부터 채워져요.
       </div>
 
       {revenue && revenue.length > 0 && (
@@ -10749,7 +10756,7 @@ function RefundModal({ row, ym, onClose, onSave, busy }) {
           ))}
         </div>
         <input
-          placeholder="사유를 적어주세요"
+          placeholder={"사유를 적어 주세요" /* ★ [4차 시간표 36] */}
           value={memo}
           onChange={(e) => setMemo(e.target.value)}
           style={{ width: '100%', fontSize: 13, padding: '9px 11px', border: '1px solid #DEE0E3', borderRadius: 8 }}
@@ -11691,7 +11698,7 @@ function App() {
   const fail = (e) => {
     const raw = e?.message || String(e)
     if (/uq_student_active_name|students_name_key/.test(raw))
-      return say('같은 이름의 아동이 이미 다니고 있습니다. 이름 뒤에 구분을 붙여주세요 (예: 김지환B)', 'err')
+      return say('같은 이름의 아동이 이미 다니고 있습니다. 이름 뒤에 구분을 붙여 주세요 (예: 김지환B)', 'err') // ★ [4차 시간표 36]
     if (/uq_holiday|holidays_pkey/.test(raw)) return say('그 날짜는 이미 휴무일로 등록돼 있습니다', 'err')
     if (/uq_makeup_once/.test(raw)) return say('그 결강에는 이미 보강이 잡혀 있습니다', 'err')
     if (/staff_name_key/.test(raw)) return say('같은 이름의 선생님이 이미 있습니다', 'err')
@@ -12161,7 +12168,9 @@ function App() {
   /* ---- 동작 ---- */
   // 원장님이 선생님 수업을 바꾸면 그 선생님 화면에 확인 문구를 띄웁니다 (notices.sql 실행 전이면 조용히 넘어감)
   const findSession = (id) => [...sessions, ...monthSessions, ...today].find((x) => x.id === id) || null
-  const tellTeacher = async (s, kind, extra = '') => {
+  // ★ [3차 A] opt.confirmed: 선생님이 체크한 것을 원장님이 확인한 경우 (kind는 그대로 두고 문구만 바꿈 — 통합본 '내 일정'은 kind와 상관없이 문구를 그대로 보여 줌)
+  //   opt.doneMin: 일부 수업 확인 때 한 시간(분) / opt.changed: 보강 확인 때 원장님이 날짜 · 시간 · 선생님을 바꿨는지
+  const tellTeacher = async (s, kind, extra = '', opt = {}) => {
     if (!isAdmin || !s || s.staff_id == null) return
     // 원장님 본인 수업도 똑같이 남깁니다 (원장님도 통합본 '내 일정'에서 결강 · 보강 변경을 확인)
     const when = `${mdw(s.d)} ${clock(s.start_time)}~${clock(s.end_time)}`
@@ -12169,11 +12178,15 @@ function App() {
       absent: `${when} ${s.student_name} 수업을 결강으로 처리했습니다`,
       undo: `${when} ${s.student_name} 결강 처리를 되돌렸습니다 (정상 수업)`,
       cancel: `${when} ${s.student_name} 수업을 취소했습니다`,
-      makeup: `${s.student_name} 보강을 잡았습니다 — ${when}${extra}`,
+      makeup: opt.confirmed // ★ [3차 A]
+        ? `${when} ${s.student_name} 보강을 ${opt.changed ? '확인하고 시간을 바꿨습니다' : '확인했습니다'}${extra}` // ★ [4차 시간표 24·결정 사] 날짜를 앞에, 끝에 '(○/○ 결강분)'
+        : `${when} ${s.student_name} 보강을 잡았습니다${extra}`, // ★ [4차 검토] 확인 문구와 같은 모양(날짜를 앞에)
       unmakeup: `${when} ${s.student_name} 보강을 지웠습니다`,
       uncancel: `${when} ${s.student_name} 수업 취소를 되돌렸습니다 (정상 수업)`,
-      partial_set: `${when} ${s.student_name} 수업을 일부 수업으로 기록했습니다${extra}`,
-      moved: `${when} ${s.student_name} 수업을 이 날만 바꿨습니다: ${extra}`,
+      partial_set: opt.confirmed // ★ [3차 A]
+        ? `${when} ${s.student_name} 일부 수업을 확인했습니다${extra}` // ★ [4차 시간표 24] '80분'이 두 번 나오지 않게
+        : `${when} ${s.student_name} 수업을 일부 수업으로 기록했습니다${extra}`,
+      moved: `${when} ${s.student_name} 수업 시간을 이 날만 바꿨습니다: ${extra}`, // ★ [4차 시간표 25]
     }[kind]
     if (!msg) return
     try {
@@ -12191,7 +12204,7 @@ function App() {
     await notifyStaff(
       r.staff_id,
       'close_req',
-      `${mm}월 마감 확인을 요청했습니다 — 회기 ${fmtUnits(units)} · 보강 ${fmtUnits(makeups)} · 미보강 ${unmade}. 마감 탭에서 맞는지 확인해 주세요`,
+      `${mm}월 마감 확인을 요청했습니다 — 합계 ${fmtUnits(units)}회기(보강 ${fmtUnits(makeups)}회기 포함) · 미보강 ${unmade}건. 마감 탭에서 맞는지 확인해 주세요`, // ★ [4차 시간표 15]
       null,
       { ym, units, makeups, unmade }
     )
@@ -12254,8 +12267,8 @@ function App() {
     try {
       const msg = await markPartial(p.id, doneMin, noticeId, why)
       const tot = minutesBetween(hhmm(p.start_time), hhmm(p.end_time))
-      // 선생님이 체크한 걸 확인한 경우는 선생님이 이미 알고 있으므로 따로 문구를 보내지 않음
-      if (!noticeId) await tellTeacher(p, 'partial_set', ` (${tot}분 중 ${doneMin}분 · 보강 ${tot - doneMin}분 남음${why ? ` · 이유: ${why}` : ''})`)
+      // ★ [3차 A] 선생님이 체크한 걸 확인한 경우도 '확인했습니다' 문구를 보냄 (같은 kind, 문구만 다름)
+      await tellTeacher(p, 'partial_set', ` (${tot}분 중 ${doneMin}분 · 보강 ${tot - doneMin}분 남음${why ? ` · 이유: ${why}` : ''})`, noticeId ? { confirmed: true, doneMin } : {})
       say(msg || '일부 수업으로 기록했습니다')
       await reloadAfterAction()
       if (noticeId) await loadNotices().then(setNotices).catch(() => {})
@@ -12271,7 +12284,7 @@ function App() {
     const ok = confirm(
       `${p.student_name} ${p.d.slice(5).replace('-', '/')} 수업을 취소합니다.\n\n` +
         `이 달 영수증은 이미 발행돼서 그대로 두고,\n그 수업 수강료를 다음에 발행하는 영수증에서 차감합니다.\n\n` +
-        `※ 돈을 바로 돌려드릴 거면 이 방법 대신\n   영수증 잠금을 풀고 → 취소 → 영수증 다시 발행 → 환불 로 해주세요.`
+        `※ 돈을 바로 돌려드릴 거면 이 방법 대신\n   영수증 잠금을 풀고 → 취소 → 영수증 다시 발행 → 환불 로 해 주세요.` /* ★ [4차 시간표 36] */
     )
     if (!ok) return
     const reasonIn = prompt('취소 사유 (기록용, 비워도 됩니다)', '센터 사정')
@@ -12339,7 +12352,7 @@ function App() {
   // target: 회차를 만들 달('2026-11'). 버튼 onClick으로 바로 부르면(클릭 이벤트가 넘어옴) 지금처럼 보던 달 ym
   const doGenerate = async (target) => {
     const gy = typeof target === 'string' ? target : ym
-    if (!confirm(`${gy} 회차를 생성합니다.\n이미 있는 회차는 그대로 두고, 시간표가 바뀐 부분만 정리됩니다.`)) return
+    if (!confirm(`${gy.slice(0, 4)}년 ${Number(gy.slice(5, 7))}월 회차를 다시 만듭니다.\n이미 있는 회차는 그대로 두고, 시간표가 바뀐 부분만 정리됩니다.`)) return // ★ [4차 시간표 21] '2026-11 회차를 생성' → 버튼 이름('다시 만들기')과 맞춤
     setBusy(true)
     try {
       const n = await generateMonth(gy)
@@ -12835,7 +12848,9 @@ function App() {
             reports={notices.filter((n) => n.kind === 'report' && !n.confirmed_at)}
             partials={notices.filter((n) => n.kind === 'partial' && !n.to_staff && !n.confirmed_at)}
             onPartialOk={(n) => {
-              const s = { id: n.session_ref, d: n.payload?.d, start_time: n.payload?.start, end_time: n.payload?.end, student_name: n.payload?.student_name }
+              // ★ [3차 A] '확인했습니다' 문구를 받을 선생님 — 그 수업의 담당 선생님 (못 찾으면 체크한 선생님)
+              const sess = [...sessions, ...monthSessions, ...today].find((x) => String(x.id) === String(n.session_ref))
+              const s = { id: n.session_ref, staff_id: sess?.staff_id ?? n.from_staff ?? null, d: n.payload?.d, start_time: n.payload?.start, end_time: n.payload?.end, student_name: n.payload?.student_name }
               const done = Number(n.payload?.done)
               if (!(done > 0)) return say('체크한 시간이 없습니다. 지우고 다시 체크해 달라고 해 주세요.', 'err')
               doPartial(s, done, n.id, n.payload?.reason || '')
@@ -12860,7 +12875,8 @@ function App() {
                 say('이미 보강이 끝났거나 찾을 수 없는 결강입니다. 확인만 눌러 주세요.')
                 return
               }
-              setMakeupPreset({ d: n.payload?.d, start: n.payload?.start, minutes: Number(n.payload?.minutes) || null, noticeId: n.id })
+              // ★ [3차 23번] 체크한 선생님(from_staff)도 함께 기억해 둠 — 등록할 때 원장님이 바꿨는지 비교용
+              setMakeupPreset({ d: n.payload?.d, start: n.payload?.start, minutes: Number(n.payload?.minutes) || null, noticeId: n.id, fromStaff: n.from_staff ?? null })
               setMakeupFor(absent)
             }}
             onConfirm={async (id) => {
@@ -12889,7 +12905,7 @@ function App() {
         {/* 원장님 본인 수업의 일정 변경 (선생님 화면과 같은 방식으로 확인) */}
         {!loading && isAdmin && me && tab === 'home' && (
           <TeacherNotices
-            title="내 수업 일정이 바뀌었습니다 · 확인해 주세요"
+            title={'내 수업 알림 · 확인해 주세요' /* ★ [4차 결정 마·N2] */}
             items={notices.filter((n) => String(n.to_staff) === String(me.id) && !n.confirmed_at && n.kind !== 'close_req')}
             busy={busy}
             onConfirm={async (id) => {
@@ -13076,7 +13092,7 @@ function App() {
                 const before = row?.staff_id != null ? row : findSession(id) || row
                 await markAttendance(id, status)
                 await tellMark(before, status)
-                say(status === '결강' ? '결강으로 표시했습니다' : '진행으로 되돌렸습니다')
+                say(status === '결강' ? '결강으로 표시했습니다' : '정상 수업으로 되돌렸습니다') // ★ [4차 시간표 14]
                 await reloadAll({ quiet: true })
               } catch (e) {
                 fail(e)
@@ -13542,8 +13558,8 @@ function App() {
                   (!undo && prRow && prRow.pay == null ? '\n\n⚠ 급여 비율이 없어 급여 금액이 비어 있습니다. 비율을 먼저 넣는 편이 좋습니다.' : '')
                 const ok2 = confirm(
                   (undo
-                    ? `${t} ${ym.slice(5)}월 마감을 취소합니다.\n출결을 다시 고칠 수 있게 됩니다. (급여 기록은 '마감 취소됨'으로 남고, 다시 마감하면 새로 저장됩니다)`
-                    : `${t} ${ym.slice(5)}월을 마감합니다.\n\n· 이 달 급여가 세금(소득세·지방세)까지 계산돼 기록에 저장됩니다\n· 그 달 출결이 잠겨서 더 이상 안 바뀝니다\n\n나중에 취소할 수 있어요.`) + warn
+                    ? /* ★ [4차 시간표 20] '09월' → '9월' */ `${t} ${Number(ym.slice(5))}월 마감을 취소합니다.\n출결을 다시 고칠 수 있게 됩니다. (급여 기록은 '마감 취소됨'으로 남고, 다시 마감하면 새로 저장됩니다)`
+                    : `${t} ${Number(ym.slice(5))}월을 마감합니다.\n\n· 이 달 급여가 세금(소득세·지방세)까지 계산돼 기록에 저장됩니다\n· 그 달 출결이 잠겨서 더 이상 안 바뀝니다\n\n나중에 취소할 수 있어요.`) + warn
                 )
                 if (!ok2) return
                 setBusy(true)
@@ -13890,7 +13906,7 @@ function App() {
                   })
                   if (!pick) return
                   restore = pick === 'restore'
-                } else if (!confirm(`${what || '휴무일'} 을(를) 삭제할까요?`)) return
+                } else if (!confirm(`${what || "'휴무일'"}${eulReul(what || '휴무일')} 지울까요?`)) return // ★ [4차 시간표 22] ★ [4차 검토] 조사
                 setBusy(true)
                 try {
                   // 지우기 전에 그 휴무일 날짜를 찾아 둠 (그 달로 회차를 다시 만들게)
@@ -14061,12 +14077,30 @@ function App() {
               } else {
                 await addSession(v)
               }
+              // ★ [2차 16번] 선생님이 체크한 보강을 확인해 등록한 경우는 선생님이 이미 알고 있으므로 따로 문구를 보내지 않음 (일부 수업과 같은 방식)
+              // ★ [3차 23번] 단, 원장님이 날짜 · 시간 · 담당 선생님을 바꿔서 등록했으면 선생님이 모르는 내용이므로 문구를 보냄
+              const presetChanged = (() => {
+                const p = makeupPreset
+                if (!p?.noticeId) return true
+                if (p.d && v.d !== p.d) return true
+                if (p.start && hhmm(v.start_time) !== hhmm(p.start)) return true
+                if (p.minutes) {
+                  // 보강 창은 체크한 분이 남은 시간보다 길면 남은 시간으로 맞춰 채우므로, 그 값과 비교함
+                  const left = makeupFor ? Math.max(minutesBetween(hhmm(makeupFor.start_time), hhmm(makeupFor.end_time)) - (Number(makeupFor.made_min) || 0), 0) : 0
+                  const expect = left && Number(p.minutes) >= left ? left : Number(p.minutes)
+                  if (minutesBetween(hhmm(v.start_time), hhmm(v.end_time)) !== expect) return true
+                }
+                if (p.fromStaff != null && String(v.staff_id) !== String(p.fromStaff)) return true
+                return false
+              })()
+              // ★ [3차 A] 선생님이 체크한 보강을 확인한 경우도 문구를 보냄 — 그대로면 '확인했습니다', 바꿨으면 '확인하고 시간을 바꿨습니다' (같은 kind 'makeup')
               if (v.status === '보강') {
                 const kid = students.find((k) => String(k.id) === String(v.student_id))
                 await tellTeacher(
                   { staff_id: v.staff_id, d: v.d, start_time: v.start_time, end_time: v.end_time, student_name: kid?.name || makeupFor?.student_name || '' },
                   'makeup',
-                  makeupFor ? ` (${mdw(makeupFor.d)} 결강분)` : ''
+                  makeupFor ? ` (${mdw(makeupFor.d)} ${Number(makeupFor.done_min) > 0 ? '일부 수업 남은 시간' : '결강분'})` : '', // ★ [4차 시간표 17·결정 사]
+                  makeupPreset?.noticeId ? { confirmed: true, changed: presetChanged } : {}
                 )
               }
               // 선생님이 체크한 보강을 등록한 거면 그 문구는 확인 처리
@@ -14208,6 +14242,8 @@ function App() {
                 )}
                 {isAdmin && pick.from_template === false && !locked && (
                   <>
+                    {/* ★ [4차 결정 라] [청구에서 빼기] 버튼 없앰(추가한 수업은 언제나 청구). 예전에 '청구 안 함'으로 저장된 수업만 [청구에 넣기]가 보임 — 데이터·계산은 그대로 */}
+                    {!!pick.no_charge && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10, fontSize: 12.5, color: C.sub }}>
                       <span>수강료</span>
                       <Btn
@@ -14218,6 +14254,7 @@ function App() {
                         {pick.no_charge ? '청구 안 함 → 청구에 넣기' : '청구함 → 청구에서 빼기'}
                       </Btn>
                     </div>
+                    )}
                     <Btn
                       disabled={busy}
                       onClick={() => doRemoveSession(pick)}
@@ -14331,8 +14368,8 @@ function App() {
                   const m = String(err?.message || err)
                   if (/set_student_status|function|찾을 수 없|not exist|schema cache/i.test(m)) {
                     throw new Error(
-                      '퇴소·휴원 처리 기능이 DB에 아직 없습니다.\n' +
-                        'Supabase SQL Editor에서 schema_v2.sql 을 먼저 실행한 뒤 다시 해주세요.\n' +
+                      '원장님께 알려 주세요 — 퇴소·휴원 처리 기능이 DB에 아직 없습니다.\n' + // ★ [4차 시간표 33·36] 글만 바꿈
+                        'Supabase SQL Editor에서 schema_v2.sql을 먼저 실행한 뒤 다시 해 주세요.\n' +
                         '(아동 이름·담당 등 나머지 수정은 저장됐습니다)'
                     )
                   }
