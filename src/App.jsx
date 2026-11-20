@@ -1322,10 +1322,10 @@ function WeekAgenda({ days, sessions, holidayMap, outByDay, showTeacher, colorOf
                 return (
                   <div key={'o' + e.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderTop: `1px solid #F2F3F5` }}>
                     <span style={{ width: 82, flexShrink: 0, fontSize: 13, color: C.sub, fontVariantNumeric: 'tabular-nums' }}>
-                      {clock(e.start_time)}~{clock(e.end_time)}
+                      {clock(e.start_time)}{e.consultId != null ? '' : '~' + clock(e.end_time)}
                     </span>
                     <span style={{ flex: 1, minWidth: 0, fontSize: 14.5, fontWeight: 700, color: C.ink }}>{e.label}</span>
-                    {chip(OUTSIDE.bg, OUTSIDE.fg, '외부')}
+                    {e.consultId != null ? chip('#fff', CONSULT.fg, '상담') : chip(OUTSIDE.bg, OUTSIDE.fg, '외부')}
                   </div>
                 )
               }
@@ -2311,7 +2311,7 @@ function attachShortMakeups(list) {
 // 붙은 보강들의 분 합계
 const plusMinOf = (s) => (s._plus || []).reduce((t, m) => t + toMin((m._orig || m).end_time) - toMin((m._orig || m).start_time), 0)
 
-function WeekGrid({ weekStart, sessions: rawSessions, holidays, outside = [], ownerName, colorOf, toneOf, staffOrder = [], onPick, today, dayOnly = null }) {
+function WeekGrid({ weekStart, sessions: rawSessions, holidays, outside = [], ownerName, colorOf, toneOf, staffOrder = [], onPick, today, dayOnly = null, onConsult }) {
   const sessions = useMemo(() => markMoves(rawSessions), [rawSessions])
   const dayKey = dayOnly ? isoOf(dayOnly) : ''
   // 그 주 일요일에 수업 · 외부 일정이 잡혀 있을 때만 일요일 칸을 붙입니다 (평소 모양은 그대로 월~토)
@@ -2558,6 +2558,12 @@ function WeekGrid({ weekStart, sessions: rawSessions, holidays, outside = [], ow
                 const n = nAll / span / WIDE // 줄이 좁을수록 글씨를 작게
                 const one = list.length === 1
                 const wk = nDays > 1
+                // ★ 상담(설문 앱에 적은 상담 날짜) — 분홍 점선 칸, 누르면 그 상담 신청서가 열림
+                const isC = list.every((e) => e.consultId != null)
+                const cOne = list.find((e) => e.consultId != null)
+                const T = isC ? CONSULT : OUTSIDE
+                const tagT = isC ? '상담' : '외부'
+                const lab = (e) => (isC ? String(e.label || '').replace(/^상담 · /, '') : e.label)
                 // 주 보기: 좁은 줄이라 이름이 여러 줄로 접히고 시간도 두 줄("9:00" / "~10:00")로 적으므로,
                 //   다 들어갈 높이가 모자라면 바로 아래가 비어 있는 만큼 칸을 늘립니다 (시작 위치는 그대로)
                 let boxH = Math.max(eh - 3, 18)
@@ -2583,7 +2589,8 @@ function WeekGrid({ weekStart, sessions: rawSessions, holidays, outside = [], ow
                 return (
                   <div
                     key={'og' + list[0].id}
-                    title={list.map((e) => `${e.label} ${clock(e.start_time)}~${clock(e.end_time)}${e.memo ? ' · ' + e.memo : ''}`).join('\n')}
+                    title={list.map((e) => `${e.label} ${clock(e.start_time)}${e.consultId != null ? '' : '~' + clock(e.end_time)}${e.memo ? ' · ' + e.memo : ''}`).join('\n') + (cOne ? '\n누르면 상담 신청서가 열립니다' : '')}
+                    onClick={cOne && onConsult ? () => onConsult(cOne.consultId) : undefined}
                     style={{
                       position: 'absolute',
                       top: top + 1,
@@ -2592,9 +2599,10 @@ function WeekGrid({ weekStart, sessions: rawSessions, holidays, outside = [], ow
                       width: clash ? `calc(${w / 2}% - 3px)` : `calc(${span * w}% - 4px)`,
                       boxSizing: 'border-box', // 안쪽 여백까지 폭 · 높이 안에 (옆 칸 · 다음 수업을 덮지 않게)
                       borderRadius: 7,
-                      background: OUTSIDE.bg,
-                      border: `1px solid ${OUTSIDE.bd}`,
-                      borderLeft: `4px solid ${OUTSIDE.bar}`,
+                      background: isC ? '#fff' : OUTSIDE.bg,
+                      border: isC ? `1.5px dashed ${CONSULT.bd}` : `1px solid ${OUTSIDE.bd}`,
+                      borderLeft: isC ? `1.5px dashed ${CONSULT.bd}` : `4px solid ${OUTSIDE.bar}`,
+                      cursor: cOne && onConsult ? 'pointer' : undefined,
                       padding: n >= 3 ? '2px 3px' : '3px 6px',
                       overflow: 'hidden',
                       zIndex: 2,
@@ -2603,9 +2611,9 @@ function WeekGrid({ weekStart, sessions: rawSessions, holidays, outside = [], ow
                     {one && (!wk ? boxH < 30 : span > 1 && boxH < 44) ? (
                       // 하루 보기 · 주 보기에서 옆으로 넓힌 짧은 일정(40분 이하 등 세 줄이 안 들어가는 높이): '외부 · 이름 · 시간'을 한 줄로 (이름이 길면 끝을 …)
                       <div style={{ display: 'flex', alignItems: 'center', gap: 5, height: '100%', whiteSpace: 'nowrap', overflow: 'hidden', marginTop: -2 }}>
-                        <span style={{ fontSize: 9, fontWeight: 700, color: OUTSIDE.tag, flex: 'none' }}>외부</span>
-                        <span style={{ fontSize: 11.5, fontWeight: 700, color: OUTSIDE.fg, overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>{list[0].label}</span>
-                        <span style={{ fontSize: 9.5, color: OUTSIDE.tag, flex: 'none' }}>{clock(list[0].start_time)}~{clock(list[0].end_time)}</span>
+                        <span style={{ fontSize: 9, fontWeight: 700, color: T.tag, flex: 'none' }}>{tagT}</span>
+                        <span style={{ fontSize: 11.5, fontWeight: 700, color: T.fg, overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>{lab(list[0])}</span>
+                        <span style={{ fontSize: 9.5, color: T.tag, flex: 'none' }}>{clock(list[0].start_time)}{list[0].consultId != null ? '' : '~' + clock(list[0].end_time)}</span>
                       </div>
                     ) : tight ? (
                       list.map((e) => {
@@ -2613,12 +2621,12 @@ function WeekGrid({ weekStart, sessions: rawSessions, holidays, outside = [], ow
                         const showT = one && lines >= Math.ceil(String(e.label || '').length / 3) + 1
                         return (
                           <div key={e.id}>
-                            <div style={{ fontSize: 9.5, fontWeight: 700, color: OUTSIDE.fg, lineHeight: '11px', wordBreak: 'keep-all', overflowWrap: 'anywhere', ...clampOf(one ? lines - (showT ? 1 : 0) : 1) }}>
-                              {e.label}
+                            <div style={{ fontSize: 9.5, fontWeight: 700, color: T.fg, lineHeight: '11px', wordBreak: 'keep-all', overflowWrap: 'anywhere', ...clampOf(one ? lines - (showT ? 1 : 0) : 1) }}>
+                              {lab(e)}
                             </div>
                             {showT && (
-                              <div style={{ fontSize: 8.5, color: OUTSIDE.tag, lineHeight: '11px', whiteSpace: 'nowrap', overflow: 'hidden' }}>
-                                {clock(e.start_time)}~{clock(e.end_time)}
+                              <div style={{ fontSize: 8.5, color: T.tag, lineHeight: '11px', whiteSpace: 'nowrap', overflow: 'hidden' }}>
+                                {clock(e.start_time)}{e.consultId != null ? '' : '~' + clock(e.end_time)}
                               </div>
                             )}
                           </div>
@@ -2626,19 +2634,19 @@ function WeekGrid({ weekStart, sessions: rawSessions, holidays, outside = [], ow
                       })
                     ) : (
                     <>
-                    <div style={{ fontSize: 9, fontWeight: 700, color: OUTSIDE.tag, letterSpacing: '0.02em' }}>외부</div>
+                    <div style={{ fontSize: 9, fontWeight: 700, color: T.tag, letterSpacing: '0.02em' }}>{tagT}</div>
                     {list.map((e) => (
                       <div key={e.id} style={{ marginBottom: one ? 0 : 2 }}>
                         {/* 띄어쓰기에서 줄을 바꾸고, 한 단어가 줄보다 길면 그 단어 안에서도 바꿈 (잘리지 않게) */}
-                        <div style={{ fontSize: n >= 3 ? 10 : 11.5, fontWeight: 700, color: OUTSIDE.fg, lineHeight: '13px', wordBreak: 'keep-all', overflowWrap: 'anywhere' }}>{e.label}</div>
+                        <div style={{ fontSize: n >= 3 ? 10 : 11.5, fontWeight: 700, color: T.fg, lineHeight: '13px', wordBreak: 'keep-all', overflowWrap: 'anywhere' }}>{lab(e)}</div>
                         {wk ? (
-                          <div style={{ fontSize: 9, color: OUTSIDE.tag, marginTop: 1, lineHeight: '10px' }}>
+                          <div style={{ fontSize: 9, color: T.tag, marginTop: 1, lineHeight: '10px' }}>
                             {clock(e.start_time)}
-                            <wbr />~{clock(e.end_time)}
+                            {e.consultId != null ? null : <><wbr />~{clock(e.end_time)}</>}
                           </div>
                         ) : (one ? eh > 44 && n < 3 : eh > 30 + list.length * 38) && (
-                          <div style={{ fontSize: 9.5, color: OUTSIDE.tag, marginTop: 1 }}>
-                            {clock(e.start_time)}~{clock(e.end_time)}
+                          <div style={{ fontSize: 9.5, color: T.tag, marginTop: 1 }}>
+                            {clock(e.start_time)}{e.consultId != null ? '' : '~' + clock(e.end_time)}
                           </div>
                         )}
                       </div>
@@ -11372,7 +11380,51 @@ async function makeSurveyPass(minLeftSec = 600) {
 // 설문 관리 화면 주소 — 시간표와 같은 주소(aba-geomdan.github.io) 아래 /survey/
 const SURVEY_URL = (typeof window !== 'undefined' ? window.location.origin : '') + '/survey/'
 
-function SurveyBar({ onOpen, onCount, hidden }) {
+// ── 상담 일정 — 설문 앱 상담 신청서에 적어 둔 상담 날짜 (원장·실장 화면에만) ─────────
+//   상태가 '상담예정'이고 날짜가 적힌 것만 옵니다. 준비(consult_upcoming)가 없거나 실패하면 그냥 안 보입니다.
+async function loadConsults() {
+  try {
+    const { data, error } = await supabase.rpc('consult_upcoming')
+    if (error || !Array.isArray(data)) return []
+    return data.filter((c) => c && c.id != null && c.consult_at)
+  } catch (e) {
+    return []
+  }
+}
+const CONSULT_MIN = 60 // 시간표 칸에 그릴 상담 길이(분)
+const CONSULT = { bd: '#D4728A', fg: '#B0506B', tag: '#D4728A' }
+const hm = (dt) => `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`
+// 시간표 칸(원장 줄)에 외부 일정처럼 놓을 수 있게 모양을 맞춤
+function consultsAsOutside(list) {
+  return (list || []).map((c) => {
+    const a = new Date(c.consult_at)
+    const b = new Date(a.getTime() + CONSULT_MIN * 60000)
+    return {
+      id: 'consult-' + c.id,
+      consultId: c.id,
+      d: isoOf(a),
+      start_time: hm(a),
+      end_time: isoOf(b) === isoOf(a) ? hm(b) : '23:59',
+      label: `상담 · ${c.child_name || '(이름 없음)'}`,
+    }
+  })
+}
+// 알림 줄에 띄울 것: 오늘 아직 안 지난 상담 + 내일 상담
+function consultsSoon(list, now = new Date()) {
+  const t0 = isoOf(now)
+  const t1 = (() => {
+    const x = new Date(now)
+    x.setDate(x.getDate() + 1)
+    return isoOf(x)
+  })()
+  return (list || [])
+    .map((c) => ({ ...c, at: new Date(c.consult_at) }))
+    .filter((c) => !isNaN(c.at) && ((isoOf(c.at) === t0 && c.at > now) || isoOf(c.at) === t1))
+    .sort((p, q) => p.at - q.at)
+    .map((c) => ({ ...c, when: isoOf(c.at) === t0 ? '오늘' : '내일' }))
+}
+
+function SurveyBar({ onOpen, onCount, hidden, consults = [], onConsult }) {
   const [c, setC] = useState(null)
   const passRef = useRef(null) // 미리 준비해 둔 출입증 — 누르는 순간 바로 새 창을 열려고 (팝업 차단 방지)
   const makePass = makeSurveyPass
@@ -11404,18 +11456,21 @@ function SurveyBar({ onOpen, onCount, hidden }) {
       window.removeEventListener('focus', onFocus)
     }
   }, [])
-  if (!c || hidden) return null
-  const n = Number(c.new) || 0
-  const w = Number(c.wait) || 0
-  const o = Number(c.old) || 0
-  if (n === 0 && o === 0 && !c.mail_error) return null
+  const soon = consultsSoon(consults)
+  if (hidden) return null
+  if (!c && soon.length === 0) return null
+  const n = Number(c?.new) || 0
+  const w = Number(c?.wait) || 0
+  const o = Number(c?.old) || 0
+  const showCounts = !!c && (n > 0 || o > 0 || !!c.mail_error)
+  if (!showCounts && soon.length === 0) return null
 
   // 누르면 설문 앱을 새 창으로 열고, 지금 로그인을 넘겨줘서 로그인 화면 없이 바로 들어가게 합니다
   //   (통합본 → 시간표 앱과 같은 방식. 넘기는 것은 1시간짜리 출입증뿐이라 시간표 앱 로그인에는 영향 없음)
   const openSurvey = () => {
     // 시간표 안 '설문' 메뉴로 옮겨 감 (새 창을 열지 않음)
     if (onOpen) return onOpen()
-    if (!c.url) return
+    if (!c?.url) return
     const p = passRef.current
     const fresh = p && p.expires_at && p.expires_at - Date.now() / 1000 > 120
     const pass = fresh ? JSON.stringify(p) : ''
@@ -11441,33 +11496,55 @@ function SurveyBar({ onOpen, onCount, hidden }) {
   return (
     <div
       className="no-print"
-      onClick={c.url || onOpen ? openSurvey : undefined}
-      title={c.url || onOpen ? '누르면 설문 현황이 열립니다' : undefined}
+      onClick={c?.url || onOpen ? openSurvey : undefined}
+      title={c?.url || onOpen ? '누르면 설문 현황이 열립니다' : undefined}
       style={{
         marginBottom: 14, padding: '10px 14px', borderRadius: 10,
-        border: `1px solid ${c.url || onOpen ? C.pk : C.line}`, background: '#fff',
+        border: `1px solid ${c?.url || onOpen ? C.pk : C.line}`, background: '#fff',
         display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
-        cursor: c.url || onOpen ? 'pointer' : 'default',
+        cursor: c?.url || onOpen ? 'pointer' : 'default',
       }}
     >
       <span style={{ fontSize: 16 }} aria-hidden="true">🔔</span>
       <div style={{ flex: 1, minWidth: 200, fontSize: 14, lineHeight: 1.6 }}>
-        설문{' '}
-        {n > 0 && <b style={{ color: C.ok }}>새로 {n}건</b>}
-        {n > 0 && ' · '}기다리는 중 {w}건
-        {o > 0 && (
+        {showCounts && (
           <>
-            {' · '}
-            <span style={{ color: C.danger }}>7일 넘음 {o}건</span>
+            설문{' '}
+            {n > 0 && <b style={{ color: C.ok }}>새로 {n}건</b>}
+            {n > 0 && ' · '}기다리는 중 {w}건
+            {o > 0 && (
+              <>
+                {' · '}
+                <span style={{ color: C.danger }}>7일 넘음 {o}건</span>
+              </>
+            )}
           </>
         )}
-        {c.mail_error && (
+        {/* 상담 알림 — 하루 전에는 '내일', 당일에는 '오늘'. 누르면 그 상담 신청서가 바로 열림 */}
+        {soon.map((x, i) => (
+          <React.Fragment key={x.id}>
+            {(showCounts || i > 0) && ' · '}
+            <b
+              role="button"
+              tabIndex={0}
+              title="누르면 이 상담 신청서가 열립니다"
+              onClick={(e) => {
+                e.stopPropagation()
+                if (onConsult) onConsult(x.id)
+              }}
+              style={{ color: x.when === '오늘' ? C.danger : C.pkd, cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: 3 }}
+            >
+              {x.when} {clock(hm(x.at))} 상담 – {x.child_name || '(이름 없음)'}
+            </b>
+          </React.Fragment>
+        ))}
+        {c?.mail_error && (
           <span style={{ display: 'block', fontSize: 12, color: C.danger }}>
             알림 메일이 안 나가고 있습니다 — 설문 앱 첫 화면을 확인해 주세요
           </span>
         )}
       </div>
-      {c.url || onOpen ? (
+      {c?.url || onOpen ? (
         <span
           style={{
             fontSize: 13, fontWeight: 700, color: C.pkd,
@@ -11484,7 +11561,7 @@ function SurveyBar({ onOpen, onCount, hidden }) {
 // ── 설문 메뉴: 설문 관리 화면을 시간표 안에 그대로 띄웁니다 ─────────────
 //   로그인은 시간표 것을 넘겨주므로 다시 로그인하지 않습니다.
 //   넘겨주는 출입증이 1시간짜리라, 5분마다 확인해서 20분 안에 끝나면 새 출입증을 건네줍니다.
-function SurveyFrame() {
+function SurveyFrame({ openId, openKey }) {
   const [n, setN] = useState(0) // 화면을 새로 열 때마다 1씩 올림
   const lastSent = useRef('') // 설문 화면에 마지막으로 건넨 출입증
   const [ready, setReady] = useState(false)
@@ -11517,6 +11594,15 @@ function SurveyFrame() {
       lastSent.current = p.access_token // 실제로 건넨 것만 기록
     } catch (e) {}
   }
+  // ★ 상담 알림·시간표 칸에서 다른 상담 신청서를 누르면 (설문 메뉴가 이미 열려 있어도) 그 신청서로 새로 엶
+  const firstOpen = useRef(true)
+  useEffect(() => {
+    if (firstOpen.current) {
+      firstOpen.current = false
+      return
+    }
+    if (openKey) openFresh()
+  }, [openKey])
   useEffect(() => {
     openFresh()
     const t = setInterval(() => passOn(false), 5 * 60 * 1000)
@@ -11569,7 +11655,7 @@ function SurveyFrame() {
         ref={frameRef}
         key={n}
         title="설문 관리"
-        src={SURVEY_URL}
+        src={openId != null ? `${SURVEY_URL}?open=inq:${encodeURIComponent(openId)}` : SURVEY_URL}
         style={{ width: '100%', height: 'calc(100vh - 140px)', minHeight: 560, border: `1px solid ${C.line}`, borderRadius: 12, background: '#fff', display: 'block' }}
       />
     </div>
@@ -11579,6 +11665,8 @@ function SurveyFrame() {
 function App() {
   const [session, setSession] = useState(undefined)
   const [surveyNew, setSurveyNew] = useState(0) // 설문 메뉴 옆 숫자 (새로 들어온 설문)
+  const [consults, setConsults] = useState([]) // ★ 상담 일정 (설문 앱 상담 신청서에 적은 날짜)
+  const [surveyOpen, setSurveyOpen] = useState(null) // ★ 설문 메뉴를 열 때 바로 띄울 상담 신청서 { id, k }
   const [me, setMe] = useState(null)
   const [staff, setStaff] = useState([])
   const [isAdmin, setIsAdmin] = useState(false)
@@ -11682,6 +11770,33 @@ function App() {
   const [programs, setPrograms] = useState([])
   const [leaves, setLeaves] = useState([])
   const [outside, setOutside] = useState([])
+  // ★ 상담 일정 — 원장·실장만. 2분마다 · 창으로 돌아올 때 새로 읽음 (설문 쪽에서 날짜를 바꿔도 곧 반영)
+  useEffect(() => {
+    if (!isAdmin) {
+      setConsults([])
+      return
+    }
+    let alive = true
+    const load = () =>
+      loadConsults().then((list) => {
+        if (alive) setConsults(list)
+      })
+    load()
+    const t = setInterval(() => {
+      if (document.visibilityState === 'visible') load()
+    }, 120000)
+    window.addEventListener('focus', load)
+    return () => {
+      alive = false
+      clearInterval(t)
+      window.removeEventListener('focus', load)
+    }
+  }, [isAdmin])
+  const consultOut = useMemo(() => consultsAsOutside(consults), [consults])
+  // 설문 메뉴를 벗어나면 '바로 띄울 신청서'는 비움 (다음에 메뉴로 들어올 땐 평소 첫 화면)
+  useEffect(() => {
+    if (tab !== 'survey') setSurveyOpen(null)
+  }, [tab])
   const [holidaySeeded, setHolidaySeeded] = useState(false)
   const [manageLoaded, setManageLoaded] = useState(false)
 
@@ -12743,6 +12858,12 @@ function App() {
             hidden={tab === 'survey'}
             onOpen={() => okToDropPlan() && setTab('survey')}
             onCount={(d) => setSurveyNew(Number(d?.new) || 0)}
+            consults={consults}
+            onConsult={(id) => {
+              if (!okToDropPlan()) return
+              setSurveyOpen({ id, k: Date.now() })
+              setTab('survey')
+            }}
           />
         )}
         {!loading && isAdmin && needRegen && (
@@ -12840,7 +12961,7 @@ function App() {
         )}
 
         {loading && <Loading />}
-        {tab === 'survey' && isAdmin && <SurveyFrame />}
+        {tab === 'survey' && isAdmin && <SurveyFrame openId={surveyOpen?.id} openKey={surveyOpen?.k} />}
 
         {/* 확인 문구 — 원장님: 선생님이 체크한 보강 / 선생님: 원장님이 바꾼 일정 */}
         {!loading && isAdmin && tab === 'home' && (
@@ -13409,11 +13530,20 @@ function App() {
               colorOf={colorOf}
               toneOf={toneOf}
               staffOrder={staff.map((x) => x.name)}
-              outside={!filter || filter === staff.find((x) => x.role === 'admin')?.name ? outside : []}
+              outside={!filter || filter === staff.find((x) => x.role === 'admin')?.name ? (isAdmin ? [...outside, ...consultOut] : outside) : []}
               ownerName={staff.find((x) => x.role === 'admin')?.name}
               onPick={setPick}
               today={isoOf(new Date())}
               dayOnly={isAdmin && weekMode === 'day' ? dayOf(dayIso, weekStart) : null}
+              onConsult={
+                isAdmin
+                  ? (id) => {
+                      if (!okToDropPlan()) return
+                      setSurveyOpen({ id, k: Date.now() })
+                      setTab('survey')
+                    }
+                  : undefined
+              }
             />
 
             {/* 휴대폰 목록 보기에서는 색 칸이 없어서 아래 색 안내를 숨깁니다 */}
