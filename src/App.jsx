@@ -1283,7 +1283,7 @@ function useNarrow(px = 640) {
 }
 
 // 휴대폰용 주간 시간표 — 6일을 가로로 나누면 칸이 너무 좁아서, 날짜별로 위에서 아래로 목록으로 보여 줍니다
-function WeekAgenda({ days, sessions, holidayMap, outByDay, showTeacher, colorOf, onPick, today }) {
+function WeekAgenda({ days, sessions, holidayMap, outByDay, showTeacher, colorOf, onPick, today, onConsult = null }) {
   // onPick 이 없으면(선생님 시간표) 줄을 눌러도 아무 일이 없으니 버튼 모양을 빼고 보기 전용으로 그립니다
   const chip = (bg, fg, text) => (
     <span style={{ fontSize: 11.5, fontWeight: 700, color: fg, background: bg, borderRadius: 99, padding: '2px 8px', whiteSpace: 'nowrap', flexShrink: 0 }}>
@@ -1319,13 +1319,35 @@ function WeekAgenda({ days, sessions, holidayMap, outByDay, showTeacher, colorOf
             {rows.map((r) => {
               if (r.out) {
                 const e = r.e
+                // ★ 상담 줄 — 연한 분홍 바탕 + 왼쪽 분홍 점선, 줄 어디를 눌러도 그 상담 신청서가 열림
+                if (e.consultId != null)
+                  return (
+                    <div
+                      key={'o' + e.id}
+                      role={onConsult ? 'button' : undefined}
+                      onClick={onConsult ? () => onConsult(e.consultId) : undefined}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px 10px 11px',
+                        borderTop: `1px solid #F2F3F5`, borderLeft: `3px dashed ${CONSULT.bd}`, background: '#FFF8FA',
+                        cursor: onConsult ? 'pointer' : 'default',
+                      }}
+                    >
+                      <span style={{ width: 82, flexShrink: 0, fontSize: 13, color: C.sub, fontVariantNumeric: 'tabular-nums' }}>
+                        {clock(e.start_time)}
+                      </span>
+                      <span style={{ flex: 1, minWidth: 0, fontSize: 14.5, fontWeight: 700, color: CONSULT.fg }}>{e.label}</span>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: CONSULT.tag, border: `1px dashed ${CONSULT.bd}`, borderRadius: 99, padding: '2px 8px', flex: 'none' }}>
+                        상담{onConsult ? ' ›' : ''}
+                      </span>
+                    </div>
+                  )
                 return (
                   <div key={'o' + e.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderTop: `1px solid #F2F3F5` }}>
                     <span style={{ width: 82, flexShrink: 0, fontSize: 13, color: C.sub, fontVariantNumeric: 'tabular-nums' }}>
-                      {clock(e.start_time)}{e.consultId != null ? '' : '~' + clock(e.end_time)}
+                      {clock(e.start_time)}~{clock(e.end_time)}
                     </span>
                     <span style={{ flex: 1, minWidth: 0, fontSize: 14.5, fontWeight: 700, color: C.ink }}>{e.label}</span>
-                    {e.consultId != null ? chip('#fff', CONSULT.fg, '상담') : chip(OUTSIDE.bg, OUTSIDE.fg, '외부')}
+                    {chip(OUTSIDE.bg, OUTSIDE.fg, '외부')}
                   </div>
                 )
               }
@@ -2383,6 +2405,7 @@ function WeekGrid({ weekStart, sessions: rawSessions, holidays, outside = [], ow
         colorOf={colorOf}
         onPick={onPick}
         today={today}
+        onConsult={onConsult}
       />
     )
 
