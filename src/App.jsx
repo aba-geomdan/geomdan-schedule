@@ -7564,7 +7564,7 @@ const GRID_COLORS = [
   ['#BEE3DC', '#11423B'], ['#F2C9B8', '#5B2716'], ['#CBD5E1', '#1E293B'],
   ['#E7C9F0', '#4A1157'],
 ]
-function TeacherGrid({ ym, teacher, tone, sessions: rawSessions, holidays, outside = [], unmade = [], endHour = 19, screen = false, onPick = null }) {
+function TeacherGrid({ ym, teacher, tone, sessions: rawSessions, holidays, outside = [], unmade = [], endHour = 19, screen = false, onPick = null, onConsult = null }) {
   const sessions = useMemo(() => markMoves(rawSessions), [rawSessions])
   // screen: 시간표 화면의 '한 달' 보기 — 종이 한 장에 맞추지 않고, 한 주씩 위아래로 크게 (인쇄는 그대로)
   const SCREEN_W = 820
@@ -7754,6 +7754,7 @@ function TeacherGrid({ ym, teacher, tone, sessions: rawSessions, holidays, outsi
       if (outGone.has(k)) return
       outs.forEach((o) => {
         if (o === k || outGone.has(o) || o.a >= k.b || o.b <= k.a) return
+        if (k.x.consultId != null || o.x.consultId != null) return // ★ 상담 칸은 외부 일정과 합치지 않고 따로 그림
         k.x = { ...k.x, label: `${k.x.label} · ${o.x.label}`, end_time: ttMin(o.x.end_time) > ttMin(k.x.end_time) ? o.x.end_time : k.x.end_time }
         k.b = Math.max(k.b, o.b)
         outGone.add(o)
@@ -7944,6 +7945,20 @@ function TeacherGrid({ ym, teacher, tone, sessions: rawSessions, holidays, outsi
                       }
                       // 수업 칸은 길이와 상관없이 모두 '이름 시간' 한 줄 · 같은 글자 크기 (1타임 · 2타임 · 3타임 통일)
                       const one = k.out ? hgt < 40 : true
+                      // ★ 상담(설문 앱에 적은 상담 날짜) — 분홍 점선 칸 · 시작 시간만 · 누르면 그 상담 신청서가 열림 (인쇄에도 그대로)
+                      if (k.out && k.x.consultId != null)
+                        return (
+                          <div
+                            key={'o' + k.x.id}
+                            className={`tt-gblk tt-gout tt-gcon${one ? ' tt-g1' : ''}`}
+                            style={{ ...pos, cursor: onConsult ? 'pointer' : undefined }}
+                            title={onConsult ? '누르면 상담 신청서가 열립니다' : undefined}
+                            onClick={onConsult ? () => onConsult(k.x.consultId) : undefined}
+                          >
+                            <b>{k.x.label}</b>
+                            <small>{clock(k.x.start_time)}</small>
+                          </div>
+                        )
                       if (k.out)
                         return (
                           <div key={'o' + k.x.id} className={`tt-gblk tt-gout${one ? ' tt-g1' : ''}`} style={pos}>
@@ -8272,7 +8287,7 @@ function WeekSheet({ ym, days, weekNo, teachers, sessions: rawSessions, outside,
   )
 }
 
-function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerName, loadHolidays, toneOf, colorOf, onClose, onlyTeacher, say, inline = false, onPick = null }) {
+function TimetablePrint({ ym, staff, sessions, outside = [], consults = [], unmade = [], ownerName, loadHolidays, toneOf, colorOf, onClose, onlyTeacher, say, inline = false, onPick = null, onConsult = null }) {
   // inline: '시간표 → 한 달' 화면 안에 인쇄와 같은 모양으로 바로 보여줄 때 (인쇄 창 · 그림 만들기 없이)
   const rootRef = useRef(null)
   // 그 달에 수업이 있었던 선생님은 퇴사했어도 인쇄에 넣습니다 (퇴사 전 수업이 종이에서 빠지지 않게)
@@ -8585,6 +8600,8 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
         .tt-gblk.tt-gmv0 { background: #F3F4F6 !important; color: #6B7280 !important; border: 1px dashed #9CA3AF !important; }
         .tt-gout { background: #F3F4F6; color: #111827; border: 1px solid #D1D5DB; border-left: 4px solid #374151; border-radius: 2px; padding: 2px 3px; margin-bottom: 1px; line-height: 1.15; }
         .tt-gout b { display: block; font-size: 8.5px; font-weight: 900; color: #000; } .tt-gout small { font-size: 7.5px; opacity: 1; color: #111827; font-weight: 700; }
+        .tt-gout.tt-gcon { background: #fff; border: 1.5px dashed #D4728A; border-left: 1.5px dashed #D4728A; }
+        .tt-gout.tt-gcon b { color: #B0506B; } .tt-gout.tt-gcon small { color: #D4728A; }
         .tt-page { width: 297mm; height: 210mm; margin: 0 auto 10mm; background: #fff; padding: 6mm 8mm;
           box-shadow: 0 1px 4px rgba(0,0,0,.12); display: flex; flex-direction: column; box-sizing: border-box; color: ${C.ink}; }
         .tt-ph { display: flex; align-items: baseline; gap: 8px; margin-bottom: 2mm; flex-wrap: wrap; row-gap: 2px; }
@@ -8778,10 +8795,11 @@ function TimetablePrint({ ym, staff, sessions, outside = [], unmade = [], ownerN
             tone={{ ...toneOf(t.name), line: colorOf(t.name) }}
             holidays={holFor(t)}
             sessions={sessions.filter((s) => s.staff_name === t.name && s.status !== '취소')}
-            outside={t.name === ownerName ? outside.filter((e) => e.d.slice(0, 7) === ym) : []}
+            outside={t.name === ownerName ? [...outside, ...consults].filter((e) => e.d.slice(0, 7) === ym) : []}
             endHour={Math.ceil(gEnAll / 60)}
             unmade={unmade.filter((u) => u.staff_name === t.name)}
             onPick={inline ? onPick : null}
+            onConsult={inline && t.name === ownerName ? onConsult : null}
           />
         ))}
         {mode === 'grid' && !shown.length && (
@@ -13484,6 +13502,7 @@ function App() {
                 staff={staff}
                 sessions={monthSessions}
                 outside={outside}
+                consults={consultOut}
                 ownerName={staff.find((x) => x.role === 'admin')?.name}
                 loadHolidays={loadHolidays}
                 toneOf={toneOf}
@@ -13493,6 +13512,11 @@ function App() {
                 say={say}
                 onClose={() => {}}
                 onPick={setPick}
+                onConsult={(id) => {
+                  if (!okToDropPlan()) return
+                  setSurveyOpen({ id, k: Date.now() })
+                  setTab('survey')
+                }}
               />
             ) : (
             <>
@@ -14435,6 +14459,7 @@ function App() {
           staff={staff}
           sessions={monthSessions}
           outside={outside}
+          consults={consultOut}
           ownerName={staff.find((x) => x.role === 'admin')?.name}
           loadHolidays={loadHolidays}
           toneOf={toneOf}
