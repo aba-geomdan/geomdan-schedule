@@ -321,6 +321,15 @@ async function loadMe() {
 }
 
 // ---- 조회 ----
+// 수업 몇 개를 번호로 (지난달 이전 결강 칸을 찾을 때)
+async function loadSessionsByIds(ids) {
+  if (!ids.length) return []
+  return ok(await supabase.from('v_sessions').select('*').in('id', ids))
+}
+// 보강 칸의 급여 가격 (원래 결강 수업 가격 — 서버 급여 계산과 같은 값)
+async function loadPayPrice(id) {
+  return ok(await supabase.rpc('pay_price', { p_id: id }))
+}
 async function loadSessions(from, to) {
   return ok(
     await supabase
@@ -1184,7 +1193,31 @@ const partialText = (s) => `일부 ${Number(s.done_min)}분`
 // '이 날만 시간 바꾸기'로 옮긴 수업: 서버가 새 보강에 이 글을 적어 둠 (진짜 결강 · 보강과 다르게 그리기 위해)
 const MOVE_NOTE = '이 날만 시간 변경'
 const MOVED_BLUE = '#185FA5'
+// 수강료 인상 달 — 이 달 이후 급여에 이보다 앞선 결강분 보강(예전 금액)이 있으면 급여 확정 알림에 한 줄 붙임
+const PRICE_UP_YM = '2027-01'
 const isMoveMakeup = (m) => !!m && m.status === '보강' && !!m.makeup_for && String(m.note || '').startsWith(MOVE_NOTE)
+// '이 날만 시간 바꾸기' 짝 찾기 — 새 칸(mk: 서버에는 '보강'으로 저장)과 원래 칸(orig: '결강'으로 저장)의 id
+//   진짜 보강이 아니라 시간만 바꾼 수업이라, 보강 숫자에서 빼고 '수업'으로 셉니다
+//   (markMoves와 같은 기준: 같은 날 · 원래 칸이 결강 · 일부 수업 아님)
+function movePairs(list) {
+  const byId = new Map((list || []).map((x) => [String(x.id), x]))
+  const mk = new Set()
+  const orig = new Set()
+  ;(list || []).forEach((m) => {
+    if (!isMoveMakeup(m)) return
+    const o = byId.get(String(m.makeup_for))
+    if (o && o.d === m.d && o.status === '결강' && !isPartial(o)) {
+      mk.add(String(m.id))
+      orig.add(String(o.id))
+    }
+  })
+  return { mk, orig }
+}
+// 그 목록에서 '시간만 바꾼' 새 칸의 회기 합 (급여가 보강으로 센 만큼)
+function movedUnits(list, all, pick = () => true) {
+  const { mk } = movePairs(all || list)
+  return (list || []).filter((x) => mk.has(String(x.id)) && pick(x)).reduce((a, x) => a + makeupUnits(x, all || list), 0)
+}
 // 옮긴 수업 묶기: 원래 칸(결강)에는 _movedTo(새 칸), 새 칸(보강)에는 _movedFrom(원래 칸)
 //   원래 시간에 같은 선생님의 다른 수업(다른 아이 보강 등)이 들어오면 원래 칸(회색)은 그리지 않음
 function markMoves(list) {
@@ -1479,12 +1512,24 @@ function TeacherCloseList({ ym, rows, snap }) {
     return [...m.values()]
       .map((list) => {
         const sumU = (f) => list.filter(f).reduce((a, x) => a + (Number(x.units) || 0), 0)
-        const absents = list.filter((x) => x.status === '결강')
-        const makeup = sumU((x) => x.status === '보강')
+        // '이 날만 시간 바꾸기' 칸(서버에는 보강으로 저장)은 보강이 아니라 수업으로 셈 — 급여 화면 · 확인 요청 숫자와 같은 기준
+        //   원래 칸(결강으로 저장)은 결강으로 세지 않고 날짜 칸에서도 뺌 → 새 칸 하나만 '옮김'으로 보임
+        const origOf = (r) =>
+          r.status === '보강' && !!r.makeup_for && (r.note == null || String(r.note).startsWith(MOVE_NOTE))
+            ? list.find((o) => o.status === '결강' && o.d === r.d && !(Number(o.done_min) > 0) && (o.id == null || String(o.id) === String(r.makeup_for))) || null
+            : null
+        const movedNew = new Set(list.filter((r) => origOf(r)))
+        const movedOrig = new Set(list.map(origOf).filter(Boolean))
+        const moved = (r) => movedNew.has(r)
+        const absents = list.filter((x) => x.status === '결강' && !movedOrig.has(x))
+        const makeup = sumU((x) => x.status === '보강' && !moved(x))
         return {
           key: String(list[0].student_id ?? list[0].student_name),
           name: list[0].student_name,
-          list: [...list].sort((a, b) => String(a.d).localeCompare(String(b.d)) || String(a.start_time).localeCompare(String(b.start_time))),
+          list: list
+            .filter((x) => !movedOrig.has(x))
+            .map((x) => (moved(x) ? { ...x, _moved: true } : x))
+            .sort((a, b) => String(a.d).localeCompare(String(b.d)) || String(a.start_time).localeCompare(String(b.start_time))),
           // 급여와 같은 방식: 합계 = 모든 수업의 회기, 수업 = 합계 − 보강
           lesson: sumU(() => true) - makeup,
           makeup,
@@ -1530,6 +1575,13 @@ function TeacherCloseList({ ym, rows, snap }) {
             <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
               {k.list.map((r, i) => {
                 const ck = r.id ?? `${r.d}|${r.start_time}|${i}` // 줄 번호가 없어도 겹치지 않는 key
+                // '이 날만 시간 바꾸기' — 원장님 [내역] 창과 같은 모양 (회색 칸 + 파란 테두리)
+                if (r._moved)
+                  return (
+                    <span key={ck} style={{ fontSize: 12.5, fontWeight: 600, borderRadius: 7, padding: '3px 8px', background: '#F6F7F8', color: C.ink, whiteSpace: 'nowrap', boxShadow: 'inset 0 0 0 1px #378ADD' }}>
+                      {md(r.d)} 옮김
+                    </span>
+                  )
                 if (r.status === '결강')
                   return chip(
                     '#FDECEF', '#AE2340',
@@ -1730,7 +1782,15 @@ function TeacherNotices({ items, onConfirm, busy, title: titleIn }) {
         {items.map((n) => (
           <div key={n.id} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', background: '#fff', borderRadius: 8, padding: '8px 10px', border: `1px solid ${C.line}` }}>
             <NoticeChip kind={n.kind} />
-            <span style={{ flex: '1 1 180px', minWidth: 0, fontSize: 13.5, color: C.ink, lineHeight: 1.45 }}>{n.message}</span>
+            <span style={{ flex: '1 1 180px', minWidth: 0, fontSize: 13.5, color: C.ink, lineHeight: 1.45 }}>
+              {n.message}
+              {/* 급여 확정: 예전 금액으로 계산한 보강 안내 (그런 보강이 있는 달만) */}
+              {n.kind === 'close_done' && n.payload?.old_note && (
+                <span style={{ display: 'block', marginTop: 6, padding: '6px 9px', borderRadius: 7, background: '#FAEEDA', color: '#633806', fontSize: 12.5 }}>
+                  {n.payload.old_note}
+                </span>
+              )}
+            </span>
             <span style={{ fontSize: 11.5, color: C.mut }}>{ago(n.created_at)}</span>
             <Btn variant="primary" disabled={busy} onClick={() => onConfirm(n.id)} style={{ padding: '6px 12px', fontSize: 13 }}>
               확인했어요
@@ -3060,6 +3120,10 @@ function MonthView({
 
   const rows = useMemo(() => {
     const m = {}
+    // '이 날만 시간 바꾸기' 짝 — 원래 칸(결강)은 결강으로 안 세고, 새 칸(보강)은 수업으로 셈
+    const mp = movePairs(allSessions || sessions)
+    const isMvOrig = (x) => mp.orig.has(String(x.id))
+    const isMvNew = (x) => mp.mk.has(String(x.id))
     // 아이 번호로 묶습니다 (이름이 같은 아이 둘이 한 줄로 합쳐지지 않게)
     sessions.forEach((s) => {
       const gk = String(s.student_id ?? s.student_name)
@@ -3101,25 +3165,29 @@ function MonthView({
           teachers,
           list,
           byWeek,
+          mvNew: mp.mk,
+          mvOrig: mp.orig,
           days: days.join('·'),
           done: list.filter((x) => x.status === '진행' || x.status === '보강').length,
-          absent: list.filter((x) => x.status === '결강').length,
-          unmade: list.filter((x) => x.status === '결강' && x.needs_makeup).length,
+          absent: list.filter((x) => x.status === '결강' && !isMvOrig(x)).length,
+          unmade: list.filter((x) => x.status === '결강' && x.needs_makeup && !isMvOrig(x)).length,
           minutes: list
             .filter((x) => x.status === '진행' || x.status === '보강')
             .reduce((a, b) => a + minutesBetween(b.start_time, b.end_time), 0),
           total: list.filter((x) => x.status !== '취소').length,
           // 실제로 한 수업 · 결강 · 보강을 따로 셉니다
           lessons: list.filter((x) => x.status === '진행').length,
-          absents: list.filter((x) => x.status === '결강').length,
+          absents: list.filter((x) => x.status === '결강' && !isMvOrig(x)).length,
           // 오른쪽 칸은 급여 계산과 같은 회기(50분 = 1회기)로: 100분 = 2, 150분 = 3
           //   일부 수업·나눠 보강은 50분이 다 차야 1회기 (예: 50분 중 45분 = 수업 0 · 결강 1, 40분 보강 = 0 → 10분 더 하면 1)
+          //   '이 날만 시간 바꾸기' 칸(서버에는 보강으로 저장)은 보강이 아니라 수업으로 셈
           lessonU: list.filter((x) => x.status === '진행').reduce((a, x) => a + unitsOf(x), 0)
-            + list.filter(isPartial).reduce((a, x) => a + partialUnits(x), 0),
-          absentU: list.filter((x) => x.status === '결강').reduce((a, x) => a + unitsOf(x), 0)
+            + list.filter(isPartial).reduce((a, x) => a + partialUnits(x), 0)
+            + movedUnits(list, allSessions || sessions),
+          absentU: list.filter((x) => x.status === '결강' && !isMvOrig(x)).reduce((a, x) => a + unitsOf(x), 0)
             - list.filter(isPartial).reduce((a, x) => a + partialUnits(x), 0),
-          makeupU: list.filter((x) => x.status === '보강').reduce((a, x) => a + makeupUnits(x, allSessions || sessions), 0),
-          makeups: list.filter((x) => x.status === '보강').length,
+          makeupU: list.filter((x) => x.status === '보강' && !isMvNew(x)).reduce((a, x) => a + makeupUnits(x, allSessions || sessions), 0),
+          makeups: list.filter((x) => x.status === '보강' && !isMvNew(x)).length,
           // 어느 결강의 보강인지 연결이 안 된 보강 (급여에 한 회로 들어가서 확인이 필요)
           loose: list.filter((x) => x.status === '보강' && !x.makeup_for).length,
         }
@@ -3255,8 +3323,9 @@ function MonthView({
                     )}
                   </span>
                   {g.byWeek.map((w, i) => {
-                    const n = w.filter((x) => x.status === '진행').length
-                    const bad = w.some((x) => x.status === '결강')
+                    // '이 날만 시간 바꾸기'는 그 주 수업 1번으로 (빨간 칸 아님)
+                    const n = w.filter((x) => x.status === '진행' || g.mvNew.has(String(x.id))).length
+                    const bad = w.some((x) => x.status === '결강' && !g.mvOrig.has(String(x.id)))
                     if (!n && !bad) return <span key={i} style={{ width: colW, textAlign: 'center', color: '#C9CCD1' }}>—</span>
                     return (
                       <span key={i} style={{ width: colW, textAlign: 'center' }}>
@@ -3306,8 +3375,11 @@ function MonthView({
                       {onMark && <span style={{ marginLeft: 7 }}>· 날짜를 눌러 결강 처리</span>}
                     </div>
                     <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
-                      {g.list.map((s) => {
-                        const c = toneOf(s)
+                      {g.list.filter((s) => !g.mvOrig.has(String(s.id))).map((s) => {
+                        // '이 날만 시간 바꾸기' 새 칸: 수업 색 + 파란 테두리 + '옮김' 딱지 (원래 칸은 위에서 뺌)
+                        const mv = g.mvNew.has(String(s.id))
+                        const mvO = mv ? (allSessions || sessions).find((x) => String(x.id) === String(s.makeup_for)) : null
+                        const c = mv ? toneOf({ ...s, status: '진행' }) : toneOf(s)
                         // 진행·결강 칸만 눌러서 바꿀 수 있음 (보강·취소 칸은 눌러도 결강으로 바뀌지 않게)
                         //   일부 수업은 한 번 눌러 '진행'으로 되돌아가지 않게 막음 (시간표에서 칸을 눌러 바꿈)
                         const pt = isPartial(s)
@@ -3316,7 +3388,7 @@ function MonthView({
                           <button
                             key={s.id}
                             disabled={busy || !canMark}
-                            title={`${s.d.slice(5)} (${s.weekday}) ${clock(s.start_time)}~${clock(s.end_time)} · ${pt ? `일부 수업 ${s.done_min}분 (바꾸려면 시간표에서 칸을 누르세요)` : s.status}${
+                            title={mv ? `${s.d.slice(5)} (${s.weekday}) 이 날만 시간 바꿈 (${mvO ? clock(mvO.start_time) : '?'} → ${clock(s.start_time)})` : `${s.d.slice(5)} (${s.weekday}) ${clock(s.start_time)}~${clock(s.end_time)} · ${pt ? `일부 수업 ${s.done_min}분 (바꾸려면 시간표에서 칸을 누르세요)` : s.status}${
                               s.status === '보강'
                                 ? s.makeup_for
                                   ? (() => {
@@ -3330,13 +3402,16 @@ function MonthView({
                             onClick={() => canMark && onMark(s.id, s.status === '결강' ? '진행' : '결강')}
                             style={{
                               width: 34, height: 34, borderRadius: 8,
-                              border: `1px solid ${pt ? ABSENT : c.bd}`, background: pt ? partialBg(s, 'right', DOT.진행.bg) : c.bg, color: c.fg,
+                              border: mv ? '1.5px solid #378ADD' : `1px solid ${pt ? ABSENT : c.bd}`, background: pt ? partialBg(s, 'right', DOT.진행.bg) : c.bg, color: c.fg,
                               fontSize: 12.5, fontWeight: 700, padding: 0,
                               cursor: busy || !canMark ? 'default' : 'pointer', position: 'relative',
                             }}
                           >
                             {Number(s.d.slice(-2))}
-                            {s.status === '보강' && s.makeup_for && (
+                            {mv && (
+                              <span style={{ position: 'absolute', top: -8, right: -9, background: MOVED_BLUE, color: '#fff', borderRadius: 99, padding: '0 4px', fontSize: 9, lineHeight: '13px', fontWeight: 700, whiteSpace: 'nowrap' }}>옮김</span>
+                            )}
+                            {s.status === '보강' && s.makeup_for && !mv && (
                               <span style={{ position: 'absolute', top: -2, right: -2, fontSize: 9 }}>↻</span>
                             )}
                             {s.status === '보강' && !s.makeup_for && (
@@ -3997,7 +4072,25 @@ function PayrollHistory({ rows, staffOrder = [], ownerName, toneOf, busy, onPaid
   const curYear = years.find((x) => x.year === year) || years[0]
 
   const unpaid = months.reduce((a, g) => a + g.unpaid, 0)
-  const shownMonths = showAll ? months : months.slice(0, 6)
+  // 달별 보기: 해마다 한 줄로 묶음 — 가장 최근 해만 펼쳐 두고, 지난해는 접어 둠 (누르면 펼침)
+  const yearGroups = useMemo(() => {
+    const m = {}
+    months.forEach((g) => {
+      const yr = g.ym.slice(0, 4)
+      if (!m[yr]) m[yr] = { year: yr, months: [], total: 0 }
+      m[yr].months.push(g)
+      m[yr].total += g.total
+    })
+    return Object.values(m).sort((a, b) => b.year.localeCompare(a.year))
+  }, [months])
+  const [openYears, setOpenYears] = useState(null) // null = 처음엔 가장 최근 해만 펼침
+  const isYearOpen = (yr) => (openYears ? openYears.has(yr) : yr === yearGroups[0]?.year)
+  const toggleYear = (yr) => {
+    const s = new Set(openYears || (yearGroups[0] ? [yearGroups[0].year] : []))
+    if (s.has(yr)) s.delete(yr)
+    else s.add(yr)
+    setOpenYears(s)
+  }
 
   const header = (
     <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
@@ -4092,7 +4185,21 @@ function PayrollHistory({ rows, staffOrder = [], ownerName, toneOf, busy, onPaid
         <b> 엑셀</b> 표시는 예전 엑셀에서 옮긴 기록입니다.
       </div>
 
-      {shownMonths.map((g) => (
+      {yearGroups.map((yg) => (
+        <div key={yg.year} style={{ marginBottom: 12 }}>
+          <button
+            onClick={() => toggleYear(yg.year)}
+            style={{
+              width: '100%', display: 'flex', alignItems: 'center', gap: 8, padding: '9px 12px', marginBottom: 8, cursor: 'pointer',
+              background: '#fff', border: '1px solid #D3D1C7', borderRadius: 9, fontSize: 13.5, color: C.ink, textAlign: 'left',
+            }}
+          >
+            <b>{isYearOpen(yg.year) ? '▾' : '▸'} {yg.year}년</b>
+            <span style={{ fontSize: 12.5, color: C.sub }}>
+              · {yg.months.length}개월 · 실지급 합계 {won(yg.total)}원
+            </span>
+          </button>
+          {isYearOpen(yg.year) && yg.months.map((g) => (
         <Card key={g.ym} style={{ marginBottom: 12, overflow: 'hidden' }}>
           <div
             style={{
@@ -4165,13 +4272,9 @@ function PayrollHistory({ rows, staffOrder = [], ownerName, toneOf, busy, onPaid
             )
           })}
         </Card>
+          ))}
+        </div>
       ))}
-
-      {months.length > 6 && (
-        <Btn onClick={() => setShowAll(!showAll)} style={{ width: '100%', marginBottom: 12 }}>
-          {showAll ? '최근 6개월만 보기' : `지난 기록 ${months.length - 6}개월 더 보기`}
-        </Btn>
-      )}
       {modal}
     </div>
   )
@@ -5149,6 +5252,12 @@ function BillingView({ ym, lines, byStaff, payroll, unmadeAll = null, receipts, 
                                 {s.st === 'none' ? '확인 요청' : '다시 요청'}
                               </Btn>
                             )}
+                            {/* 답을 아직 안 받은 요청은 거둘 수 있음 (잘못 눌렀을 때) */}
+                            {s.st === 'wait' && closeCheck.onCancel && (
+                              <Btn disabled={busy} onClick={() => closeCheck.onCancel(r, s)} style={{ padding: '4px 10px', fontSize: 11.5, color: C.sub }}>
+                                요청 취소
+                              </Btn>
+                            )}
                           </div>
                         )
                       })()}
@@ -5405,7 +5514,12 @@ function BillingView({ ym, lines, byStaff, payroll, unmadeAll = null, receipts, 
                               {d.student_name}
                               <div style={{ fontSize: 11, color: C.mut }}>
                                 {d.program_label}
-                                {Number(d.makeup_units) > 0 && ` · 보강 ${fmtUnits(d.makeup_units)}회기`}
+                                {(() => {
+                                  // 진짜 보강만 — '이 날만 시간 바꾸기' 칸은 빼고 셈 (회기 · 수강료는 그대로)
+                                  const mv = movedUnits(mine0, monthSessions, (x) => sameKid(x, d) && (!d.program_label || x.program_label === d.program_label))
+                                  const mu = Math.max(0, (Number(d.makeup_units) || 0) - mv)
+                                  return mu > 0 && ` · 보강 ${fmtUnits(mu)}회기`
+                                })()}
                               </div>
                               {dateRow(dates)}
                             </td>
@@ -8874,6 +8988,9 @@ function MakeupLog({ rows, loadErr = false, staffOrder = [], activeNames = [], o
     setStTabRaw(k)
   }
   const narrowMk = useNarrow(760)               // 휴대폰처럼 좁으면 선생님 칸을 위아래로
+  // '보강 끝': 보강한 달마다 한 줄 · 해마다 한 줄 — 펼친 해 · 달 (null = 처음 모양: 가장 최근 해와 그 해 가장 최근 달만 펼침)
+  const [openDoneYears, setOpenDoneYears] = useState(null)
+  const [openDoneMonths, setOpenDoneMonths] = useState(null)
   const W7 = ['일', '월', '화', '수', '목', '금', '토']
   const dlabel = (iso) => `${Number(iso.slice(5, 7))}/${Number(iso.slice(8))}(${W7[new Date(iso + 'T00:00:00').getDay()]})`
   const tone = (n) => (toneOf ? toneOf(n) : { bg: '#F2F3F5', fg: C.sub })
@@ -8941,6 +9058,87 @@ function MakeupLog({ rows, loadErr = false, staffOrder = [], activeNames = [], o
       ['done', '보강 끝', allDone, '#EDF7F1', '#1F5B3A'],
     ]
     const cur = tabsDef.find((t) => t[0] === stTab)
+    // 달 이름: 올해면 '11월', 지난해 이전이면 '2026년 12월'
+    const thisYear = nowIso.slice(0, 4)
+    const moLabel = (ym) => (ym.slice(0, 4) === thisYear ? `${Number(ym.slice(5, 7))}월` : `${ym.slice(0, 4)}년 ${Number(ym.slice(5, 7))}월`)
+    // '보강 끝': 보강한 달마다 한 줄 (그 안에 선생님 칸), 해마다 한 줄 — 가장 최근 해 · 그 해 가장 최근 달만 펼쳐 둠
+    let doneBands = null
+    if (stTab === 'done') {
+      const byYm = {}
+      pick.forEach((r) => {
+        const k = String(r.makeup_d).slice(0, 7)
+        ;(byYm[k] = byYm[k] || []).push(r)
+      })
+      const yms = Object.keys(byYm).sort((a, b) => b.localeCompare(a))
+      const yrs = [...new Set(yms.map((k) => k.slice(0, 4)))]
+      const yOpen = (y) => (openDoneYears ? openDoneYears.has(y) : y === yrs[0])
+      const mOpen = (k) => (openDoneMonths ? openDoneMonths.has(k) : k === yms[0])
+      const flip = (cur0, init, setter, key) => {
+        const s = new Set(cur0 || init)
+        if (s.has(key)) s.delete(key)
+        else s.add(key)
+        setter(s)
+      }
+      const band = { width: '100%', display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', textAlign: 'left', color: C.ink, flexWrap: 'wrap' }
+      doneBands = (
+        <div>
+          {yrs.map((y) => {
+            const ymsY = yms.filter((k) => k.startsWith(y))
+            const cnt = ymsY.reduce((a, k) => a + byYm[k].length, 0)
+            return (
+              <div key={y} style={{ marginBottom: 10 }}>
+                <button
+                  onClick={() => flip(openDoneYears, yrs.length ? [yrs[0]] : [], setOpenDoneYears, y)}
+                  style={{ ...band, padding: '9px 12px', marginBottom: 8, background: '#fff', border: '1px solid #D3D1C7', borderRadius: 9, fontSize: 13.5 }}
+                >
+                  <b>{yOpen(y) ? '▾' : '▸'} {y}년</b>
+                  <span style={{ fontSize: 12.5, color: C.sub }}>· 보강 {cnt}건</span>
+                </button>
+                {yOpen(y) &&
+                  ymsY.map((k) => {
+                    const list = byYm[k]
+                    const namesM = [...new Set([...activeNames, ...list.map((r) => r.staff_name)])].sort((a, b) => rank(a) - rank(b))
+                    const per = namesM.map((n) => [n, list.filter((r) => r.staff_name === n).length]).filter(([, c]) => c > 0)
+                    const open = mOpen(k)
+                    return (
+                      <div key={k} style={{ marginLeft: narrowMk ? 0 : 14, marginBottom: 8 }}>
+                        <button
+                          onClick={() => flip(openDoneMonths, yms.length ? [yms[0]] : [], setOpenDoneMonths, k)}
+                          style={{ ...band, padding: '8px 11px', marginBottom: open ? 8 : 0, background: '#fff', border: `1px solid ${C.line}`, borderRadius: 9, fontSize: 13 }}
+                        >
+                          <b>{open ? '▾' : '▸'} {Number(k.slice(5, 7))}월</b>
+                          <span style={{ fontSize: 12.5, color: C.sub }}>
+                            · {list.length}건{!open && per.length ? ` · ${per.map(([n, c]) => `${n} ${c}`).join(' · ')}` : ''}
+                          </span>
+                        </button>
+                        {open && (
+                          <div style={{ display: 'grid', gridTemplateColumns: narrowMk ? '1fr' : `repeat(${Math.max(namesM.length, 1)}, minmax(0, 1fr))`, gap: 10, alignItems: 'start' }}>
+                            {namesM.map((n) => {
+                              const items = list.filter((r) => r.staff_name === n).sort(sorter)
+                              return (
+                                <div key={n} style={{ background: tone(n).bg, borderRadius: 12, padding: 9, minWidth: 0 }}>
+                                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, padding: '2px 3px 8px', color: tone(n).fg }}>
+                                    <span style={{ fontSize: 14, fontWeight: 800 }}>{n}</span>
+                                    <span style={{ marginLeft: 'auto', fontSize: 13, fontWeight: 800 }}>{items.length}건</span>
+                                  </div>
+                                  {items.length ? items.map(mini) : (
+                                    <div style={{ fontSize: 12.5, color: C.mut, background: '#fff', borderRadius: 10, padding: '10px', textAlign: 'center' }}>없음</div>
+                                  )}
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+              </div>
+            )
+          })}
+          {!yms.length && <Empty>보강 끝 없습니다.</Empty>}
+        </div>
+      )
+    }
     const mini = (r) => (
       <div key={r.absent_id} style={{ background: '#fff', border: `1px solid ${C.line}`, borderRadius: 10, padding: '9px 10px', marginBottom: 7 }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
@@ -9002,7 +9200,8 @@ function MakeupLog({ rows, loadErr = false, staffOrder = [], activeNames = [], o
             )
           })}
         </div>
-        {/* 선생님 칸: 모두 나란히 */}
+        {/* 선생님 칸: 모두 나란히 — '보강 끝'은 아래에서 달마다 묶어 따로 그림 */}
+        {stTab === 'done' ? doneBands : (
         <div style={{ display: 'grid', gridTemplateColumns: narrowMk ? '1fr' : `repeat(${Math.max(names.length, 1)}, minmax(0, 1fr))`, gap: 10, alignItems: 'start' }}>
           {names.map((n) => {
             const items = pick.filter((r) => r.staff_name === n).sort(sorter)
@@ -9013,7 +9212,24 @@ function MakeupLog({ rows, loadErr = false, staffOrder = [], activeNames = [], o
                   <span style={{ marginLeft: 'auto', fontSize: 13, fontWeight: 800 }}>{items.length}건</span>
                 </div>
                 {items.length ? (
-                  items.map(mini)
+                  // '보강 잡아야 함': 결강한 달이 바뀌는 곳에 달 이름 줄을 끼움 (접지 않음 — 오래된 결강이 숨지 않게)
+                  stTab === 'todo'
+                    ? items.map((r, i) => {
+                        const k = String(r.absent_d).slice(0, 7)
+                        const showMo = i === 0 || String(items[i - 1].absent_d).slice(0, 7) !== k
+                        return (
+                          <React.Fragment key={r.absent_id}>
+                            {showMo && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, fontWeight: 700, color: '#5F5E5A', margin: i === 0 ? '0 2px 5px' : '8px 2px 5px' }}>
+                                {moLabel(k)} 결강
+                                <span style={{ flex: 1, height: 1, background: 'rgba(0,0,0,0.12)' }} />
+                              </div>
+                            )}
+                            {mini(r)}
+                          </React.Fragment>
+                        )
+                      })
+                    : items.map(mini)
                 ) : (
                   <div style={{ fontSize: 12.5, color: C.mut, background: '#fff', borderRadius: 10, padding: '10px', textAlign: 'center' }}>
                     {stTab === 'todo' ? '잡을 보강 없음' : '없음'}
@@ -9023,6 +9239,7 @@ function MakeupLog({ rows, loadErr = false, staffOrder = [], activeNames = [], o
             )
           })}
         </div>
+        )}
         {pick.length === 0 && names.length === 0 && <Empty>{cur[1]} 없습니다.</Empty>}
       </div>
     )
@@ -12042,6 +12259,16 @@ function App() {
     setPayroll(pr)
     setMyClose(mc)
   }, [ym, isAdmin, closeYm])
+  // 급여 줄의 '보강'은 진짜 보강만 — '이 날만 시간 바꾸기' 칸은 빼서 보여 줌 (합계 회기 · 급여 금액은 그대로)
+  //   확인 요청 숫자 · 답 비교도 이 값으로 해서 화면과 문구가 같음
+  const payrollPure = useMemo(
+    () =>
+      (payroll || []).map((p) => {
+        const mv = movedUnits(monthSessions.filter((x) => String(x.staff_id) === String(p.staff_id)), monthSessions)
+        return mv ? { ...p, makeup_units: Math.max(0, (Number(p.makeup_units) || 0) - mv) } : p
+      }),
+    [payroll, monthSessions]
+  )
 
   const reloadManage = useCallback(async () => {
     if (!isAdmin) return
@@ -13698,6 +13925,21 @@ function App() {
                   }
                   setBusy(false)
                 },
+                onCancel: async (r) => {
+                  // 답 안 한 그 달 요청만 거둠 — 마감할 때 남은 요청을 거두는 것과 같은 방식
+                  const open = notices.filter((n) => n.kind === 'close_req' && !n.confirmed_at && String(n.to_staff) === String(r.staff_id) && n.payload?.ym === ym)
+                  if (!open.length) return
+                  if (!confirm(`${r.staff_name} 선생님께 보낸 ${Number(ym.slice(5))}월 마감 확인 요청을 거둘까요?\n선생님 화면에서도 요청이 사라집니다.`)) return
+                  setBusy(true)
+                  try {
+                    for (const n of open) await withdrawNotice(n.id)
+                    say(`${r.staff_name} 선생님께 보낸 확인 요청을 거뒀습니다`)
+                    await loadNotices().then(setNotices).catch(() => {})
+                  } catch (e) {
+                    fail(e)
+                  }
+                  setBusy(false)
+                },
                 onRequestAll: async (rows) => {
                   // 원장님 본인 · 이미 마감한 선생님 · 이미 요청해 답을 기다리는 중이거나 '같음'이라고 답한 선생님은 빼고 보냅니다
                   const list = rows.filter((r) => {
@@ -13760,12 +14002,41 @@ function App() {
                       if (rec && !(me && String(sid) === String(me.id))) {
                         const n = recNums(rec)
                         const taxTxt = rec.tax_method === '3.3%' ? `세금 3.3% ${won(n.tax)}원` : `소득세 ${won(n.it)}원 · 지방세 ${won(n.lt)}원`
+                        // 인상 전 결강분 보강(예전 금액으로 계산된 보강)이 있으면 알림 아래 한 줄 — 못 구하면 그냥 뺌
+                        let oldNote = ''
+                        try {
+                          if (ym >= PRICE_UP_YM) {
+                            const mvMk = movePairs(monthSessions).mk
+                            const mks = monthSessions.filter((x) => String(x.staff_id) === String(sid) && x.status === '보강' && x.makeup_for && !mvMk.has(String(x.id)))
+                            const need = [...new Set(mks.map((x) => String(x.makeup_for)))].filter((id) => !monthSessions.some((y) => String(y.id) === id))
+                            const all = [...(await loadSessionsByIds(need)), ...monthSessions]
+                            const origOf = (m) => all.find((y) => String(y.id) === String(m.makeup_for))
+                            const olds = mks.filter((m) => { const o = origOf(m); return o && String(o.d).slice(0, 7) < PRICE_UP_YM })
+                            if (olds.length) {
+                              const units = olds.reduce((a, m) => a + makeupUnits(m, all), 0)
+                              let amt = 0
+                              try {
+                                for (const m of olds) {
+                                  const o = origOf(m)
+                                  amt += (Number(await loadPayPrice(m.id)) || 0) * makeupUnits(m, all) / unitsOf(o)
+                                }
+                                amt = Math.round(amt)
+                              } catch (e2) {
+                                amt = null
+                              }
+                              const pm = Number(PRICE_UP_YM.slice(5)) === 1 ? 12 : Number(PRICE_UP_YM.slice(5)) - 1
+                              oldNote = `${pm}월 이전 결강분 보강 ${olds.length}번(${fmtUnits(units)}회기)은 예전 금액${amt ? `(${olds.length > 1 ? '합계 ' : ''}${won(amt)}원)` : ''}으로 계산했습니다`
+                            }
+                          }
+                        } catch (e1) {
+                          oldNote = ''
+                        }
                         await notifyStaff(
                           sid,
                           'close_done',
                           `${Number(ym.slice(5))}월 급여가 확정됐습니다 — 금액 ${won(n.gross)}원 · ${taxTxt}${n.ded ? ` · 공제 ${won(n.ded)}원` : ''} · 실지급 ${won(n.net)}원. 마감 탭에서 자세히 볼 수 있어요`,
                           null,
-                          { ym, gross: n.gross, income_tax: n.it, local_tax: n.lt, tax: n.tax, deduct: n.ded, net: n.net }
+                          { ym, gross: n.gross, income_tax: n.it, local_tax: n.lt, tax: n.tax, deduct: n.ded, net: n.net, ...(oldNote ? { old_note: oldNote } : {}) }
                         )
                       }
                     } catch (e) {
@@ -13844,7 +14115,7 @@ function App() {
               ownerName={staff.find((x) => x.role === 'admin')?.name}
               lines={billing}
               byStaff={byStaff}
-              payroll={payroll}
+              payroll={payrollPure}
               receipts={receipts}
               busy={busy}
               onOpenReceipt={setReceiptFor}
