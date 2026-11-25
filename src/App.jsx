@@ -8980,6 +8980,11 @@ function MakeupLog({ rows, loadErr = false, staffOrder = [], activeNames = [], o
   const nowIso = isoOf(new Date())
   const nowHm = `${String(new Date().getHours()).padStart(2, '0')}:${String(new Date().getMinutes()).padStart(2, '0')}`
   const isPlanned = (r) => !!r.makeup_d && (r.makeup_d > nowIso || (r.makeup_d === nowIso && hhmm(r.makeup_start) > nowHm))
+  // '이 날만 시간 바꾸기'(결강한 날 = 보강한 날 · 일부 수업 아님)는 진짜 보강이 아니라 '보강 예정 · 보강 끝'에서 뺌
+  //   (시간 바꾼 날은 시간표 · 출결 · 급여 내역에 '옮김'으로 보임)
+  const isMoveRow = (r) =>
+    !!r.makeup_d && r.makeup_d === r.absent_d && !(Number(r.done_min) > 0) &&
+    (r.makeup_note == null || String(r.makeup_note).startsWith(MOVE_NOTE))
 
   // 탭: 'todo' 잡아야 함 · 'plan' 예정 · 'done' 끝 — 보강을 잡거나 고친 뒤 화면을 다시 불러와도 보던 탭 그대로
   const [stTab, setStTabRaw] = useState(() => makeupTabMemo)
@@ -8996,8 +9001,8 @@ function MakeupLog({ rows, loadErr = false, staffOrder = [], activeNames = [], o
   const tone = (n) => (toneOf ? toneOf(n) : { bg: '#F2F3F5', fg: C.sub })
 
   const allTodo = rows.filter((r) => !r.makeup_d).length
-  const allPlan = rows.filter((r) => isPlanned(r)).length
-  const allDone = rows.filter((r) => r.makeup_d).length - allPlan
+  const allPlan = rows.filter((r) => isPlanned(r) && !isMoveRow(r)).length
+  const allDone = rows.filter((r) => r.makeup_d && !isMoveRow(r)).length - allPlan
 
   const buttons = (r) => (
     <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
@@ -9043,7 +9048,7 @@ function MakeupLog({ rows, loadErr = false, staffOrder = [], activeNames = [], o
 
   // ── 모양 C: 상태는 탭, 탭 안에서는 선생님이 모두 나란히 ──
   {
-    const pick = stTab === 'todo' ? rows.filter((r) => !r.makeup_d) : stTab === 'plan' ? rows.filter((r) => isPlanned(r)) : rows.filter((r) => r.makeup_d && !isPlanned(r))
+    const pick = stTab === 'todo' ? rows.filter((r) => !r.makeup_d) : stTab === 'plan' ? rows.filter((r) => isPlanned(r) && !isMoveRow(r)) : rows.filter((r) => r.makeup_d && !isPlanned(r) && !isMoveRow(r))
     const sorter =
       stTab === 'todo'
         ? (a, b) => (a.absent_d + a.absent_start).localeCompare(b.absent_d + b.absent_start)
