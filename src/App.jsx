@@ -9061,6 +9061,36 @@ function MakeupLog({ rows, loadErr = false, staffOrder = [], activeNames = [], o
     // 달 이름: 올해면 '11월', 지난해 이전이면 '2026년 12월'
     const thisYear = nowIso.slice(0, 4)
     const moLabel = (ym) => (ym.slice(0, 4) === thisYear ? `${Number(ym.slice(5, 7))}월` : `${ym.slice(0, 4)}년 ${Number(ym.slice(5, 7))}월`)
+    const mini = (r) => (
+      <div key={r.absent_id} style={{ background: '#fff', border: `1px solid ${C.line}`, borderRadius: 10, padding: '9px 10px', marginBottom: 7 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+          <span style={{ fontSize: 14, fontWeight: 800 }}>{r.student_name}</span>
+          {stTab === 'todo' && (
+            <span style={{ marginLeft: 'auto', fontSize: 11.5, fontWeight: 700, color: daysSince(r.absent_d) >= 14 ? C.danger : C.mut, whiteSpace: 'nowrap' }}>
+              {/* 아직 안 온 날(미리 결강 처리)은 '○일 뒤', 오늘은 '오늘' */}
+              {daysSince(r.absent_d) < 0 ? `${-daysSince(r.absent_d)}일 뒤` : daysSince(r.absent_d) === 0 ? '오늘' : `${daysSince(r.absent_d)}일 지남`}
+            </span>
+          )}
+        </div>
+        <div style={{ fontSize: 12, color: stTab === 'todo' ? C.danger : C.sub, marginTop: 2 }}>
+          {dlabel(r.absent_d)} {clock(r.absent_start)} {Number(r.done_min) > 0 ? '일부 수업' : '결강'}
+        </div>
+        {r.makeup_d && (
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: stTab === 'plan' ? '#254B8C' : '#1F5B3A', marginTop: 2 }}>
+            → {dlabel(r.makeup_d)} {clock(r.makeup_start)} 보강
+          </div>
+        )}
+        {(partBadge(r) || r.by_other) && (
+          <div style={{ marginTop: 4, display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+            {partBadge(r)}
+            {r.by_other && <span style={{ fontSize: 11.5, color: C.sub }}>{r.makeup_staff} 선생님이 함</span>}
+          </div>
+        )}
+        {isAdmin && (canBook.has(r.absent_id) || r.makeup_d || r.made_min > 0) && (
+          <div style={{ display: 'flex', marginTop: 7 }}>{buttons(r)}</div>
+        )}
+      </div>
+    )
     // '보강 끝': 보강한 달마다 한 줄 (그 안에 선생님 칸), 해마다 한 줄 — 가장 최근 해 · 그 해 가장 최근 달만 펼쳐 둠
     let doneBands = null
     if (stTab === 'done') {
@@ -9139,36 +9169,6 @@ function MakeupLog({ rows, loadErr = false, staffOrder = [], activeNames = [], o
         </div>
       )
     }
-    const mini = (r) => (
-      <div key={r.absent_id} style={{ background: '#fff', border: `1px solid ${C.line}`, borderRadius: 10, padding: '9px 10px', marginBottom: 7 }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-          <span style={{ fontSize: 14, fontWeight: 800 }}>{r.student_name}</span>
-          {stTab === 'todo' && (
-            <span style={{ marginLeft: 'auto', fontSize: 11.5, fontWeight: 700, color: daysSince(r.absent_d) >= 14 ? C.danger : C.mut, whiteSpace: 'nowrap' }}>
-              {/* 아직 안 온 날(미리 결강 처리)은 '○일 뒤', 오늘은 '오늘' */}
-              {daysSince(r.absent_d) < 0 ? `${-daysSince(r.absent_d)}일 뒤` : daysSince(r.absent_d) === 0 ? '오늘' : `${daysSince(r.absent_d)}일 지남`}
-            </span>
-          )}
-        </div>
-        <div style={{ fontSize: 12, color: stTab === 'todo' ? C.danger : C.sub, marginTop: 2 }}>
-          {dlabel(r.absent_d)} {clock(r.absent_start)} {Number(r.done_min) > 0 ? '일부 수업' : '결강'}
-        </div>
-        {r.makeup_d && (
-          <div style={{ fontSize: 12.5, fontWeight: 700, color: stTab === 'plan' ? '#254B8C' : '#1F5B3A', marginTop: 2 }}>
-            → {dlabel(r.makeup_d)} {clock(r.makeup_start)} 보강
-          </div>
-        )}
-        {(partBadge(r) || r.by_other) && (
-          <div style={{ marginTop: 4, display: 'flex', gap: 5, flexWrap: 'wrap' }}>
-            {partBadge(r)}
-            {r.by_other && <span style={{ fontSize: 11.5, color: C.sub }}>{r.makeup_staff} 선생님이 함</span>}
-          </div>
-        )}
-        {isAdmin && (canBook.has(r.absent_id) || r.makeup_d || r.made_min > 0) && (
-          <div style={{ display: 'flex', marginTop: 7 }}>{buttons(r)}</div>
-        )}
-      </div>
-    )
     return (
       <div>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
