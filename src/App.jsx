@@ -5858,16 +5858,17 @@ function ReceiptModal({ ym, student, receipt, extra, extrasErr = false, onClose,
             <Btn variant="danger" disabled={busy} onClick={() => onUnlock(student.id)} style={{ flex: 1 }}>
               잠금 해제
             </Btn>
-          ) : (
+          ) : dirty ? (
+            // 발행은 수강료 화면 맨 위 [한 번에 발행]으로만 — 여기서는 적은 감액만 저장
             <Btn
               variant="primary"
               disabled={busy || extrasErr}
-              onClick={() => okSign() && onIssue(student.id, Number(amount) || 0, reason)}
+              onClick={() => okSign() && onSaveAdjust && onSaveAdjust(student.id, Number(amount) || 0, reason)}
               style={{ flex: 1 }}
             >
-              발행하고 잠그기
+              감액 저장
             </Btn>
-          )}
+          ) : null}
           <Btn
             disabled={busy || extrasErr}
             onClick={async () => {
@@ -10326,7 +10327,7 @@ function PaymentView({
   ym, rows, revenue, busy, onDeposit, onRefund, onRemoveDeposit, loadHistory, say,
   byStaff = [], staffOrder = [], ownerName, toneOf, loadMonthDeposits,
   // 수강료 화면(영수증 + 입금 합침)
-  receipts = [], kids = [], printOrder = [], onOpenReceipt, onPrintAll, loadRevenueList,
+  receipts = [], kids = [], printOrder = [], onOpenReceipt, onPrintAll, loadRevenueList, onIssueAll,
 }) {
   const [filter, setFilter] = useState(onOpenReceipt ? 'all' : 'unpaid')
   const [printOpen, setPrintOpen] = useState(false)
@@ -10411,6 +10412,29 @@ function PaymentView({
           <span style={{ fontSize: 12, color: C.sub }}>
             영수증 {receipts.filter((x) => x.locked).length}/{kids.length}명 발행
           </span>
+          {(() => {
+            // 아직 발행 안 한 아이를 한 번에 발행 (한 달이 끝날 때 한 번 누름)
+            const lockedIds = new Set(receipts.filter((x) => x.locked).map((x) => x.student_id))
+            const left = kids.filter((k) => !lockedIds.has(k.id))
+            if (!onIssueAll || left.length === 0) return null
+            const m = Number(ym.slice(5))
+            return (
+              <button
+                disabled={busy}
+                onClick={() => {
+                  if (!confirm(`${m}월 영수증 ${left.length}명을 발행할까요?\n\n발행하면 금액이 고정됩니다. 고치려면 그 아이 영수증에서 잠금을 해제하면 됩니다.`)) return
+                  onIssueAll(left.map((k) => k.id))
+                }}
+                style={{
+                  border: `1px solid ${C.pkd}`, borderRadius: 8, cursor: busy ? 'default' : 'pointer',
+                  padding: '5px 12px', fontSize: 12.5, fontWeight: 700, background: C.pkl, color: C.pkd,
+                  opacity: busy ? 0.6 : 1,
+                }}
+              >
+                {left.length}명 한 번에 발행
+              </button>
+            )
+          })()}
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
             <Btn onClick={() => onPrintAll(printOrder)} disabled={printOrder.length === 0}>
               영수증 {printOrder.length}장 인쇄
@@ -14211,6 +14235,26 @@ function App() {
               onOpenReceipt={setReceiptFor}
               onPrintAll={setPrintAll}
               loadRevenueList={loadRevenueByMonth}
+              onIssueAll={async (ids) => {
+                // 한 명씩 차례로 발행 — 아이 창에서 발행하던 것과 같게 (적어 둔 감액·사유 그대로 저장 후 발행)
+                setBusy(true)
+                let done = 0
+                for (const sid of ids) {
+                  const r = receipts.find((x) => x.student_id === sid)
+                  try {
+                    await saveAdjust(ym, sid, Number(r?.adjustment) || 0, String(r?.adjust_reason || '').trim() || null)
+                    await issueReceipt(ym, sid)
+                    done++
+                  } catch (e) {
+                    fail(e)
+                    break
+                  }
+                }
+                if (done === ids.length) say(`${done}명 발행했습니다`)
+                else say(`${done}명까지 발행하고 멈췄습니다. 버튼을 다시 누르면 남은 아이만 발행됩니다`, 'err')
+                await reloadMonth().catch(() => say('발행됐습니다. 화면이 안 바뀌었으면 새로고침해 주세요', 'err'))
+                setBusy(false)
+              }}
               onDeposit={async (sid, v) => {
                 // 기록과 화면 새로고침을 나눕니다 — 기록은 됐는데 새로고침만 실패해도 '실패'로 보여 두 번 입력하지 않게
                 setBusy(true)
